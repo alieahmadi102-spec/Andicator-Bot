@@ -1,8 +1,8 @@
 //@version=6
-// build: v4.3 — FIX: targets are now always ordered nearest→farthest, and the
-//               trend filter is no longer bypassed by inversion zones
-//               (no more SELL while the panel says UPTREND).
-//               Position shows live status: running / TP1-3 hit / stopped.
+// build: v4.4 — closed trades stop being drawn (chart no longer shows a dead
+//               position from hours ago), SL now sits beyond the last shadow
+//               (book: on the liquidity), and SCALP/SWING follows the book's
+//               timeframe rule (M5/M15 = scalp · H1/H4/D = swing).
 // ═══════════════════════════════════════════════════════════════════════════
 //  SNRZ Strategy Indicator — "Zindan The Gold Chaser" Masterclass (2026 book)
 //
@@ -10,7 +10,7 @@
 //  PO2 = 2nd retest of an INVERSION zone (strongest, gold).
 //  Targets (book): TP1 = nearest opposite zone, TP2 = next zone,
 //                  TP3 = far zone. Fallback 1R / 2R / 3R if no zone there.
-//  SCALP vs SWING (book "Timeframe = Pips"): expected move vs ATR.
+//  SCALP vs SWING (book): M5/M15 = SCALP · H1/H4/Daily = SWING.
 //  Nothing more, nothing less than the strategy in the book.
 // ═══════════════════════════════════════════════════════════════════════════
 indicator("SNRZ Strategy [Zindan]", "SNRZ", overlay = true, max_boxes_count = 200, max_labels_count = 200, max_lines_count = 200)
@@ -30,7 +30,7 @@ grpS  = "Signals"
 useTrendFilter = input.bool(true,  "Trade only with structure trend (Trend is King)", group = grpS)
 allowCounterInv = input.bool(false, "Allow counter-trend entries on inversion zones", group = grpS, tooltip = "کتاب: «ترند پادشاه است». پیش‌فرض خاموش تا در روند صعودی سیگنال فروش ندهد.")
 maxTouches     = input.int(3,      "Max touches on VALID zone (3-touch rule)", minval = 2, maxval = 4, group = grpS)
-swingAtrMult   = input.float(3.0,  "SWING when TP1 distance ≥ ATR ×",      minval = 1, step = 0.5, group = grpS)
+swingAtrMult   = input.float(3.0,  "Also SWING when TP1 distance ≥ ATR ×",  minval = 1, step = 0.5, group = grpS, tooltip = "کتاب: اسکلپ روی M5/M15 و سوینگ روی H1/H4/Daily. تایم‌فریم زون ≥ ۱ ساعت یعنی SWING.")
 showPosition   = input.bool(true,  "Show active position (Entry/SL/TP1-3)", group = grpS)
 showFresh      = input.bool(true,  "Show fresh (not yet valid) zones",     group = grpS)
 showPanel      = input.bool(true,  "Show SNRZ info panel",                 group = grpS)
@@ -48,6 +48,12 @@ colGold  = input.color(#d4af37, "Accent (Zindan gold)", group = grpV)
 // ─────────────────────────── Core series ───────────────────────────────────
 atr = ta.atr(14)
 bigMove = atr * bigMoveMult
+
+// book: "put the SL beyond the shadow / on the liquidity", never inside the zone
+swingLo3 = ta.lowest(low, 3)
+swingHi3 = ta.highest(high, 3)
+// book: Scalper works M5/M15 (20-50 pips) · Swing works H1/H4/Daily (300-1000)
+zoneTfMin = timeframe.in_seconds(zoneTF == "" ? timeframe.period : zoneTF) / 60
 
 phSrc = ta.pivothigh(high, pivotLen, pivotLen)
 plSrc = ta.pivotlow(low,  pivotLen, pivotLen)
@@ -254,7 +260,7 @@ for z in zones
                 sigFired := true
                 sigIsBuy := true
                 sigIsPO2 := isPO2
-                sigSl := z.bot - atr * 0.3
+                sigSl := math.min(z.bot, swingLo3) - atr * 0.2
                 sigZone := zoneText(z)
     else
         if bullBreak75(z.top)
@@ -285,7 +291,7 @@ for z in zones
                 sigFired := true
                 sigIsBuy := false
                 sigIsPO2 := isPO2
-                sigSl := z.top + atr * 0.3
+                sigSl := math.max(z.top, swingHi3) + atr * 0.2
                 sigZone := zoneText(z)
     refreshZone(z)
 
@@ -354,7 +360,7 @@ if sigFired
     posTP1   := t1
     posTP2   := t2
     posTP3   := t3
-    posSwing := math.abs(t1 - entry) >= atr * swingAtrMult
+    posSwing := zoneTfMin >= 60 or math.abs(t1 - entry) >= atr * swingAtrMult
     posBar   := bar_index
     posZone  := sigZone
     posStat  := 0
@@ -364,8 +370,10 @@ else if posOn and posStat >= 0
     if posBuy
         if low <= posSL
             posStat := -1
+            posOn := false
         else if high >= posTP3
             posStat := 3
+            posOn := false
         else if high >= posTP2 and posStat < 2
             posStat := 2
         else if high >= posTP1 and posStat < 1
@@ -373,8 +381,10 @@ else if posOn and posStat >= 0
     else
         if high >= posSL
             posStat := -1
+            posOn := false
         else if low <= posTP3
             posStat := 3
+            posOn := false
         else if low <= posTP2 and posStat < 2
             posStat := 2
         else if low <= posTP1 and posStat < 1
@@ -384,13 +394,15 @@ else if posOn and posStat >= 0
 var line[]  pl = array.new<line>()
 var label[] pb = array.new<label>()
 
-if showPosition and posOn and barstate.islast
+if barstate.islast
     for ln in pl
         line.delete(ln)
     array.clear(pl)
     for lb in pb
         label.delete(lb)
     array.clear(pb)
+
+if showPosition and posOn and barstate.islast
 
     x1 = posBar
     x2 = bar_index + 25
@@ -429,7 +441,7 @@ if showPanel and barstate.islast
         if not z.dead
             activeCnt += 1
     stTxt = posStat == -1 ? " ✗SL" : posStat > 0 ? " ✓TP" + str.tostring(posStat) : " •"
-    posTxt = posOn ? ((posBuy ? "BUY " : "SELL ") + (posSwing ? "SWING" : "SCALP") + " @ " + str.tostring(posEntry, format.mintick) + stTxt) : "—"
+    posTxt = not na(posEntry) ? ((posBuy ? "BUY " : "SELL ") + (posSwing ? "SWING" : "SCALP") + " @ " + str.tostring(posEntry, format.mintick) + stTxt + (posOn ? "" : " (closed)")) : "—"
     table.cell(info, 0, 0, "⚜  SNRZ  —  ZiNDAN", text_color = colGold, text_size = size.normal)
     table.cell(info, 0, 1, "The Gold Chaser", text_color = color.new(colGold, 35), text_size = size.tiny)
     table.cell(info, 0, 2, trendTxt, text_color = trendCol, text_size = size.small)
