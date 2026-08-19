@@ -1,4 +1,5 @@
 //@version=6
+// build: v1.1  (fixed CE10013 — if you don't see this line, you have the OLD copy)
 // ═══════════════════════════════════════════════════════════════════════════
 //  SNRZ Strategy Indicator  —  based on "Zindan The Gold Chaser" Masterclass
 //  Components implemented from the SNRZ book / masterclass notes:
