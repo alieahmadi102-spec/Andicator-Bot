@@ -5,15 +5,15 @@
 //|  Implements on MetaTrader 5:                                     |
 //|   • Valid Support / Valid Resistance (two-movement rule)         |
 //|   • 75% breakout rule (body + directional shadow only)           |
-//|   • Inversion: RBS / SBR → IVS / IVR when a VALID zone breaks    |
-//|   • Power of Second Touch (PO2) — strongest entry                |
+//|   • Inversion: RBS / SBR (fresh) , I.VR / I.VS (valid) zones     |
+//|   • PO2 — 2nd retest of an INVERSION zone (strongest entry)      |
 //|   • SNRZ engulfing / pin-bar confirmation                        |
 //|   • Structure trend filter (HH/HL vs LH/LL)                      |
 //|   • Chart zones as rectangles + arrows + Alert / Push            |
 //+------------------------------------------------------------------+
 #property copyright   "SNRZ (Zindan The Gold Chaser) — indicator port"
 #property version     "1.00"
-#property description "SNRZ zones: Valid S/R, Inversion (RBS/SBR/IVS/IVR), PO2, 75% breakout rule"
+#property description "SNRZ zones: Valid S/R, Inversion (RBS/SBR/I.VR/I.VS), PO2 on inversion 2nd touch, 75% rule"
 #property indicator_chart_window
 #property indicator_buffers 4
 #property indicator_plots   4
@@ -135,9 +135,9 @@ string ZoneText(const SZone &z)
   {
    string base;
    if(z.role == 1)
-      base = (z.state == 2 ? (z.wasValid ? "IVS" : "RBS") : (z.state == 1 ? "V.S" : "S"));
+      base = (z.state == 2 ? (z.wasValid ? "I.VR" : "RBS") : (z.state == 1 ? "V.S" : "S"));
    else
-      base = (z.state == 2 ? (z.wasValid ? "IVR" : "SBR") : (z.state == 1 ? "V.R" : "R"));
+      base = (z.state == 2 ? (z.wasValid ? "I.VS" : "SBR") : (z.state == 1 ? "V.R" : "R"));
    if(z.dead)
       base += " x";
    else if(z.touches > 0)
@@ -397,7 +397,7 @@ int OnCalculate(const int rates_total,
                g_zones[i].touches  = 0;
                g_zones[i].sigTouch = 0;
                g_zones[i].dead     = false;
-               Notify((g_zones[i].wasValid ? "IVR" : "SBR") + " — Support broken (75% rule), zone inverted to SELL", live);
+               Notify((g_zones[i].wasValid ? "I.VS" : "SBR") + " — Support broken (75% rule), zone inverted to SELL", live);
               }
             else if(inZone && c >= g_zones[i].bot && !g_zones[i].dead)
               {
@@ -420,7 +420,7 @@ int OnCalculate(const int rates_total,
                if(tradable && okTrend && okConf && fresh && c > g_zones[i].bot)
                  {
                   g_zones[i].sigTouch = g_zones[i].touches;
-                  if(g_zones[i].touches == 2)
+                  if(g_zones[i].state == 2 && g_zones[i].touches == 2)
                     {
                      BufPO2Buy[bar] = l - atr * 0.4;
                      Notify("PO2 BUY — Power of Second Touch at " + ZoneText(g_zones[i]), live);
@@ -443,7 +443,7 @@ int OnCalculate(const int rates_total,
                g_zones[i].touches  = 0;
                g_zones[i].sigTouch = 0;
                g_zones[i].dead     = false;
-               Notify((g_zones[i].wasValid ? "IVS" : "RBS") + " — Resistance broken (75% rule), zone inverted to BUY", live);
+               Notify((g_zones[i].wasValid ? "I.VR" : "RBS") + " — Resistance broken (75% rule), zone inverted to BUY", live);
               }
             else if(inZone && c <= g_zones[i].top && !g_zones[i].dead)
               {
@@ -465,7 +465,7 @@ int OnCalculate(const int rates_total,
                if(tradable && okTrend && okConf && fresh && c < g_zones[i].top)
                  {
                   g_zones[i].sigTouch = g_zones[i].touches;
-                  if(g_zones[i].touches == 2)
+                  if(g_zones[i].state == 2 && g_zones[i].touches == 2)
                     {
                      BufPO2Sell[bar] = h + atr * 0.4;
                      Notify("PO2 SELL — Power of Second Touch at " + ZoneText(g_zones[i]), live);

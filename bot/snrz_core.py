@@ -61,10 +61,12 @@ class Zone:
 
     @property
     def kind(self) -> str:
+        # book naming: a broken zone keeps its ORIGIN name
+        # broken Valid Resistance = I.VR (buy), broken Valid Support = I.VS (sell)
         if self.role == Role.SUPPORT:
-            return ("IVS" if self.was_valid else "RBS") if self.state == State.INVERTED \
+            return ("I.VR" if self.was_valid else "RBS") if self.state == State.INVERTED \
                 else ("V.S" if self.state == State.VALID else "S")
-        return ("IVR" if self.was_valid else "SBR") if self.state == State.INVERTED \
+        return ("I.VS" if self.was_valid else "SBR") if self.state == State.INVERTED \
             else ("V.R" if self.state == State.VALID else "R")
 
 
@@ -247,7 +249,7 @@ class SnrzEngine:
                         sl = z.bot - atr * 0.3
                         risk = c.close - sl
                         out.append(Signal(idx, "buy",
-                                          "PO2" if z.touches == 2 else "rejection",
+                                          "PO2" if (z.state == State.INVERTED and z.touches == 2) else "rejection",
                                           z.kind, c.close, sl, c.close + risk * cfg.rr_tp1))
             else:
                 if self._bull_break(z.top, c):
@@ -273,7 +275,7 @@ class SnrzEngine:
                         sl = z.top + atr * 0.3
                         risk = sl - c.close
                         out.append(Signal(idx, "sell",
-                                          "PO2" if z.touches == 2 else "rejection",
+                                          "PO2" if (z.state == State.INVERTED and z.touches == 2) else "rejection",
                                           z.kind, c.close, sl, c.close - risk * cfg.rr_tp1))
             z.in_zone_prev = in_zone
 

@@ -1,16 +1,16 @@
 //@version=6
-// build: v2.0  — strict SNRZ rules, clean chart (one signal per touch, valid/inversion zones only)
+// build: v2.1  — PO2 only on inversion-zone 2nd touch; book naming I.VS / I.VR
 // ═══════════════════════════════════════════════════════════════════════════
 //  SNRZ Strategy Indicator  —  "Zindan The Gold Chaser" Masterclass
 //
 //  Strict rules implemented (docs/SNRZ_STRATEGY.md):
 //   • A zone is tradable ONLY when it is:
 //       - VALID  (First Big Movement + Second Big Movement), or
-//       - INVERSION (broken zone → RBS / SBR / IVS / IVR, retest entry)
+//       - INVERSION (broken zone → RBS / SBR / I.VR / I.VS, retest entry)
 //     Fresh one-movement zones are shown faint and give NO signals.
-//   • Power of Second Touch: on a VALID zone the 2nd touch is THE signal;
-//     3rd touch is the last chance; after that the zone is dead (no trades).
-//   • Inversion zones: entry on 1st or 2nd pullback only.
+//   • Power of Second Touch (PO2): per the book, PO2 exists ONLY on
+//     inversion zones — the 2nd retest of a broken zone is the strongest
+//     entry. Valid-zone retests (touch 2-3) are regular V.S / V.R entries.
 //   • One signal per touch (never repeats while price sits inside a zone).
 //   • 75% breakout rule (body + directional shadow only) decides real breaks.
 //   • Confirmation candle required: SNRZ engulfing (body close beyond previous
@@ -86,12 +86,15 @@ var zones = array.new<Zone>()
 zoneColor(Zone z) =>
     z.state == 2 ? colInv : z.role == 1 ? (z.state == 1 ? colSupV : colSup) : (z.state == 1 ? colResV : colRes)
 
+// Book naming: a broken zone keeps its ORIGIN name —
+//   broken Valid Resistance = I.VR (buy) , broken Valid Support = I.VS (sell)
+//   broken fresh Resistance = RBS  (buy) , broken fresh Support = SBR  (sell)
 zoneText(Zone z) =>
     string base = na
     if z.role == 1
-        base := z.state == 2 ? (z.wasValid ? "IVS" : "RBS") : z.state == 1 ? "V.S" : "S"
+        base := z.state == 2 ? (z.wasValid ? "I.VR" : "RBS") : z.state == 1 ? "V.S" : "S"
     else
-        base := z.state == 2 ? (z.wasValid ? "IVR" : "SBR") : z.state == 1 ? "V.R" : "R"
+        base := z.state == 2 ? (z.wasValid ? "I.VS" : "SBR") : z.state == 1 ? "V.R" : "R"
     if z.dead
         base := base + " ✗"
     else if z.touches > 0
@@ -232,7 +235,10 @@ for z in zones
             fresh    = z.sigTouch != z.touches        // one signal per touch
             if tradable and okTrend and fresh and bullConfirm and close > z.bot
                 z.sigTouch := z.touches
-                if z.touches == 2
+                // PO2 = second touch of an INVERSION zone only (book: "PO2 is
+                // marked only on inversion zones; the 2nd touch is Power of
+                // Second Touch"). Valid-zone retests are regular V.S entries.
+                if z.state == 2 and z.touches == 2
                     po2Buy := true
                 else
                     buySig := true
@@ -258,7 +264,7 @@ for z in zones
             fresh    = z.sigTouch != z.touches
             if tradable and okTrend and fresh and bearConfirm and close < z.top
                 z.sigTouch := z.touches
-                if z.touches == 2
+                if z.state == 2 and z.touches == 2
                     po2Sell := true
                 else
                     sellSig := true
@@ -282,5 +288,5 @@ alertcondition(buySig or po2Buy,   "SNRZ Buy",        "SNRZ: BUY — rejection a
 alertcondition(sellSig or po2Sell, "SNRZ Sell",       "SNRZ: SELL — rejection at Valid/Inversion Resistance")
 alertcondition(po2Buy,             "SNRZ PO2 Buy",    "SNRZ: Power of Second Touch — BUY")
 alertcondition(po2Sell,            "SNRZ PO2 Sell",   "SNRZ: Power of Second Touch — SELL")
-alertcondition(zoneBreakUp,        "SNRZ Break Up",   "SNRZ: Resistance broken (75%) → RBS/IVS")
-alertcondition(zoneBreakDn,        "SNRZ Break Down", "SNRZ: Support broken (75%) → SBR/IVR")
+alertcondition(zoneBreakUp,        "SNRZ Break Up",   "SNRZ: Resistance broken (75%) → RBS/I.VR buy zone")
+alertcondition(zoneBreakDn,        "SNRZ Break Down", "SNRZ: Support broken (75%) → SBR/I.VS sell zone")
