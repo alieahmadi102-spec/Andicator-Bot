@@ -54,6 +54,8 @@ class Zone:
     state: State = State.FRESH
     touches: int = 0
     sig_touch: int = 0          # anti-spam latch: one signal per touch
+    opp_breaks: int = 0         # opposite zones broken since creation (SRR/RSS)
+    srr: bool = False           # qualified as SRR (support) / RSS (resistance)
     was_valid: bool = False
     dead: bool = False          # 3-touch rule exhausted -> no more trades
     born_index: int = 0
@@ -64,10 +66,12 @@ class Zone:
         # book naming: a broken zone keeps its ORIGIN name
         # broken Valid Resistance = I.VR (buy), broken Valid Support = I.VS (sell)
         if self.role == Role.SUPPORT:
-            return ("I.VR" if self.was_valid else "RBS") if self.state == State.INVERTED \
-                else ("V.S" if self.state == State.VALID else "S")
-        return ("I.VS" if self.was_valid else "SBR") if self.state == State.INVERTED \
-            else ("V.R" if self.state == State.VALID else "R")
+            if self.state == State.INVERTED:
+                return "I.VR" if self.was_valid else "RBS"
+            return "SRR" if self.srr else ("V.S" if self.state == State.VALID else "S")
+        if self.state == State.INVERTED:
+            return "I.VS" if self.was_valid else "SBR"
+        return "RSS" if self.srr else ("V.R" if self.state == State.VALID else "R")
 
 
 @dataclass
@@ -219,6 +223,7 @@ class SnrzEngine:
         self._detect_pivots(idx, atr)
         bull_conf, bear_conf = self._confirm(c, self.candles[idx - 1])
         cfg = self.cfg
+        broke_support = broke_resistance = False
 
         for z in self.zones:
             if idx <= z.born_index:
@@ -230,7 +235,9 @@ class SnrzEngine:
                     z.was_valid = z.state == State.VALID
                     z.role, z.state = Role.RESISTANCE, State.INVERTED
                     z.touches = z.sig_touch = 0
+                    z.srr = False
                     z.dead = False
+                    broke_support = True
                 elif in_zone and c.close >= z.bot and not z.dead:
                     if not z.in_zone_prev:
                         z.touches += 1
@@ -241,6 +248,7 @@ class SnrzEngine:
                             z.dead = True                  # 3-touch rule
                     tradable = (not z.dead) and (
                         (z.state == State.VALID and z.touches >= 2) or
+                        (z.srr and z.touches >= 1) or
                         (z.state == State.INVERTED and 1 <= z.touches <= 2))
                     ok_trend = (not cfg.trend_filter) or self.trend_up or z.state == State.INVERTED
                     ok_conf = (not cfg.need_confirm) or bull_conf
@@ -256,7 +264,9 @@ class SnrzEngine:
                     z.was_valid = z.state == State.VALID
                     z.role, z.state = Role.SUPPORT, State.INVERTED
                     z.touches = z.sig_touch = 0
+                    z.srr = False
                     z.dead = False
+                    broke_resistance = True
                 elif in_zone and c.close <= z.top and not z.dead:
                     if not z.in_zone_prev:
                         z.touches += 1
@@ -267,6 +277,7 @@ class SnrzEngine:
                             z.dead = True
                     tradable = (not z.dead) and (
                         (z.state == State.VALID and z.touches >= 2) or
+                        (z.srr and z.touches >= 1) or
                         (z.state == State.INVERTED and 1 <= z.touches <= 2))
                     ok_trend = (not cfg.trend_filter) or self.trend_down or z.state == State.INVERTED
                     ok_conf = (not cfg.need_confirm) or bear_conf
@@ -278,6 +289,22 @@ class SnrzEngine:
                                           "PO2" if (z.state == State.INVERTED and z.touches == 2) else "rejection",
                                           z.kind, c.close, sl, c.close - risk * cfg.rr_tp1))
             z.in_zone_prev = in_zone
+
+        # SRR / RSS qualification (book): a Support whose move broke >=2
+        # Resistances becomes SRR (buy); a Resistance whose move broke >=2
+        # Supports becomes RSS (sell).
+        if broke_resistance or broke_support:
+            for z in self.zones:
+                if z.state == State.INVERTED or z.dead:
+                    continue
+                if broke_resistance and z.role == Role.SUPPORT and z.touches == 0 and c.close > z.top:
+                    z.opp_breaks += 1
+                    if z.opp_breaks >= 2:
+                        z.srr = True
+                if broke_support and z.role == Role.RESISTANCE and z.touches == 0 and c.close < z.bot:
+                    z.opp_breaks += 1
+                    if z.opp_breaks >= 2:
+                        z.srr = True
 
         self.signals.extend(out)
         return out

@@ -74,6 +74,8 @@ struct SZone
    int    role;      // 1 = Support, -1 = Resistance
    int    state;     // 0 fresh, 1 VALID, 2 inverted
    int    touches;
+   int    oppBreaks; // opposite zones broken since creation (SRR/RSS)
+   bool   srr;       // qualified as SRR (support) / RSS (resistance)
    bool   wasValid;
    bool   dead;      // 3-touch rule exhausted -> no more trades
    int    sigTouch;  // anti-spam latch: one signal per touch
@@ -135,9 +137,9 @@ string ZoneText(const SZone &z)
   {
    string base;
    if(z.role == 1)
-      base = (z.state == 2 ? (z.wasValid ? "I.VR" : "RBS") : (z.state == 1 ? "V.S" : "S"));
+      base = (z.state == 2 ? (z.wasValid ? "I.VR" : "RBS") : (z.srr ? "SRR" : (z.state == 1 ? "V.S" : "S")));
    else
-      base = (z.state == 2 ? (z.wasValid ? "I.VS" : "SBR") : (z.state == 1 ? "V.R" : "R"));
+      base = (z.state == 2 ? (z.wasValid ? "I.VS" : "SBR") : (z.srr ? "RSS" : (z.state == 1 ? "V.R" : "R")));
    if(z.dead)
       base += " x";
    else if(z.touches > 0)
@@ -219,6 +221,8 @@ void AddZone(double top, double bot, const int role, const int bornBar, const do
    g_zones[n].role       = role;
    g_zones[n].state      = 0;
    g_zones[n].touches    = 0;
+   g_zones[n].oppBreaks  = 0;
+   g_zones[n].srr        = false;
    g_zones[n].wasValid   = false;
    g_zones[n].dead       = false;
    g_zones[n].sigTouch   = 0;
@@ -379,6 +383,8 @@ int OnCalculate(const int rates_total,
       bool bearPin = rng > 0 && (h - MathMax(o, c)) >= 0.6 * rng && c <= o;
       bool bullConfirm = bullEngulf || bullPin;
       bool bearConfirm = bearEngulf || bearPin;
+      bool brokeSupportNow    = false;
+      bool brokeResistanceNow = false;
 
       //--- zone engine -----------------------------------------------------
       for(int i = 0; i < ArraySize(g_zones); i++)
@@ -396,7 +402,9 @@ int OnCalculate(const int rates_total,
                g_zones[i].state = 2;
                g_zones[i].touches  = 0;
                g_zones[i].sigTouch = 0;
+               g_zones[i].srr      = false;
                g_zones[i].dead     = false;
+               brokeSupportNow     = true;
                Notify((g_zones[i].wasValid ? "I.VS" : "SBR") + " — Support broken (75% rule), zone inverted to SELL", live);
               }
             else if(inZone && c >= g_zones[i].bot && !g_zones[i].dead)
@@ -413,6 +421,7 @@ int OnCalculate(const int rates_total,
                // tradable only: VALID (touch>=2) or INVERSION (touch 1-2)
                bool tradable = !g_zones[i].dead &&
                                ((g_zones[i].state == 1 && g_zones[i].touches >= 2) ||
+                                (g_zones[i].srr && g_zones[i].touches >= 1) ||
                                 (g_zones[i].state == 2 && g_zones[i].touches >= 1 && g_zones[i].touches <= 2));
                bool okTrend = !InpTrendFilter || trendUp || g_zones[i].state == 2;
                bool okConf  = !InpNeedConfirm || bullConfirm;
@@ -442,7 +451,9 @@ int OnCalculate(const int rates_total,
                g_zones[i].state = 2;
                g_zones[i].touches  = 0;
                g_zones[i].sigTouch = 0;
+               g_zones[i].srr      = false;
                g_zones[i].dead     = false;
+               brokeResistanceNow  = true;
                Notify((g_zones[i].wasValid ? "I.VR" : "RBS") + " — Resistance broken (75% rule), zone inverted to BUY", live);
               }
             else if(inZone && c <= g_zones[i].top && !g_zones[i].dead)
@@ -458,6 +469,7 @@ int OnCalculate(const int rates_total,
                  }
                bool tradable = !g_zones[i].dead &&
                                ((g_zones[i].state == 1 && g_zones[i].touches >= 2) ||
+                                (g_zones[i].srr && g_zones[i].touches >= 1) ||
                                 (g_zones[i].state == 2 && g_zones[i].touches >= 1 && g_zones[i].touches <= 2));
                bool okTrend = !InpTrendFilter || trendDown || g_zones[i].state == 2;
                bool okConf  = !InpNeedConfirm || bearConfirm;
@@ -480,6 +492,29 @@ int OnCalculate(const int rates_total,
            }
          g_zones[i].inZonePrev = inZone;
          DrawZone(g_zones[i], time[g_zones[i].bornBar >= InpPivotLen ? g_zones[i].bornBar - InpPivotLen : 0], time[bar]);
+        }
+
+      //--- SRR / RSS qualification (book): Support that broke >=2 Resistances
+      //    becomes SRR (buy); Resistance that broke >=2 Supports becomes RSS.
+      if(brokeSupportNow || brokeResistanceNow)
+        {
+         for(int i = 0; i < ArraySize(g_zones); i++)
+           {
+            if(g_zones[i].state == 2 || g_zones[i].dead)
+               continue;
+            if(brokeResistanceNow && g_zones[i].role == 1 && g_zones[i].touches == 0 && c > g_zones[i].top)
+              {
+               g_zones[i].oppBreaks++;
+               if(g_zones[i].oppBreaks >= 2)
+                  g_zones[i].srr = true;
+              }
+            if(brokeSupportNow && g_zones[i].role == -1 && g_zones[i].touches == 0 && c < g_zones[i].bot)
+              {
+               g_zones[i].oppBreaks++;
+               if(g_zones[i].oppBreaks >= 2)
+                  g_zones[i].srr = true;
+              }
+           }
         }
      }
    ChartRedraw();
