@@ -1,0 +1,7 @@
+# core: none (snrz_core.py is pure python)
+# live trading:
+ccxt>=4.0          # crypto exchanges
+MetaTrader5>=5.0 ; platform_system == "Windows"   # MT5 bridge (Windows only)
+# nice to have:
+pandas>=2.0
+python-telegram-bot>=21.0

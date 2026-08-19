@@ -1,0 +1,273 @@
+//@version=6
+// ═══════════════════════════════════════════════════════════════════════════
+//  SNRZ Strategy Indicator  —  based on "Zindan The Gold Chaser" Masterclass
+//  Components implemented from the SNRZ book / masterclass notes:
+//   • Valid Support / Valid Resistance  (First Movement + Second Movement rule)
+//   • 75% Breakout rule (body + directional shadow only)
+//   • Inversion (RBS / SBR  →  IVS / IVR when a Valid zone breaks)
+//   • Power of Second Touch (PO2) — strongest entry signal
+//   • SNRZ-style Engulfing confirmation (confirmation candle shorter than
+//     the candle it reverses) + Pin-bar / Rejection confirmation
+//   • Liquidity Sweep (shadow out, close back)  vs  Run (body closes out)
+//   • Trend filter from market structure (HH/HL vs LH/LL)
+//   • Alerts for every event so the bot / phone can be notified
+//  Best market per the course: XAUUSD (Gold). Works on all symbols/timeframes.
+// ═══════════════════════════════════════════════════════════════════════════
+indicator("SNRZ Strategy [Zindan]", "SNRZ", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500)
+
+// ───────────────────────────── Inputs ──────────────────────────────────────
+grpZ  = "Zones (SNRZ)"
+pivotLen      = input.int(8,    "Pivot length (swing sensitivity)",        minval = 2,  group = grpZ)
+maxZones      = input.int(10,   "Max active zones",                        minval = 2,  maxval = 40, group = grpZ)
+bigMoveMult   = input.float(1.5,"Big Movement ≥ ATR ×",                    minval = 0.1, step = 0.1, group = grpZ, tooltip = "یاسای SNRZ: هر Movement باید «گەورە/Big» باشد. حداقل اندازه‌ی حرکت = ATR × این ضریب")
+breakoutPct   = input.float(75, "Breakout rule (%)",                       minval = 50, maxval = 100, group = grpZ, tooltip = "قانون ٪۷۵ کتاب: بدنه + سایه‌ی هم‌جهت باید این درصد بیرون زون بسته شود تا شکست تأیید شود")
+minZoneATR    = input.float(0.15,"Min zone height (ATR ×)",                minval = 0.05, step = 0.05, group = grpZ)
+maxZoneATR    = input.float(1.6, "Max zone height (ATR ×)",                minval = 0.2,  step = 0.1,  group = grpZ)
+
+grpS  = "Signals"
+useTrendFilter = input.bool(true,  "Trade only with structure trend (Trend is King)", group = grpS)
+needConfirm    = input.bool(true,  "Require confirmation candle (Engulfing / Pin bar)", group = grpS)
+maxTouches     = input.int(3,      "Max touches per zone (3-touch rule)",  minval = 1, maxval = 5, group = grpS)
+showSweeps     = input.bool(true,  "Show liquidity Sweep / Run markers",   group = grpS)
+showBrokenZones= input.bool(true,  "Keep inverted zones on chart",         group = grpS)
+
+grpV  = "Style"
+colSup   = input.color(color.new(#089981, 78), "Support zone",        group = grpV)
+colRes   = input.color(color.new(#f23645, 78), "Resistance zone",     group = grpV)
+colSupV  = input.color(color.new(#089981, 55), "VALID Support zone",  group = grpV)
+colResV  = input.color(color.new(#f23645, 55), "VALID Resistance",    group = grpV)
+colInv   = input.color(color.new(#ff9800, 60), "Inversion zone",      group = grpV)
+showLbl  = input.bool(true, "Zone labels (V.S / V.R / RBS / SBR / PO2)", group = grpV)
+
+// ─────────────────────────── Core series ───────────────────────────────────
+atr = ta.atr(14)
+bigMove = atr * bigMoveMult
+
+// Swing pivots
+ph = ta.pivothigh(high, pivotLen, pivotLen)
+pl = ta.pivotlow(low,  pivotLen, pivotLen)
+
+// Market structure trend: compare last two confirmed swing highs/lows
+var float lastHigh  = na, var float prevHigh = na
+var float lastLow   = na, var float prevLow  = na
+if not na(ph)
+    prevHigh := lastHigh
+    lastHigh := ph
+if not na(pl)
+    prevLow := lastLow
+    lastLow := pl
+trendUp   = not na(lastHigh) and not na(prevHigh) and not na(lastLow) and not na(prevLow) and lastHigh > prevHigh and lastLow > prevLow
+trendDown = not na(lastHigh) and not na(prevHigh) and not na(lastLow) and not na(prevLow) and lastHigh < prevHigh and lastLow < prevLow
+
+// ─────────────────────────── Zone object ───────────────────────────────────
+// role:  1 = Support (buy) , -1 = Resistance (sell)
+// state: 0 = fresh (one movement) , 1 = VALID (two movements) , 2 = inverted
+type Zone
+    float top
+    float bot
+    int   role
+    int   state
+    int   touches
+    bool  wasValid      // was valid before inversion → IVS/IVR instead of RBS/SBR
+    int   bornBar
+    box   bx
+    label lb
+
+var zones = array.new<Zone>()
+
+zoneColor(Zone z) =>
+    z.state == 2 ? colInv : z.role == 1 ? (z.state == 1 ? colSupV : colSup) : (z.state == 1 ? colResV : colRes)
+
+zoneText(Zone z) =>
+    base = z.role == 1 ? (z.state == 2 ? (z.wasValid ? "IVS" : "RBS") : z.state == 1 ? "V.S" : "S") :
+                         (z.state == 2 ? (z.wasValid ? "IVR" : "SBR") : z.state == 1 ? "V.R" : "R")
+    base + (z.touches > 0 ? " • T" + str.tostring(z.touches) : "")
+
+refreshZone(Zone z) =>
+    c = zoneColor(z)
+    box.set_rightbottom(z.bx, bar_index + 8, z.bot)
+    box.set_bgcolor(z.bx, c)
+    box.set_border_color(z.bx, color.new(c, 20))
+    if showLbl
+        label.set_xy(z.lb, bar_index + 8, (z.top + z.bot) / 2)
+        label.set_text(z.lb, zoneText(z))
+        label.set_textcolor(z.lb, color.new(zoneColor(z), 0))
+
+newZone(float _top, float _bot, int _role) =>
+    // clamp zone height per SNRZ (zones drawn from the shorter candle, never huge)
+    h  = _top - _bot
+    mn = atr * minZoneATR
+    mx = atr * maxZoneATR
+    t  = _top
+    b  = _bot
+    if h < mn
+        mid = (t + b) / 2
+        t := mid + mn / 2
+        b := mid - mn / 2
+    if h > mx
+        if _role == 1
+            t := b + mx
+        else
+            b := t - mx
+    bx = box.new(bar_index - pivotLen, t, bar_index + 8, b, border_color = color.new(color.gray, 40), bgcolor = colSup, extend = extend.none)
+    lb = showLbl ? label.new(bar_index + 8, (t + b) / 2, "", style = label.style_label_left, textcolor = color.white, color = color.new(color.black, 100), size = size.small) : label(na)
+    Zone.new(t, b, _role, 0, 0, false, bar_index, bx, lb)
+
+// Avoid duplicate zones stacked on the same price
+overlaps(float _top, float _bot) =>
+    res = false
+    for z in zones
+        if not (_bot > z.top or _top < z.bot)
+            res := true
+            break
+    res
+
+// ─────────────────── Create zones from confirmed pivots ────────────────────
+// Support zone = pivot-low candle: wick zone (low → body-low)
+if not na(pl)
+    pTop = math.min(open[pivotLen], close[pivotLen])
+    pBot = low[pivotLen]
+    // First Movement must already be "big": distance travelled since the pivot
+    if (high - pBot) >= bigMove * 0.5 and not overlaps(pTop, pBot)
+        array.push(zones, newZone(pTop, pBot, 1))
+
+// Resistance zone = pivot-high candle: wick zone (body-high → high)
+if not na(ph)
+    pTop = high[pivotLen]
+    pBot = math.max(open[pivotLen], close[pivotLen])
+    if (pTop - low) >= bigMove * 0.5 and not overlaps(pTop, pBot)
+        array.push(zones, newZone(pTop, pBot, -1))
+
+// Keep only the newest maxZones
+if array.size(zones) > maxZones
+    old = array.shift(zones)
+    box.delete(old.bx)
+    label.delete(old.lb)
+
+// ───────────────── Confirmation candles (SNRZ style) ───────────────────────
+// SNRZ Engulfing: reversal candle whose BODY closes beyond previous body,
+// and (SNRZ twist) the reversal candle is allowed to be SHORTER than the
+// candle it reverses — strength comes from the zone, not candle size.
+bullBody = close > open
+bearBody = close < open
+bullEngulf = bullBody and close[1] < open[1] and close >= open[1]
+bearEngulf = bearBody and close[1] > open[1] and close <= open[1]
+// Pin bar / rejection
+range_ = high - low
+bullPin = range_ > 0 and (math.min(open, close) - low) >= 0.6 * range_ and close >= open
+bearPin = range_ > 0 and (high - math.max(open, close)) >= 0.6 * range_ and close <= open
+bullConfirm = bullEngulf or bullPin
+bearConfirm = bearEngulf or bearPin
+
+// ───────────── 75% breakout rule (body + directional shadow) ───────────────
+// Bullish break of level L : measure open→high, ignore lower shadow.
+bullBreak75(float lvl) =>
+    len = high - math.min(open, close)
+    len > 0 and close > lvl and (high - math.max(lvl, math.min(open, close))) / len * 100 >= breakoutPct and math.min(open,close) >= lvl - atr * 0.05 or (close > lvl and open > lvl)
+// Bearish break of level L : measure open→low, ignore upper shadow.
+bearBreak75(float lvl) =>
+    len = math.max(open, close) - low
+    len > 0 and close < lvl and (math.min(lvl, math.max(open, close)) - low) / len * 100 >= breakoutPct and math.max(open,close) <= lvl + atr * 0.05 or (close < lvl and open < lvl)
+
+// ─────────────────────── Zone engine (touch / validate / break) ────────────
+var bool buySig      = false
+var bool sellSig     = false
+var bool po2Buy      = false
+var bool po2Sell     = false
+var bool zoneBreakUp = false
+var bool zoneBreakDn = false
+buySig      := false
+sellSig     := false
+po2Buy      := false
+po2Sell     := false
+zoneBreakUp := false
+zoneBreakDn := false
+
+for z in zones
+    if bar_index <= z.bornBar
+        continue
+    inZone = low <= z.top and high >= z.bot
+
+    if z.role == 1
+        // ── SUPPORT ──
+        if bearBreak75(z.bot)
+            // Liquidity RUN downward → inversion: Support becomes Resistance
+            z.wasValid := z.state == 1
+            z.role  := -1
+            z.state := 2
+            z.touches := 0
+            zoneBreakDn := true
+            if showLbl
+                label.new(bar_index, z.bot, z.wasValid ? "IVR ▼" : "SBR ▼", style = label.style_label_up, color = color.new(colInv, 40), textcolor = color.white, size = size.small)
+        else if inZone and close >= z.bot
+            // touch & possible rejection
+            justEntered = not (low[1] <= z.top and high[1] >= z.bot)
+            if justEntered
+                z.touches := z.touches + 1
+                // Second movement completed on a prior touch → zone VALID
+                if z.state == 0 and z.touches >= 2
+                    z.state := 1
+            okTrend  = not useTrendFilter or trendUp or z.state == 2
+            okConf   = not needConfirm or bullConfirm
+            okTouch  = z.touches <= maxTouches
+            if okTrend and okConf and okTouch and close > z.bot
+                if z.touches == 2
+                    po2Buy := true
+                else
+                    buySig := true
+    else
+        // ── RESISTANCE ──
+        if bullBreak75(z.top)
+            z.wasValid := z.state == 1
+            z.role  := 1
+            z.state := 2
+            z.touches := 0
+            zoneBreakUp := true
+            if showLbl
+                label.new(bar_index, z.top, z.wasValid ? "IVS ▲" : "RBS ▲", style = label.style_label_down, color = color.new(colInv, 40), textcolor = color.white, size = size.small)
+        else if inZone and close <= z.top
+            justEntered = not (low[1] <= z.top and high[1] >= z.bot)
+            if justEntered
+                z.touches := z.touches + 1
+                if z.state == 0 and z.touches >= 2
+                    z.state := 1
+            okTrend = not useTrendFilter or trendDown or z.state == 2
+            okConf  = not needConfirm or bearConfirm
+            okTouch = z.touches <= maxTouches
+            if okTrend and okConf and okTouch and close < z.top
+                if z.touches == 2
+                    po2Sell := true
+                else
+                    sellSig := true
+    refreshZone(z)
+
+// ───────────────────── Liquidity Sweep / Run markers ───────────────────────
+// Sweep: wick goes beyond the last swing level but body closes back → reversal clue
+sweepHigh = showSweeps and not na(lastHigh) and high > lastHigh and close < lastHigh and math.max(open, close) < lastHigh
+sweepLow  = showSweeps and not na(lastLow)  and low  < lastLow  and close > lastLow  and math.min(open, close) > lastLow
+runHigh   = showSweeps and not na(lastHigh) and math.min(open, close) > lastHigh and close > lastHigh
+runLow    = showSweeps and not na(lastLow)  and math.max(open, close) < lastLow  and close < lastLow
+
+plotshape(sweepHigh, "Liquidity Sweep ▲", shape.xcross,   location.abovebar, color.new(#f23645, 0), size = size.tiny, text = "Sweep")
+plotshape(sweepLow,  "Liquidity Sweep ▼", shape.xcross,   location.belowbar, color.new(#089981, 0), size = size.tiny, text = "Sweep")
+plotshape(runHigh,   "Liquidity Run ▲",   shape.diamond,  location.abovebar, color.new(#089981, 0), size = size.tiny, text = "Run")
+plotshape(runLow,    "Liquidity Run ▼",   shape.diamond,  location.belowbar, color.new(#f23645, 0), size = size.tiny, text = "Run")
+
+// ───────────────────────────── Signals ─────────────────────────────────────
+plotshape(buySig,  "BUY (zone rejection)",  shape.triangleup,   location.belowbar, color.new(#089981, 0), size = size.small, text = "BUY")
+plotshape(sellSig, "SELL (zone rejection)", shape.triangledown, location.abovebar, color.new(#f23645, 0), size = size.small, text = "SELL")
+plotshape(po2Buy,  "PO2 BUY (2nd touch)",   shape.labelup,      location.belowbar, color.new(#089981, 0), size = size.normal, text = "PO2\nBUY",  textcolor = color.white)
+plotshape(po2Sell, "PO2 SELL (2nd touch)",  shape.labeldown,    location.abovebar, color.new(#f23645, 0), size = size.normal, text = "PO2\nSELL", textcolor = color.white)
+
+// Trend background hint
+bgcolor(useTrendFilter ? (trendUp ? color.new(#089981, 96) : trendDown ? color.new(#f23645, 96) : na) : na)
+
+// ───────────────────────────── Alerts ──────────────────────────────────────
+alertcondition(buySig or po2Buy,   "SNRZ Buy",        "SNRZ: BUY signal — rejection at Support/Inversion zone")
+alertcondition(sellSig or po2Sell, "SNRZ Sell",       "SNRZ: SELL signal — rejection at Resistance/Inversion zone")
+alertcondition(po2Buy,             "SNRZ PO2 Buy",    "SNRZ: Power of Second Touch — BUY")
+alertcondition(po2Sell,            "SNRZ PO2 Sell",   "SNRZ: Power of Second Touch — SELL")
+alertcondition(zoneBreakUp,        "SNRZ Break Up",   "SNRZ: Resistance broken (75% rule) → RBS/IVS zone created")
+alertcondition(zoneBreakDn,        "SNRZ Break Down", "SNRZ: Support broken (75% rule) → SBR/IVR zone created")
+alertcondition(sweepHigh,          "Liquidity Sweep High", "SNRZ: Liquidity sweep above swing high (reversal clue)")
+alertcondition(sweepLow,           "Liquidity Sweep Low",  "SNRZ: Liquidity sweep below swing low (reversal clue)")
