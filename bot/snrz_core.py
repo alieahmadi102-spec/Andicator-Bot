@@ -107,9 +107,10 @@ class SnrzEngine:
         self.zones: List[Zone] = []
         self.signals: List[Signal] = []
         self._tr: List[float] = []
-        # structure trend
+        # structure trend (BOS-based, see trend_up/trend_down)
         self.last_high = self.prev_high = None
         self.last_low = self.prev_low = None
+        self.trend_state = 0        # 1 up · -1 down · 0 undecided
 
     # ── indicators ─────────────────────────────────────────────────────────
     def _atr(self) -> Optional[float]:
@@ -200,15 +201,27 @@ class SnrzEngine:
             if (cur.high - bot) >= big and not self._overlaps(top, bot):
                 self._add_zone(top, bot, Role.SUPPORT, atr, idx)
 
+    def _update_trend(self, c: Candle):
+        # The book calls a close beyond the last confirmed swing a Break of
+        # Structure, and that is what turns the trend. Comparing only the last
+        # two pivots lags far behind an impulsive move.
+        if self.last_high is not None and c.close > self.last_high:
+            self.trend_state = 1
+        elif self.last_low is not None and c.close < self.last_low:
+            self.trend_state = -1
+        elif None not in (self.prev_high, self.prev_low):
+            if self.last_high > self.prev_high and self.last_low > self.prev_low:
+                self.trend_state = 1
+            elif self.last_high < self.prev_high and self.last_low < self.prev_low:
+                self.trend_state = -1
+
     @property
     def trend_up(self) -> bool:
-        v = (self.last_high, self.prev_high, self.last_low, self.prev_low)
-        return all(x is not None for x in v) and self.last_high > self.prev_high and self.last_low > self.prev_low
+        return self.trend_state == 1
 
     @property
     def trend_down(self) -> bool:
-        v = (self.last_high, self.prev_high, self.last_low, self.prev_low)
-        return all(x is not None for x in v) and self.last_high < self.prev_high and self.last_low < self.prev_low
+        return self.trend_state == -1
 
     # ── main entry: feed one CLOSED candle ─────────────────────────────────
     def on_candle(self, c: Candle) -> List[Signal]:
@@ -221,6 +234,7 @@ class SnrzEngine:
             return out
 
         self._detect_pivots(idx, atr)
+        self._update_trend(c)
         bull_conf, bear_conf = self._confirm(c, self.candles[idx - 1])
         cfg = self.cfg
         broke_support = broke_resistance = False

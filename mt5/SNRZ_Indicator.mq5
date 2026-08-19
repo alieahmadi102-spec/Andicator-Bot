@@ -314,6 +314,7 @@ int OnCalculate(const int rates_total,
 
    // structure trend state persists across calls
    static double lastHigh = 0, prevHigh = 0, lastLow = 0, prevLow = 0;
+   static int    trendState = 0;   // 1 up · -1 down · 0 undecided (BOS based)
    static int    lastProcessed = -1;
 
    for(int bar = start; bar < rates_total - 1; bar++)   // closed bars only
@@ -370,8 +371,19 @@ int OnCalculate(const int rates_total,
            }
         }
 
-      bool trendUp   = (lastHigh > prevHigh && lastLow > prevLow && prevHigh > 0 && prevLow > 0);
-      bool trendDown = (lastHigh < prevHigh && lastLow < prevLow && prevHigh > 0 && prevLow > 0);
+      // Book: a close beyond the last confirmed swing is a Break of Structure
+      // and that is what turns the trend; comparing two pivots lags too far.
+      if(lastHigh > 0 && c > lastHigh)
+         trendState = 1;
+      else if(lastLow > 0 && c < lastLow)
+         trendState = -1;
+      else if(prevHigh > 0 && prevLow > 0)
+        {
+         if(lastHigh > prevHigh && lastLow > prevLow) trendState = 1;
+         else if(lastHigh < prevHigh && lastLow < prevLow) trendState = -1;
+        }
+      bool trendUp   = (trendState == 1);
+      bool trendDown = (trendState == -1);
 
       //--- confirmation candles (SNRZ style) ------------------------------
       double o = open[bar], h = high[bar], l = low[bar], c = close[bar];
