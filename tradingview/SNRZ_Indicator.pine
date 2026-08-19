@@ -1,5 +1,5 @@
 //@version=6
-// build: v3.0 — full book compliance: SRR/RSS zones, HTF zone timeframe (book workflow),
+// build: v3.1 — flattened trend block (paste-resilient); SRR/RSS zones, HTF zone timeframe,
 //               PO2 only on inversion 2nd touch, book naming (I.VS / I.VR / SBR / RBS / SRR / RSS)
 // ═══════════════════════════════════════════════════════════════════════════
 //  SNRZ Strategy Indicator — "Zindan The Gold Chaser" Masterclass (2026 book)
@@ -69,12 +69,10 @@ var float lastHigh = na
 var float prevHigh = na
 var float lastLow  = na
 var float prevLow  = na
-if not na(phSrc)
-    prevHigh := lastHigh
-    lastHigh := phSrc
-if not na(plSrc)
-    prevLow := lastLow
-    lastLow := plSrc
+prevHigh := not na(phSrc) ? lastHigh : prevHigh
+lastHigh := not na(phSrc) ? phSrc : lastHigh
+prevLow := not na(plSrc) ? lastLow : prevLow
+lastLow := not na(plSrc) ? plSrc : lastLow
 trendUp   = not na(prevHigh) and not na(prevLow) and lastHigh > prevHigh and lastLow > prevLow
 trendDown = not na(prevHigh) and not na(prevLow) and lastHigh < prevHigh and lastLow < prevLow
 
