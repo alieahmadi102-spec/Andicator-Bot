@@ -1,7 +1,8 @@
 //@version=6
-// build: v4.2 — ONE clean active position per new signal:
-//               Entry / SL / TP1 / TP2 / TP3  +  SCALP or SWING tag.
-//               No stacked boxes. Old signals = small arrows only.
+// build: v4.3 — FIX: targets are now always ordered nearest→farthest, and the
+//               trend filter is no longer bypassed by inversion zones
+//               (no more SELL while the panel says UPTREND).
+//               Position shows live status: running / TP1-3 hit / stopped.
 // ═══════════════════════════════════════════════════════════════════════════
 //  SNRZ Strategy Indicator — "Zindan The Gold Chaser" Masterclass (2026 book)
 //
@@ -27,6 +28,7 @@ zoneMaxAge    = input.int(400,  "Zone lifetime (chart bars)",              minva
 
 grpS  = "Signals"
 useTrendFilter = input.bool(true,  "Trade only with structure trend (Trend is King)", group = grpS)
+allowCounterInv = input.bool(false, "Allow counter-trend entries on inversion zones", group = grpS, tooltip = "کتاب: «ترند پادشاه است». پیش‌فرض خاموش تا در روند صعودی سیگنال فروش ندهد.")
 maxTouches     = input.int(3,      "Max touches on VALID zone (3-touch rule)", minval = 2, maxval = 4, group = grpS)
 swingAtrMult   = input.float(3.0,  "SWING when TP1 distance ≥ ATR ×",      minval = 1, step = 0.5, group = grpS)
 showPosition   = input.bool(true,  "Show active position (Entry/SL/TP1-3)", group = grpS)
@@ -242,7 +244,7 @@ for z in zones
                 if (z.state != 2 and z.touches > maxTouches) or (z.state == 2 and z.touches > 2)
                     z.dead := true
             tradable = not z.dead and ((z.state == 1 and z.touches >= 2) or (z.srr and z.touches >= 1) or (z.state == 2 and z.touches >= 1 and z.touches <= 2))
-            okTrend  = not useTrendFilter or trendUp or z.state == 2
+            okTrend  = not useTrendFilter or trendUp or (allowCounterInv and z.state == 2)
             freshSig = z.sigTouch != z.touches
             if tradable and okTrend and freshSig and bullConfirm and close > z.bot
                 z.sigTouch := z.touches
@@ -273,7 +275,7 @@ for z in zones
                 if (z.state != 2 and z.touches > maxTouches) or (z.state == 2 and z.touches > 2)
                     z.dead := true
             tradable = not z.dead and ((z.state == 1 and z.touches >= 2) or (z.srr and z.touches >= 1) or (z.state == 2 and z.touches >= 1 and z.touches <= 2))
-            okTrend  = not useTrendFilter or trendDown or z.state == 2
+            okTrend  = not useTrendFilter or trendDown or (allowCounterInv and z.state == 2)
             freshSig = z.sigTouch != z.touches
             if tradable and okTrend and freshSig and bearConfirm and close < z.top
                 z.sigTouch := z.touches
@@ -314,27 +316,36 @@ var float  posTP3   = na
 var bool   posSwing = false
 var int    posBar   = 0
 var string posZone  = ""
+var int    posStat  = 0     // 0 running · 1/2/3 TP hit · -1 stopped out
 
 if sigFired
     entry = close
     risk  = math.abs(entry - sigSl)
     // targets = opposite zones ahead of price (book), else 1R / 2R / 3R
-    cands = array.new<float>()
+    // collect the DISTANCE of every opposite zone lying ahead of price, so the
+    // three targets always come out ordered nearest → farthest whether they
+    // come from zones or from the 1R/2R/3R fallback.
+    dists = array.new<float>()
     for z in zones
         if z.dead
             continue
         lvl = sigIsBuy ? z.bot : z.top
-        if sigIsBuy and z.role == -1 and lvl > entry
-            array.push(cands, lvl)
-        if not sigIsBuy and z.role == 1 and lvl < entry
-            array.push(cands, lvl)
-    if array.size(cands) > 1
-        array.sort(cands, order.ascending)
-    n = array.size(cands)
-    // buy: nearest target is the lowest above entry; sell: the highest below entry
-    t1 = n >= 1 ? (sigIsBuy ? array.get(cands, 0) : array.get(cands, n - 1)) : (sigIsBuy ? entry + risk : entry - risk)
-    t2 = n >= 2 ? (sigIsBuy ? array.get(cands, 1) : array.get(cands, n - 2)) : (sigIsBuy ? entry + risk * 2 : entry - risk * 2)
-    t3 = n >= 3 ? (sigIsBuy ? array.get(cands, 2) : array.get(cands, n - 3)) : (sigIsBuy ? entry + risk * 3 : entry - risk * 3)
+        ahead = sigIsBuy ? (z.role == -1 and lvl > entry) : (z.role == 1 and lvl < entry)
+        if ahead
+            array.push(dists, math.abs(lvl - entry))
+    if array.size(dists) > 1
+        array.sort(dists, order.ascending)
+    n = array.size(dists)
+    float d1 = n >= 1 ? array.get(dists, 0) : risk
+    float d2 = n >= 2 ? array.get(dists, 1) : d1 + risk
+    float d3 = n >= 3 ? array.get(dists, 2) : d2 + risk
+    // book: RR at least 1:1, and each target must sit beyond the previous one
+    d1 := math.max(d1, risk)
+    d2 := math.max(d2, d1 + risk * 0.5)
+    d3 := math.max(d3, d2 + risk * 0.5)
+    t1 = sigIsBuy ? entry + d1 : entry - d1
+    t2 = sigIsBuy ? entry + d2 : entry - d2
+    t3 = sigIsBuy ? entry + d3 : entry - d3
     posOn    := true
     posBuy   := sigIsBuy
     posPO2   := sigIsPO2
@@ -346,6 +357,28 @@ if sigFired
     posSwing := math.abs(t1 - entry) >= atr * swingAtrMult
     posBar   := bar_index
     posZone  := sigZone
+    posStat  := 0
+
+// track how the open position actually resolved (helps judge signal quality)
+else if posOn and posStat >= 0
+    if posBuy
+        if low <= posSL
+            posStat := -1
+        else if high >= posTP3
+            posStat := 3
+        else if high >= posTP2 and posStat < 2
+            posStat := 2
+        else if high >= posTP1 and posStat < 1
+            posStat := 1
+    else
+        if high >= posSL
+            posStat := -1
+        else if low <= posTP3
+            posStat := 3
+        else if low <= posTP2 and posStat < 2
+            posStat := 2
+        else if low <= posTP1 and posStat < 1
+            posStat := 1
 
 // ───────────── Draw the single active position (clean) ─────────────────────
 var line[]  pl = array.new<line>()
@@ -373,7 +406,8 @@ if showPosition and posOn and barstate.islast
     array.push(pl, line.new(x1, posTP2,   x2, posTP2,   color = color.new(colBuy, 35), width = 1, style = line.style_dashed))
     array.push(pl, line.new(x1, posTP3,   x2, posTP3,   color = color.new(colBuy, 55), width = 1, style = line.style_dashed))
 
-    array.push(pb, label.new(x2, posEntry, dir + " · " + kind + (posPO2 ? " · PO2" : "") + " · " + posZone + "\n" + str.tostring(posEntry, format.mintick), style = label.style_label_left, color = headCol, textcolor = headTxt, size = size.normal))
+    statTxt = posStat == -1 ? "  ✗ SL" : posStat == 3 ? "  ✓ TP3" : posStat == 2 ? "  ✓ TP2" : posStat == 1 ? "  ✓ TP1" : "  • running"
+    array.push(pb, label.new(x2, posEntry, dir + " · " + kind + (posPO2 ? " · PO2" : "") + " · " + posZone + statTxt + "\n" + str.tostring(posEntry, format.mintick), style = label.style_label_left, color = headCol, textcolor = headTxt, size = size.normal))
     array.push(pb, label.new(x2, posSL,  "SL   " + str.tostring(posSL,  format.mintick), style = label.style_label_left, color = color.new(colSell, 10), textcolor = color.white, size = size.small))
     array.push(pb, label.new(x2, posTP1, "TP1  " + str.tostring(posTP1, format.mintick), style = label.style_label_left, color = color.new(colBuy, 10), textcolor = color.white, size = size.small))
     array.push(pb, label.new(x2, posTP2, "TP2  " + str.tostring(posTP2, format.mintick), style = label.style_label_left, color = color.new(colBuy, 35), textcolor = color.white, size = size.small))
@@ -394,7 +428,8 @@ if showPanel and barstate.islast
     for z in zones
         if not z.dead
             activeCnt += 1
-    posTxt = posOn ? ((posBuy ? "BUY " : "SELL ") + (posSwing ? "SWING" : "SCALP") + " @ " + str.tostring(posEntry, format.mintick)) : "—"
+    stTxt = posStat == -1 ? " ✗SL" : posStat > 0 ? " ✓TP" + str.tostring(posStat) : " •"
+    posTxt = posOn ? ((posBuy ? "BUY " : "SELL ") + (posSwing ? "SWING" : "SCALP") + " @ " + str.tostring(posEntry, format.mintick) + stTxt) : "—"
     table.cell(info, 0, 0, "⚜  SNRZ  —  ZiNDAN", text_color = colGold, text_size = size.normal)
     table.cell(info, 0, 1, "The Gold Chaser", text_color = color.new(colGold, 35), text_size = size.tiny)
     table.cell(info, 0, 2, trendTxt, text_color = trendCol, text_size = size.small)
