@@ -48,8 +48,10 @@ ph = ta.pivothigh(high, pivotLen, pivotLen)
 pl = ta.pivotlow(low,  pivotLen, pivotLen)
 
 // Market structure trend: compare last two confirmed swing highs/lows
-var float lastHigh  = na, var float prevHigh = na
-var float lastLow   = na, var float prevLow  = na
+var float lastHigh = na
+var float prevHigh = na
+var float lastLow  = na
+var float prevLow  = na
 if not na(ph)
     prevHigh := lastHigh
     lastHigh := ph
@@ -79,8 +81,11 @@ zoneColor(Zone z) =>
     z.state == 2 ? colInv : z.role == 1 ? (z.state == 1 ? colSupV : colSup) : (z.state == 1 ? colResV : colRes)
 
 zoneText(Zone z) =>
-    base = z.role == 1 ? (z.state == 2 ? (z.wasValid ? "IVS" : "RBS") : z.state == 1 ? "V.S" : "S") :
-                         (z.state == 2 ? (z.wasValid ? "IVR" : "SBR") : z.state == 1 ? "V.R" : "R")
+    string base = na
+    if z.role == 1
+        base := z.state == 2 ? (z.wasValid ? "IVS" : "RBS") : z.state == 1 ? "V.S" : "S"
+    else
+        base := z.state == 2 ? (z.wasValid ? "IVR" : "SBR") : z.state == 1 ? "V.R" : "R"
     base + (z.touches > 0 ? " • T" + str.tostring(z.touches) : "")
 
 refreshZone(Zone z) =>
