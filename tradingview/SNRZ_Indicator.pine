@@ -1,11 +1,18 @@
 //@version=6
-// build: v4.0 — signal labels (BUY/SELL/PO2 with price), risk/reward boxes like the
-//               book, gold-black Zindan info panel, zone name inside the box.
+// build: v4.2 — ONE clean active position per new signal:
+//               Entry / SL / TP1 / TP2 / TP3  +  SCALP or SWING tag.
+//               No stacked boxes. Old signals = small arrows only.
 // ═══════════════════════════════════════════════════════════════════════════
 //  SNRZ Strategy Indicator — "Zindan The Gold Chaser" Masterclass (2026 book)
-//  Buy:(V.S, I.VR, RBS, SRR)   Sell:(V.R, I.VS, SBR, RSS)   PO2 = inversion 2nd touch
+//
+//  Entry types (book):  Buy:(V.S, I.VR, RBS, SRR)   Sell:(V.R, I.VS, SBR, RSS)
+//  PO2 = 2nd retest of an INVERSION zone (strongest, gold).
+//  Targets (book): TP1 = nearest opposite zone, TP2 = next zone,
+//                  TP3 = far zone. Fallback 1R / 2R / 3R if no zone there.
+//  SCALP vs SWING (book "Timeframe = Pips"): expected move vs ATR.
+//  Nothing more, nothing less than the strategy in the book.
 // ═══════════════════════════════════════════════════════════════════════════
-indicator("SNRZ Strategy [Zindan]", "SNRZ", overlay = true, max_boxes_count = 400, max_labels_count = 300, max_lines_count = 300)
+indicator("SNRZ Strategy [Zindan]", "SNRZ", overlay = true, max_boxes_count = 200, max_labels_count = 200, max_lines_count = 200)
 
 // ───────────────────────────── Inputs ──────────────────────────────────────
 grpZ  = "Zones (SNRZ)"
@@ -21,18 +28,17 @@ zoneMaxAge    = input.int(400,  "Zone lifetime (chart bars)",              minva
 grpS  = "Signals"
 useTrendFilter = input.bool(true,  "Trade only with structure trend (Trend is King)", group = grpS)
 maxTouches     = input.int(3,      "Max touches on VALID zone (3-touch rule)", minval = 2, maxval = 4, group = grpS)
-showRR         = input.bool(true,  "Draw risk/reward boxes on signals (book style)", group = grpS)
-rrTarget       = input.float(1.0,  "TP = risk ×",                          minval = 0.5, maxval = 5, step = 0.5, group = grpS)
-showSweeps     = input.bool(false, "Show liquidity Sweep markers",         group = grpS)
+swingAtrMult   = input.float(3.0,  "SWING when TP1 distance ≥ ATR ×",      minval = 1, step = 0.5, group = grpS)
+showPosition   = input.bool(true,  "Show active position (Entry/SL/TP1-3)", group = grpS)
 showFresh      = input.bool(true,  "Show fresh (not yet valid) zones",     group = grpS)
 showPanel      = input.bool(true,  "Show SNRZ info panel",                 group = grpS)
 
 grpV  = "Style"
 colSup   = input.color(color.new(#089981, 90), "Fresh Support",          group = grpV)
 colRes   = input.color(color.new(#f23645, 90), "Fresh Resistance",       group = grpV)
-colSupV  = input.color(color.new(#089981, 68), "VALID Support / SRR",    group = grpV)
-colResV  = input.color(color.new(#f23645, 68), "VALID Resistance / RSS", group = grpV)
-colInv   = input.color(color.new(#d4af37, 70), "Inversion zone (gold)",  group = grpV)
+colSupV  = input.color(color.new(#089981, 70), "VALID Support / SRR",    group = grpV)
+colResV  = input.color(color.new(#f23645, 70), "VALID Resistance / RSS", group = grpV)
+colInv   = input.color(color.new(#d4af37, 72), "Inversion zone (gold)",  group = grpV)
 colBuy   = input.color(#00c853, "BUY color",  group = grpV)
 colSell  = input.color(#ff1744, "SELL color", group = grpV)
 colGold  = input.color(#d4af37, "Accent (Zindan gold)", group = grpV)
@@ -51,7 +57,6 @@ bodyLoSrc = math.min(open[pivotLen], close[pivotLen])
 newPH = not na(phZ) and (na(phZ[1]) or phZ != phZ[1])
 newPL = not na(plZ) and (na(plZ[1]) or plZ != plZ[1])
 
-// Market structure trend (chart TF)
 var float lastHigh = na
 var float prevHigh = na
 var float lastLow  = na
@@ -87,30 +92,29 @@ zoneColor(Zone z) =>
 zoneText(Zone z) =>
     string base = na
     if z.role == 1
-        base := z.state == 2 ? (z.wasValid ? "I.VR ● BUY" : "RBS ● BUY") : z.srr ? "SRR ● BUY" : z.state == 1 ? "V.S ● BUY" : "S"
+        base := z.state == 2 ? (z.wasValid ? "I.VR" : "RBS") : z.srr ? "SRR" : z.state == 1 ? "V.S" : "S"
     else
-        base := z.state == 2 ? (z.wasValid ? "I.VS ● SELL" : "SBR ● SELL") : z.srr ? "RSS ● SELL" : z.state == 1 ? "V.R ● SELL" : "R"
+        base := z.state == 2 ? (z.wasValid ? "I.VS" : "SBR") : z.srr ? "RSS" : z.state == 1 ? "V.R" : "R"
     if z.dead
         base := base + " ✗"
     else if z.touches > 0
-        base := base + "  T" + str.tostring(z.touches)
+        base := base + " T" + str.tostring(z.touches)
     base
 
 refreshZone(Zone z) =>
     hidden = z.state == 0 and not z.srr and not showFresh
     c = zoneColor(z)
-    cBg = hidden ? color.new(color.gray, 100) : c
     box.set_rightbottom(z.bx, bar_index + 8, z.bot)
-    box.set_bgcolor(z.bx, cBg)
+    box.set_bgcolor(z.bx, hidden ? color.new(color.gray, 100) : c)
     box.set_border_color(z.bx, hidden ? color.new(color.gray, 100) : color.new(c, 25))
     box.set_border_style(z.bx, z.state == 0 and not z.srr ? line.style_dashed : line.style_solid)
     box.set_text(z.bx, hidden ? "" : zoneText(z))
-    box.set_text_color(z.bx, hidden ? color.new(color.gray, 100) : color.new(zoneColor(z), 0))
+    box.set_text_color(z.bx, hidden ? color.new(color.gray, 100) : color.new(c, 0))
     box.set_text_size(z.bx, size.small)
     box.set_text_halign(z.bx, text.align_right)
     line.set_xy1(z.mid, z.bornBar - pivotLen, (z.top + z.bot) / 2)
     line.set_xy2(z.mid, bar_index + 8, (z.top + z.bot) / 2)
-    line.set_color(z.mid, hidden ? color.new(color.gray, 100) : color.new(c, 40))
+    line.set_color(z.mid, hidden ? color.new(color.gray, 100) : color.new(c, 45))
 
 newZone(float _top, float _bot, int _role) =>
     h  = _top - _bot
@@ -195,23 +199,6 @@ bearBreak75(float lvl) =>
         partial := len > 0 and (math.min(lvl, bodyHigh) - low) / len * 100 >= breakoutPct
     fullBody or partial
 
-// ───────────── Signal visuals (book style: green reward + red risk box) ────
-fmt(float p) =>
-    str.tostring(p, format.mintick)
-
-drawSignal(bool isBuy, bool isPO2, float slLvl) =>
-    entry = close
-    risk  = isBuy ? entry - slLvl : slLvl - entry
-    tp    = isBuy ? entry + risk * rrTarget : entry - risk * rrTarget
-    if showRR and risk > 0
-        box.new(bar_index, math.max(entry, tp), bar_index + 15, math.min(entry, tp), bgcolor = color.new(colBuy, 82), border_color = color.new(colBuy, 55))
-        box.new(bar_index, math.max(entry, slLvl), bar_index + 15, math.min(entry, slLvl), bgcolor = color.new(colSell, 82), border_color = color.new(colSell, 55))
-    txt = (isPO2 ? "⚡ PO2 " : "") + (isBuy ? "BUY  " : "SELL  ") + fmt(entry) + "\nSL " + fmt(slLvl) + "  TP " + fmt(tp)
-    if isBuy
-        label.new(bar_index, low, txt, style = label.style_label_up, color = isPO2 ? colGold : colBuy, textcolor = isPO2 ? color.black : color.white, size = size.normal)
-    else
-        label.new(bar_index, high, txt, style = label.style_label_down, color = isPO2 ? colGold : colSell, textcolor = isPO2 ? color.black : color.white, size = size.normal)
-
 // ─────────────────────── Zone engine ───────────────────────────────────────
 bool buySig      = false
 bool sellSig     = false
@@ -221,7 +208,13 @@ bool zoneBreakUp = false
 bool zoneBreakDn = false
 bool brokeResistanceNow = false
 bool brokeSupportNow    = false
-var string lastSignalTxt = "—"
+
+// signal captured this bar (drawn after the loop)
+bool  sigFired = false
+bool  sigIsBuy = false
+bool  sigIsPO2 = false
+float sigSl    = na
+string sigZone = ""
 
 for z in zones
     if bar_index <= z.bornBar
@@ -256,8 +249,11 @@ for z in zones
                 isPO2 = z.state == 2 and z.touches == 2
                 po2Buy := isPO2 ? true : po2Buy
                 buySig := isPO2 ? buySig : true
-                drawSignal(true, isPO2, z.bot - atr * 0.3)
-                lastSignalTxt := (isPO2 ? "⚡ PO2 BUY " : "▲ BUY ") + fmt(close)
+                sigFired := true
+                sigIsBuy := true
+                sigIsPO2 := isPO2
+                sigSl := z.bot - atr * 0.3
+                sigZone := zoneText(z)
     else
         if bullBreak75(z.top)
             z.wasValid := z.state == 1
@@ -284,8 +280,11 @@ for z in zones
                 isPO2 = z.state == 2 and z.touches == 2
                 po2Sell := isPO2 ? true : po2Sell
                 sellSig := isPO2 ? sellSig : true
-                drawSignal(false, isPO2, z.top + atr * 0.3)
-                lastSignalTxt := (isPO2 ? "⚡ PO2 SELL " : "▼ SELL ") + fmt(close)
+                sigFired := true
+                sigIsBuy := false
+                sigIsPO2 := isPO2
+                sigSl := z.top + atr * 0.3
+                sigZone := zoneText(z)
     refreshZone(z)
 
 // SRR / RSS qualification (book)
@@ -303,26 +302,104 @@ if brokeResistanceNow or brokeSupportNow
                 z.srr := true
         refreshZone(z)
 
-// ───────────────────── Liquidity Sweep (optional) ───────────────────────────
-sweepHigh = showSweeps and not na(lastHigh) and high > lastHigh and close < lastHigh and math.max(open, close) < lastHigh
-sweepLow  = showSweeps and not na(lastLow)  and low  < lastLow  and close > lastLow  and math.min(open, close) > lastLow
-plotshape(sweepHigh, "Liquidity Sweep High", shape.xcross, location.abovebar, color.new(#f23645, 35), size = size.tiny, display = display.pane)
-plotshape(sweepLow,  "Liquidity Sweep Low",  shape.xcross, location.belowbar, color.new(#089981, 35), size = size.tiny, display = display.pane)
+// ───────────── Active position state (updated only on a NEW signal) ────────
+var bool   posOn    = false
+var bool   posBuy   = false
+var bool   posPO2   = false
+var float  posEntry = na
+var float  posSL    = na
+var float  posTP1   = na
+var float  posTP2   = na
+var float  posTP3   = na
+var bool   posSwing = false
+var int    posBar   = 0
+var string posZone  = ""
 
-// ───────────────────── Zindan info panel (gold / black) ────────────────────
+if sigFired
+    entry = close
+    risk  = math.abs(entry - sigSl)
+    // targets = opposite zones ahead of price (book), else 1R / 2R / 3R
+    cands = array.new<float>()
+    for z in zones
+        if z.dead
+            continue
+        lvl = sigIsBuy ? z.bot : z.top
+        if sigIsBuy and z.role == -1 and lvl > entry
+            array.push(cands, lvl)
+        if not sigIsBuy and z.role == 1 and lvl < entry
+            array.push(cands, lvl)
+    if array.size(cands) > 1
+        array.sort(cands, order.ascending)
+    n = array.size(cands)
+    // buy: nearest target is the lowest above entry; sell: the highest below entry
+    t1 = n >= 1 ? (sigIsBuy ? array.get(cands, 0) : array.get(cands, n - 1)) : (sigIsBuy ? entry + risk : entry - risk)
+    t2 = n >= 2 ? (sigIsBuy ? array.get(cands, 1) : array.get(cands, n - 2)) : (sigIsBuy ? entry + risk * 2 : entry - risk * 2)
+    t3 = n >= 3 ? (sigIsBuy ? array.get(cands, 2) : array.get(cands, n - 3)) : (sigIsBuy ? entry + risk * 3 : entry - risk * 3)
+    posOn    := true
+    posBuy   := sigIsBuy
+    posPO2   := sigIsPO2
+    posEntry := entry
+    posSL    := sigSl
+    posTP1   := t1
+    posTP2   := t2
+    posTP3   := t3
+    posSwing := math.abs(t1 - entry) >= atr * swingAtrMult
+    posBar   := bar_index
+    posZone  := sigZone
+
+// ───────────── Draw the single active position (clean) ─────────────────────
+var line[]  pl = array.new<line>()
+var label[] pb = array.new<label>()
+
+if showPosition and posOn and barstate.islast
+    for ln in pl
+        line.delete(ln)
+    array.clear(pl)
+    for lb in pb
+        label.delete(lb)
+    array.clear(pb)
+
+    x1 = posBar
+    x2 = bar_index + 25
+    dirCol  = posBuy ? colBuy : colSell
+    headCol = posPO2 ? colGold : dirCol
+    headTxt = posPO2 ? color.black : color.white
+    kind    = posSwing ? "SWING" : "SCALP"
+    dir     = posBuy ? "BUY" : "SELL"
+
+    array.push(pl, line.new(x1, posEntry, x2, posEntry, color = color.new(color.white, 25), width = 2, style = line.style_dotted))
+    array.push(pl, line.new(x1, posSL,    x2, posSL,    color = colSell, width = 2))
+    array.push(pl, line.new(x1, posTP1,   x2, posTP1,   color = colBuy,  width = 2))
+    array.push(pl, line.new(x1, posTP2,   x2, posTP2,   color = color.new(colBuy, 35), width = 1, style = line.style_dashed))
+    array.push(pl, line.new(x1, posTP3,   x2, posTP3,   color = color.new(colBuy, 55), width = 1, style = line.style_dashed))
+
+    array.push(pb, label.new(x2, posEntry, dir + " · " + kind + (posPO2 ? " · PO2" : "") + " · " + posZone + "\n" + str.tostring(posEntry, format.mintick), style = label.style_label_left, color = headCol, textcolor = headTxt, size = size.normal))
+    array.push(pb, label.new(x2, posSL,  "SL   " + str.tostring(posSL,  format.mintick), style = label.style_label_left, color = color.new(colSell, 10), textcolor = color.white, size = size.small))
+    array.push(pb, label.new(x2, posTP1, "TP1  " + str.tostring(posTP1, format.mintick), style = label.style_label_left, color = color.new(colBuy, 10), textcolor = color.white, size = size.small))
+    array.push(pb, label.new(x2, posTP2, "TP2  " + str.tostring(posTP2, format.mintick), style = label.style_label_left, color = color.new(colBuy, 35), textcolor = color.white, size = size.small))
+    array.push(pb, label.new(x2, posTP3, "TP3  " + str.tostring(posTP3, format.mintick), style = label.style_label_left, color = color.new(colBuy, 55), textcolor = color.white, size = size.small))
+
+// ───────────────────── Small history arrows ────────────────────────────────
+plotshape(buySig,  "BUY",      shape.triangleup,   location.belowbar, color.new(#00c853, 0), size = size.tiny,  display = display.pane)
+plotshape(sellSig, "SELL",     shape.triangledown, location.abovebar, color.new(#ff1744, 0), size = size.tiny,  display = display.pane)
+plotshape(po2Buy,  "PO2 BUY",  shape.triangleup,   location.belowbar, color.new(#d4af37, 0), size = size.small, display = display.pane)
+plotshape(po2Sell, "PO2 SELL", shape.triangledown, location.abovebar, color.new(#d4af37, 0), size = size.small, display = display.pane)
+
+// ───────────────────── Zindan info panel ───────────────────────────────────
 var table info = table.new(position.top_right, 1, 5, bgcolor = color.new(#0b0b0b, 8), frame_width = 2, frame_color = color.new(#d4af37, 20), border_width = 1, border_color = color.new(#d4af37, 75))
 if showPanel and barstate.islast
     trendTxt = trendUp ? "▲ UPTREND" : trendDown ? "▼ DOWNTREND" : "◆ RANGE"
-    trendCol = trendUp ? colBuy : trendDown ? colSell : color.new(#d4af37, 0)
+    trendCol = trendUp ? colBuy : trendDown ? colSell : colGold
     activeCnt = 0
     for z in zones
         if not z.dead
             activeCnt += 1
+    posTxt = posOn ? ((posBuy ? "BUY " : "SELL ") + (posSwing ? "SWING" : "SCALP") + " @ " + str.tostring(posEntry, format.mintick)) : "—"
     table.cell(info, 0, 0, "⚜  SNRZ  —  ZiNDAN", text_color = colGold, text_size = size.normal)
     table.cell(info, 0, 1, "The Gold Chaser", text_color = color.new(colGold, 35), text_size = size.tiny)
     table.cell(info, 0, 2, trendTxt, text_color = trendCol, text_size = size.small)
     table.cell(info, 0, 3, "Zones: " + str.tostring(activeCnt) + "   TF: " + (zoneTF == "" ? timeframe.period : zoneTF), text_color = color.new(color.white, 20), text_size = size.small)
-    table.cell(info, 0, 4, "Last: " + lastSignalTxt, text_color = color.new(color.white, 20), text_size = size.small)
+    table.cell(info, 0, 4, "Position: " + posTxt, text_color = color.new(color.white, 20), text_size = size.small)
 
 // ───────────────────────────── Alerts ──────────────────────────────────────
 alertcondition(buySig or po2Buy,   "SNRZ Buy",        "SNRZ: BUY — V.S / SRR / I.VR / RBS zone rejection")
