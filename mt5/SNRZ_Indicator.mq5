@@ -75,6 +75,8 @@ struct SZone
    int    state;     // 0 fresh, 1 VALID, 2 inverted
    int    touches;
    bool   wasValid;
+   bool   dead;      // 3-touch rule exhausted -> no more trades
+   int    sigTouch;  // anti-spam latch: one signal per touch
    int    bornBar;
    long   id;        // object id
    bool   inZonePrev;
@@ -136,7 +138,9 @@ string ZoneText(const SZone &z)
       base = (z.state == 2 ? (z.wasValid ? "IVS" : "RBS") : (z.state == 1 ? "V.S" : "S"));
    else
       base = (z.state == 2 ? (z.wasValid ? "IVR" : "SBR") : (z.state == 1 ? "V.R" : "R"));
-   if(z.touches > 0)
+   if(z.dead)
+      base += " x";
+   else if(z.touches > 0)
       base += " T" + IntegerToString(z.touches);
    return base;
   }
@@ -216,6 +220,8 @@ void AddZone(double top, double bot, const int role, const int bornBar, const do
    g_zones[n].state      = 0;
    g_zones[n].touches    = 0;
    g_zones[n].wasValid   = false;
+   g_zones[n].dead       = false;
+   g_zones[n].sigTouch   = 0;
    g_zones[n].bornBar    = bornBar;
    g_zones[n].id         = ++g_zoneSeq;
    g_zones[n].inZonePrev = false;
@@ -348,14 +354,14 @@ int OnCalculate(const int rates_total,
            {
             double zTop = MathMin(open[p], close[p]);
             double zBot = low[p];
-            if((high[bar] - zBot) >= bigMove * 0.5 && !Overlaps(zTop, zBot))
+            if((high[bar] - zBot) >= bigMove && !Overlaps(zTop, zBot))
                AddZone(zTop, zBot, 1, bar, atr, t1, t2);
            }
          if(isPH)
            {
             double zTop = high[p];
             double zBot = MathMax(open[p], close[p]);
-            if((zTop - low[bar]) >= bigMove * 0.5 && !Overlaps(zTop, zBot))
+            if((zTop - low[bar]) >= bigMove && !Overlaps(zTop, zBot))
                AddZone(zTop, zBot, -1, bar, atr, t1, t2);
            }
         }
@@ -388,22 +394,32 @@ int OnCalculate(const int rates_total,
                g_zones[i].wasValid = (g_zones[i].state == 1);
                g_zones[i].role  = -1;
                g_zones[i].state = 2;
-               g_zones[i].touches = 0;
+               g_zones[i].touches  = 0;
+               g_zones[i].sigTouch = 0;
+               g_zones[i].dead     = false;
                Notify((g_zones[i].wasValid ? "IVR" : "SBR") + " — Support broken (75% rule), zone inverted to SELL", live);
               }
-            else if(inZone && c >= g_zones[i].bot)
+            else if(inZone && c >= g_zones[i].bot && !g_zones[i].dead)
               {
                if(!g_zones[i].inZonePrev)
                  {
                   g_zones[i].touches++;
                   if(g_zones[i].state == 0 && g_zones[i].touches >= 2)
                      g_zones[i].state = 1;   // Second Movement → VALID
+                  if((g_zones[i].state == 1 && g_zones[i].touches > InpMaxTouches) ||
+                     (g_zones[i].state == 2 && g_zones[i].touches > 2))
+                     g_zones[i].dead = true; // 3-touch rule: zone exhausted
                  }
+               // tradable only: VALID (touch>=2) or INVERSION (touch 1-2)
+               bool tradable = !g_zones[i].dead &&
+                               ((g_zones[i].state == 1 && g_zones[i].touches >= 2) ||
+                                (g_zones[i].state == 2 && g_zones[i].touches >= 1 && g_zones[i].touches <= 2));
                bool okTrend = !InpTrendFilter || trendUp || g_zones[i].state == 2;
                bool okConf  = !InpNeedConfirm || bullConfirm;
-               bool okTouch = g_zones[i].touches <= InpMaxTouches;
-               if(okTrend && okConf && okTouch && c > g_zones[i].bot)
+               bool fresh   = (g_zones[i].sigTouch != g_zones[i].touches);
+               if(tradable && okTrend && okConf && fresh && c > g_zones[i].bot)
                  {
+                  g_zones[i].sigTouch = g_zones[i].touches;
                   if(g_zones[i].touches == 2)
                     {
                      BufPO2Buy[bar] = l - atr * 0.4;
@@ -424,22 +440,31 @@ int OnCalculate(const int rates_total,
                g_zones[i].wasValid = (g_zones[i].state == 1);
                g_zones[i].role  = 1;
                g_zones[i].state = 2;
-               g_zones[i].touches = 0;
+               g_zones[i].touches  = 0;
+               g_zones[i].sigTouch = 0;
+               g_zones[i].dead     = false;
                Notify((g_zones[i].wasValid ? "IVS" : "RBS") + " — Resistance broken (75% rule), zone inverted to BUY", live);
               }
-            else if(inZone && c <= g_zones[i].top)
+            else if(inZone && c <= g_zones[i].top && !g_zones[i].dead)
               {
                if(!g_zones[i].inZonePrev)
                  {
                   g_zones[i].touches++;
                   if(g_zones[i].state == 0 && g_zones[i].touches >= 2)
                      g_zones[i].state = 1;
+                  if((g_zones[i].state == 1 && g_zones[i].touches > InpMaxTouches) ||
+                     (g_zones[i].state == 2 && g_zones[i].touches > 2))
+                     g_zones[i].dead = true;
                  }
+               bool tradable = !g_zones[i].dead &&
+                               ((g_zones[i].state == 1 && g_zones[i].touches >= 2) ||
+                                (g_zones[i].state == 2 && g_zones[i].touches >= 1 && g_zones[i].touches <= 2));
                bool okTrend = !InpTrendFilter || trendDown || g_zones[i].state == 2;
                bool okConf  = !InpNeedConfirm || bearConfirm;
-               bool okTouch = g_zones[i].touches <= InpMaxTouches;
-               if(okTrend && okConf && okTouch && c < g_zones[i].top)
+               bool fresh   = (g_zones[i].sigTouch != g_zones[i].touches);
+               if(tradable && okTrend && okConf && fresh && c < g_zones[i].top)
                  {
+                  g_zones[i].sigTouch = g_zones[i].touches;
                   if(g_zones[i].touches == 2)
                     {
                      BufPO2Sell[bar] = h + atr * 0.4;

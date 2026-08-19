@@ -53,7 +53,9 @@ class Zone:
     role: Role
     state: State = State.FRESH
     touches: int = 0
+    sig_touch: int = 0          # anti-spam latch: one signal per touch
     was_valid: bool = False
+    dead: bool = False          # 3-touch rule exhausted -> no more trades
     born_index: int = 0
     in_zone_prev: bool = False
 
@@ -184,12 +186,12 @@ class SnrzEngine:
         if is_ph:
             self.prev_high, self.last_high = self.last_high, pc.high
             top, bot = pc.high, max(pc.open, pc.close)
-            if (top - cur.low) >= big * 0.5 and not self._overlaps(top, bot):
+            if (top - cur.low) >= big and not self._overlaps(top, bot):
                 self._add_zone(top, bot, Role.RESISTANCE, atr, idx)
         if is_pl:
             self.prev_low, self.last_low = self.last_low, pc.low
             top, bot = min(pc.open, pc.close), pc.low
-            if (cur.high - bot) >= big * 0.5 and not self._overlaps(top, bot):
+            if (cur.high - bot) >= big and not self._overlaps(top, bot):
                 self._add_zone(top, bot, Role.SUPPORT, atr, idx)
 
     @property
@@ -224,15 +226,24 @@ class SnrzEngine:
             if z.role == Role.SUPPORT:
                 if self._bear_break(z.bot, c):
                     z.was_valid = z.state == State.VALID
-                    z.role, z.state, z.touches = Role.RESISTANCE, State.INVERTED, 0
-                elif in_zone and c.close >= z.bot:
+                    z.role, z.state = Role.RESISTANCE, State.INVERTED
+                    z.touches = z.sig_touch = 0
+                    z.dead = False
+                elif in_zone and c.close >= z.bot and not z.dead:
                     if not z.in_zone_prev:
                         z.touches += 1
                         if z.state == State.FRESH and z.touches >= 2:
-                            z.state = State.VALID
+                            z.state = State.VALID          # Second Movement
+                        if (z.state == State.VALID and z.touches > cfg.max_touches) or \
+                           (z.state == State.INVERTED and z.touches > 2):
+                            z.dead = True                  # 3-touch rule
+                    tradable = (not z.dead) and (
+                        (z.state == State.VALID and z.touches >= 2) or
+                        (z.state == State.INVERTED and 1 <= z.touches <= 2))
                     ok_trend = (not cfg.trend_filter) or self.trend_up or z.state == State.INVERTED
                     ok_conf = (not cfg.need_confirm) or bull_conf
-                    if ok_trend and ok_conf and z.touches <= cfg.max_touches and c.close > z.bot:
+                    if tradable and ok_trend and ok_conf and z.sig_touch != z.touches and c.close > z.bot:
+                        z.sig_touch = z.touches            # one signal per touch
                         sl = z.bot - atr * 0.3
                         risk = c.close - sl
                         out.append(Signal(idx, "buy",
@@ -241,15 +252,24 @@ class SnrzEngine:
             else:
                 if self._bull_break(z.top, c):
                     z.was_valid = z.state == State.VALID
-                    z.role, z.state, z.touches = Role.SUPPORT, State.INVERTED, 0
-                elif in_zone and c.close <= z.top:
+                    z.role, z.state = Role.SUPPORT, State.INVERTED
+                    z.touches = z.sig_touch = 0
+                    z.dead = False
+                elif in_zone and c.close <= z.top and not z.dead:
                     if not z.in_zone_prev:
                         z.touches += 1
                         if z.state == State.FRESH and z.touches >= 2:
                             z.state = State.VALID
+                        if (z.state == State.VALID and z.touches > cfg.max_touches) or \
+                           (z.state == State.INVERTED and z.touches > 2):
+                            z.dead = True
+                    tradable = (not z.dead) and (
+                        (z.state == State.VALID and z.touches >= 2) or
+                        (z.state == State.INVERTED and 1 <= z.touches <= 2))
                     ok_trend = (not cfg.trend_filter) or self.trend_down or z.state == State.INVERTED
                     ok_conf = (not cfg.need_confirm) or bear_conf
-                    if ok_trend and ok_conf and z.touches <= cfg.max_touches and c.close < z.top:
+                    if tradable and ok_trend and ok_conf and z.sig_touch != z.touches and c.close < z.top:
+                        z.sig_touch = z.touches
                         sl = z.top + atr * 0.3
                         risk = sl - c.close
                         out.append(Signal(idx, "sell",
