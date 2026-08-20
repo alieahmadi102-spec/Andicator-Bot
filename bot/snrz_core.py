@@ -58,6 +58,9 @@ class Zone:
     srr: bool = False           # qualified as SRR (support) / RSS (resistance)
     was_valid: bool = False
     dead: bool = False          # 3-touch rule exhausted -> no more trades
+    flips: int = 0              # role inversions — a level broken from both
+                                # sides repeatedly is range noise, not a zone
+    uid: int = 0
     born_index: int = 0
     in_zone_prev: bool = False
 
@@ -103,6 +106,11 @@ class Config:
     range_bars: int = 10        # both sides of structure broken this recently = range
     max_touches: int = 3
     max_zone_dist_atr: float = 5.0   # a zone this far from price is not tradeable
+    max_flips: int = 2          # role inversions before a level is retired
+    kill_on_stop: bool = True   # a zone whose signal got stopped out is finished
+    need_micro_bos: bool = True # book: "a small BOS in the trade direction"
+    micro_bos_len: int = 2
+    break_even: bool = True     # book: risk free once the trade pays 1:1
     min_sl_atr: float = 0.5     # a stop closer than this gets swept by noise
     one_trade: bool = True      # book: don't overtrade — one setup at a time
     max_trade_bars: int = 300   # a setup that never resolves must not block forever
@@ -122,8 +130,10 @@ class Position:
     tp1: float
     tp2: float
     tp3: float
-    stat: int = 0          # 0 running · 1/2/3 TP reached · -1 stopped out
+    stat: int = 0          # 0 running · 1/2/3 TP reached · -1 stopped · -2 BE
     closed: bool = False
+    be: bool = False       # stop already moved to entry
+    uid: int = 0           # the zone that produced this setup
 
     @property
     def open(self) -> bool:
@@ -148,6 +158,7 @@ class SnrzEngine:
         self.in_range = False
         # the single open setup (book: one trade at a time)
         self.position: Optional["Position"] = None
+        self._zone_seq = 0
 
     # ── indicators ─────────────────────────────────────────────────────────
     def _atr(self) -> Optional[float]:
@@ -215,7 +226,8 @@ class SnrzEngine:
                 top = bot + mx
             else:
                 bot = top - mx
-        self.zones.append(Zone(top, bot, role, born_index=idx))
+        self._zone_seq += 1
+        self.zones.append(Zone(top, bot, role, uid=self._zone_seq, born_index=idx))
         while len(self.zones) > self.cfg.max_zones:
             victim = next((i for i, z in enumerate(self.zones) if z.dead), 0)
             self.zones.pop(victim)
@@ -303,7 +315,7 @@ class SnrzEngine:
             return
         if p.side == "buy":
             if c.low <= p.sl:
-                p.stat, p.closed = -1, True
+                p.stat, p.closed = (-2 if p.be else -1), True
             elif c.high >= p.tp3:
                 p.stat, p.closed = 3, True
             elif c.high >= p.tp2 and p.stat < 2:
@@ -312,15 +324,23 @@ class SnrzEngine:
                 p.stat = 1
         else:
             if c.high >= p.sl:
-                p.stat, p.closed = -1, True
+                p.stat, p.closed = (-2 if p.be else -1), True
             elif c.low <= p.tp3:
                 p.stat, p.closed = 3, True
             elif c.low <= p.tp2 and p.stat < 2:
                 p.stat = 2
             elif c.low <= p.tp1 and p.stat < 1:
                 p.stat = 1
+        # book: once the trade has paid 1:1, make it risk free (Zero Float)
+        if self.cfg.break_even and not p.closed and p.stat >= 1 and not p.be:
+            p.sl, p.be = p.entry, True
         if not p.closed and idx - p.index > self.cfg.max_trade_bars:
             p.closed = True
+        # book: a zone whose signal got stopped out has been broken — finished
+        if self.cfg.kill_on_stop and p.closed and p.stat == -1:
+            for z in self.zones:
+                if z.uid == p.uid:
+                    z.dead = True
 
     @property
     def trend_up(self) -> bool:
@@ -349,6 +369,14 @@ class SnrzEngine:
                       if (c.close - z.top if c.close > z.top else
                           z.bot - c.close if c.close < z.bot else 0.0) <= max_dist]
         bull_conf, bear_conf = self._confirm(c, self.candles[idx - 1])
+        # book, confirmation list: "a small Break of Structure in the trade
+        # direction" — without it a sell fires in the middle of a rally just
+        # because one candle poked the zone
+        prev = self.candles[max(0, idx - self.cfg.micro_bos_len):idx]
+        bos_buy_ok = (not self.cfg.need_micro_bos) or not prev \
+            or c.close > max(w.close for w in prev)
+        bos_sell_ok = (not self.cfg.need_micro_bos) or not prev \
+            or c.close < min(w.close for w in prev)
         cfg = self.cfg
         broke_support = broke_resistance = False
         # book: don't overtrade — while a setup is running, no new signal
@@ -365,7 +393,10 @@ class SnrzEngine:
                     z.role, z.state = Role.RESISTANCE, State.INVERTED
                     z.touches = z.sig_touch = 0
                     z.srr = False
-                    z.dead = False
+                    z.flips += 1
+                    # a level broken from both sides repeatedly is a range
+                    # boundary, not a zone — the book calls sideway dangerous
+                    z.dead = z.flips >= cfg.max_flips
                     broke_support = True
                 elif in_zone and c.close >= z.bot and not z.dead:
                     if not z.in_zone_prev:
@@ -384,7 +415,7 @@ class SnrzEngine:
                     ok_conf = (not cfg.need_confirm) or bull_conf
                     reject_ok = c.close > z.top if cfg.need_reject else c.close > z.bot
                     if tradable and ok_trend and ok_conf and z.sig_touch != z.touches \
-                            and reject_ok and can_fire and not out:
+                            and reject_ok and bos_buy_ok and can_fire and not out:
                         z.sig_touch = z.touches            # one signal per touch
                         swing_lo = min(w.low for w in self.candles[-3:])
                         raw_sl = min(z.bot, swing_lo) - atr * 0.15
@@ -394,14 +425,16 @@ class SnrzEngine:
                         out.append(Signal(idx, "buy", "PO2" if po2 else "rejection",
                                           z.kind, c.close, c.close - risk, tp1, tp2, tp3))
                         self.position = Position(idx, "buy", z.kind, po2,
-                                                 c.close, c.close - risk, tp1, tp2, tp3)
+                                                 c.close, c.close - risk,
+                                                 tp1, tp2, tp3, uid=z.uid)
             else:
                 if self._bull_break(z.top, c):
                     z.was_valid = z.state == State.VALID
                     z.role, z.state = Role.SUPPORT, State.INVERTED
                     z.touches = z.sig_touch = 0
                     z.srr = False
-                    z.dead = False
+                    z.flips += 1
+                    z.dead = z.flips >= cfg.max_flips
                     broke_resistance = True
                 elif in_zone and c.close <= z.top and not z.dead:
                     if not z.in_zone_prev:
@@ -420,7 +453,7 @@ class SnrzEngine:
                     ok_conf = (not cfg.need_confirm) or bear_conf
                     reject_ok = c.close < z.bot if cfg.need_reject else c.close < z.top
                     if tradable and ok_trend and ok_conf and z.sig_touch != z.touches \
-                            and reject_ok and can_fire and not out:
+                            and reject_ok and bos_sell_ok and can_fire and not out:
                         z.sig_touch = z.touches
                         swing_hi = max(w.high for w in self.candles[-3:])
                         raw_sl = max(z.top, swing_hi) + atr * 0.15
@@ -430,7 +463,8 @@ class SnrzEngine:
                         out.append(Signal(idx, "sell", "PO2" if po2 else "rejection",
                                           z.kind, c.close, c.close + risk, tp1, tp2, tp3))
                         self.position = Position(idx, "sell", z.kind, po2,
-                                                 c.close, c.close + risk, tp1, tp2, tp3)
+                                                 c.close, c.close + risk,
+                                                 tp1, tp2, tp3, uid=z.uid)
             z.in_zone_prev = in_zone
 
         # SRR / RSS qualification (book): a Support whose move broke >=2

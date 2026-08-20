@@ -69,10 +69,14 @@ bot/
 └── requirements.txt
 ```
 
-### بک‌تست سریع
+### بک‌تست
 ```bash
-python bot/snrz_core.py candles.csv     # ستون‌ها: time,open,high,low,close
+python bot/snrz_core.py candles.csv     # فهرست سیگنال‌ها — ستون‌ها: time,open,high,low,close
+python bot/backtest.py  candles.csv     # نتیجه‌ی هر ستاپ: TP1/TP2/TP3 · BE · SL · وین‌ریت · انتظار R
+python bot/backtest.py --synthetic      # مقایسه‌ی قوانین روی داده‌ی ساختگی
 ```
+
+**برای تنظیم دقیق قوانین به دیتای واقعی نیاز است.** از TradingView روی چارت XAUUSD منوی `⋮` بالای چارت ← **Export chart data** را بزن و CSV را به `backtest.py` بده. داده‌ی ساختگی چون اصلاً حمایت/مقاومت واقعی ندارد، هیچ استراتژی S/R روی آن سود نمی‌دهد؛ فقط برای این خوب است که ببینیم یک فیلتر جدید سیگنال‌ها را خفه نکرده باشد.
 
 ### اجرای زنده
 ```bash

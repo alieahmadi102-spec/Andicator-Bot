@@ -12,6 +12,12 @@
 //               ladder, not two — Daily zones on a 1H chart are ~300 points
 //               tall and produced a 276-point stop. An exhausted zone no
 //               longer blocks a fresh zone from forming in the same area.
+//               v5.3: entry quality. The confirmation candle must break the
+//               last bars' structure in the trade direction (the book's own
+//               "small BOS" confirmation), a level broken from both sides
+//               twice is retired as range noise, a zone whose signal got
+//               stopped out is finished, and the stop goes to break-even once
+//               TP1 pays 1:1 (the book's Zero Float rule).
 // ═══════════════════════════════════════════════════════════════════════════
 //  SNRZ Strategy Indicator — "Zindan The Gold Chaser" Masterclass (2026 book)
 //
@@ -22,7 +28,7 @@
 //  SCALP vs SWING (book): M5/M15 = SCALP · H1/H4/Daily = SWING.
 //  Nothing more, nothing less than the strategy in the book.
 // ═══════════════════════════════════════════════════════════════════════════
-indicator("SNRZ Strategy [Zindan] v5", "SNRZ v5.2", overlay = true, max_boxes_count = 200, max_labels_count = 200, max_lines_count = 200)
+indicator("SNRZ Strategy [Zindan] v5", "SNRZ v5.3", overlay = true, max_boxes_count = 200, max_labels_count = 200, max_lines_count = 200)
 
 // ───────────────────────────── Inputs ──────────────────────────────────────
 grpZ  = "Zones (SNRZ)"
@@ -40,6 +46,11 @@ grpS  = "Signals"
 useTrendFilter = input.bool(true,  "Trade only with structure trend (Trend is King)", group = grpS)
 allowCounterInv = input.bool(false, "Allow counter-trend entries on inversion zones", group = grpS, tooltip = "کتاب: «ترند پادشاه است». پیش‌فرض خاموش تا در روند صعودی سیگنال فروش ندهد.")
 maxTouches     = input.int(3,      "Max touches on VALID zone (3-touch rule)", minval = 2, maxval = 4, group = grpS)
+maxFlips       = input.int(2,      "Max role flips before a zone is finished", minval = 1, maxval = 4, group = grpS, tooltip = "سطحی که پشت‌سرهم از هر دو طرف شکسته می‌شود مرز رِنج است نه زون. کتاب: «بازار Sideway خطرناک است».")
+killOnStop     = input.bool(true,  "A zone that got stopped out is finished",  group = grpS, tooltip = "زونی که سیگنالش استاپ خورد یعنی شکسته — دیگر روی همان زون ورود نمی‌گیریم.")
+needMicroBos   = input.bool(true,  "Confirmation must break the last bars' structure", group = grpS, tooltip = "کتاب، لیست تأییدها: «شکست ساختار کوچک (BOS) در جهت ترید». کندل تأیید باید ساختار چند کندل قبل را در جهت معامله بشکند، نه اینکه وسط یک حرکت مخالف صادر شود.")
+microBosLen    = input.int(2,      "…over the last N bars (higher = stricter)", minval = 1, maxval = 10, group = grpS)
+useBreakEven   = input.bool(true,  "Move stop to entry once TP1 is reached",   group = grpS, tooltip = "کتاب: بعد از 1:1 استاپ را Break-Even کن (Zero Float / Risk Free).")
 minSlAtr       = input.float(0.5,  "Minimum stop distance (analysis ATR ×)", minval = 0.1, step = 0.1, group = grpS, tooltip = "استاپ خیلی نزدیک با نویز عادی بازار سویپ می‌شود. حداقل فاصله بر مبنای ATR تایم تحلیل.")
 needReject     = input.bool(true,  "Confirmation candle must close OUTSIDE the zone", group = grpS, tooltip = "کتاب: کندل تأیید باید زون را رد کند و بیرونش بسته شود، نه اینکه وسط زون بسته شود.")
 rangeBars      = input.int(10,     "Range lockout (analysis-TF bars since opposite BOS)", minval = 2, group = grpS, tooltip = "کتاب: بازار Sideway خطرناک است. اگر هر دو طرف ساختار در این تعداد کندلِ تایم تحلیل شکسته شده باشد، بازار رنج است و ترید نمی‌کنیم.")
@@ -150,6 +161,8 @@ type Zone
     int   touches
     int   sigTouch
     int   oppBreaks
+    int   flips
+    int   uid
     bool  srr
     bool  wasValid
     bool  dead
@@ -189,7 +202,7 @@ refreshZone(Zone z) =>
     line.set_xy2(z.mid, bar_index + 8, (z.top + z.bot) / 2)
     line.set_color(z.mid, hidden ? color.new(color.gray, 100) : color.new(c, 45))
 
-newZone(float _top, float _bot, int _role) =>
+newZone(float _top, float _bot, int _role, int _uid) =>
     h  = _top - _bot
     mn = atrA * minZoneATR
     mx = atrA * maxZoneATR
@@ -206,7 +219,7 @@ newZone(float _top, float _bot, int _role) =>
             b := t - mx
     bx = box.new(bar_index - zoneBack, t, bar_index + 8, b, border_color = color.new(color.gray, 60), bgcolor = colSup)
     md = line.new(bar_index - zoneBack, (t + b) / 2, bar_index + 8, (t + b) / 2, style = line.style_dashed, color = color.new(color.gray, 50))
-    Zone.new(t, b, _role, 0, 0, 0, 0, false, false, false, bar_index, bx, md)
+    Zone.new(t, b, _role, 0, 0, 0, 0, 0, _uid, false, false, false, bar_index, bx, md)
 
 // an exhausted (dead) zone must not keep the area reserved forever — the book
 // says once a zone has had its touches you redraw, so a fresh pivot there is
@@ -252,17 +265,20 @@ while array.size(zones) > maxZones
 // ─────────────── Create zones from confirmed HTF pivots ────────────────────
 // book: the zone is only born if the price left it with a BIG MOVEMENT, and
 // the movement is measured on the analysis timeframe, not on the chart.
+var int zoneSeq = 0
 if newPL and not na(atrZ)
     pTop = pBodyLoZ
     pBot = plZ
     if (hiRunZ - pBot) >= bigMove and not overlaps(pTop, pBot)
-        array.push(zones, newZone(pTop, pBot, 1))
+        zoneSeq += 1
+        array.push(zones, newZone(pTop, pBot, 1, zoneSeq))
 
 if newPH and not na(atrZ)
     pTop = phZ
     pBot = pBodyHiZ
     if (pTop - loRunZ) >= bigMove and not overlaps(pTop, pBot)
-        array.push(zones, newZone(pTop, pBot, -1))
+        zoneSeq += 1
+        array.push(zones, newZone(pTop, pBot, -1, zoneSeq))
 
 // ───────────────── Confirmation candles ────────────────────────────────────
 bullEngulf = close > open and close[1] < open[1] and close >= open[1]
@@ -272,6 +288,13 @@ bullPin = range_ > 0 and (math.min(open, close) - low) >= 0.6 * range_ and close
 bearPin = range_ > 0 and (high - math.max(open, close)) >= 0.6 * range_ and close <= open
 bullConfirm = bullEngulf or bullPin
 bearConfirm = bearEngulf or bearPin
+// book, confirmation list: "a small Break of Structure in the trade direction".
+// Without it a sell fires in the middle of a rally just because one candle
+// poked the zone — which is exactly how the 5m SBR trade got run over.
+microHi = ta.highest(close, microBosLen)[1]
+microLo = ta.lowest(close,  microBosLen)[1]
+bosBuyOK  = not needMicroBos or close > microHi
+bosSellOK = not needMicroBos or close < microLo
 
 // ───────────── 75% breakout rule ────────────────────────────────────────────
 bullBreak75(float lvl) =>
@@ -305,7 +328,9 @@ var float  posTP3   = na
 var bool   posSwing = false
 var int    posBar   = 0
 var string posZone  = ""
-var int    posStat  = 0     // 0 running · 1/2/3 TP hit · -1 stopped out
+var int    posStat  = 0     // 0 running · 1/2/3 TP hit · -1 stopped · -2 break-even
+var bool   posBE    = false // stop already moved to entry (book: risk free after 1:1)
+var int    posUid   = -1    // which zone produced this setup
 
 // ─────────────────────── Zone engine ───────────────────────────────────────
 bool buySig      = false
@@ -323,6 +348,7 @@ bool  sigIsBuy = false
 bool  sigIsPO2 = false
 float sigSl    = na
 string sigZone = ""
+int   sigUid   = -1
 // book: don't overtrade — manage one setup at a time
 canFire = not (oneTrade and posOn)
 
@@ -341,7 +367,10 @@ for z in zones
             z.touches := 0
             z.sigTouch := 0
             z.srr := false
-            z.dead := false
+            z.flips := z.flips + 1
+            // a level that keeps getting broken from both sides is a range
+            // boundary, not a zone — the book calls sideway dangerous
+            z.dead := z.flips >= maxFlips
             zoneBreakDn := true
             brokeSupportNow := true
         else if inZone and close >= z.bot and not z.dead
@@ -355,7 +384,7 @@ for z in zones
             okTrend  = not useTrendFilter or trendUp or (allowCounterInv and z.state == 2)
             freshSig = z.sigTouch != z.touches
             rejectOK = needReject ? close > z.top : close > z.bot
-            if tradable and okTrend and freshSig and bullConfirm and rejectOK and canFire and not sigFired
+            if tradable and okTrend and freshSig and bullConfirm and rejectOK and bosBuyOK and canFire and not sigFired
                 z.sigTouch := z.touches
                 isPO2 = z.state == 2 and z.touches == 2
                 po2Buy := isPO2 ? true : po2Buy
@@ -365,6 +394,7 @@ for z in zones
                 sigIsPO2 := isPO2
                 sigSl := math.min(z.bot, swingLo3) - atrA * 0.15
                 sigZone := zoneText(z)
+                sigUid := z.uid
     else
         if bullBreak75(z.top)
             z.wasValid := z.state == 1
@@ -373,7 +403,8 @@ for z in zones
             z.touches := 0
             z.sigTouch := 0
             z.srr := false
-            z.dead := false
+            z.flips := z.flips + 1
+            z.dead := z.flips >= maxFlips
             zoneBreakUp := true
             brokeResistanceNow := true
         else if inZone and close <= z.top and not z.dead
@@ -387,7 +418,7 @@ for z in zones
             okTrend  = not useTrendFilter or trendDown or (allowCounterInv and z.state == 2)
             freshSig = z.sigTouch != z.touches
             rejectOK = needReject ? close < z.bot : close < z.top
-            if tradable and okTrend and freshSig and bearConfirm and rejectOK and canFire and not sigFired
+            if tradable and okTrend and freshSig and bearConfirm and rejectOK and bosSellOK and canFire and not sigFired
                 z.sigTouch := z.touches
                 isPO2 = z.state == 2 and z.touches == 2
                 po2Sell := isPO2 ? true : po2Sell
@@ -397,6 +428,7 @@ for z in zones
                 sigIsPO2 := isPO2
                 sigSl := math.max(z.top, swingHi3) + atrA * 0.15
                 sigZone := zoneText(z)
+                sigUid := z.uid
     refreshZone(z)
 
 // SRR / RSS qualification (book)
@@ -472,12 +504,14 @@ if sigFired
     posBar   := bar_index
     posZone  := sigZone
     posStat  := 0
+    posBE    := false
+    posUid   := sigUid
 
 // track how the open position actually resolved (helps judge signal quality)
 else if posOn and posStat >= 0
     if posBuy
         if low <= posSL
-            posStat := -1
+            posStat := posBE ? -2 : -1
             posOn := false
         else if high >= posTP3
             posStat := 3
@@ -488,7 +522,7 @@ else if posOn and posStat >= 0
             posStat := 1
     else
         if high >= posSL
-            posStat := -1
+            posStat := posBE ? -2 : -1
             posOn := false
         else if low <= posTP3
             posStat := 3
@@ -497,9 +531,21 @@ else if posOn and posStat >= 0
             posStat := 2
         else if low <= posTP1 and posStat < 1
             posStat := 1
+    // book: once the trade has paid 1:1, make it risk free (Zero Float)
+    if useBreakEven and posOn and posStat >= 1 and not posBE
+        posSL := posEntry
+        posBE := true
     // a setup that never resolved must not block the next one forever
     if posOn and bar_index - posBar > maxTradeBars
         posOn := false
+
+// book: a zone whose signal got stopped out has been broken — it is finished,
+// so it must not immediately hand out the opposite trade at the same level
+if killOnStop and posStat == -1 and not posOn and posUid >= 0
+    for z in zones
+        if z.uid == posUid
+            z.dead := true
+    posUid := -1
 
 // ───────────── Draw the single active position (clean) ─────────────────────
 var line[]  pl = array.new<line>()
@@ -537,9 +583,9 @@ if showPosition and not na(posEntry) and barstate.islast
     if posOn or posStat >= 3
         array.push(pl, line.new(x1, posTP3, x2, posTP3, color = color.new(colBuy, 55 + fade / 2), width = 1, style = line.style_dashed))
 
-    statTxt = posStat == -1 ? "  ✗ SL" : posStat == 3 ? "  ✓ TP3" : posStat == 2 ? "  ✓ TP2" : posStat == 1 ? "  ✓ TP1" : posOn ? "  • running" : "  • closed"
+    statTxt = posStat == -2 ? "  = TP1 → BE" : posStat == -1 ? "  ✗ SL" : posStat == 3 ? "  ✓ TP3" : posStat == 2 ? "  ✓ TP2" : posStat == 1 ? (posOn ? "  ✓ TP1 · risk free" : "  ✓ TP1") : posOn ? "  • running" : "  • closed"
     array.push(pb, label.new(x2, posEntry, dir + " · " + kind + (posPO2 ? " · PO2" : "") + " · " + posZone + statTxt + "\n" + str.tostring(posEntry, format.mintick), style = label.style_label_left, color = headCol, textcolor = headTxt, size = size.normal))
-    array.push(pb, label.new(x2, posSL,  "SL   " + str.tostring(posSL,  format.mintick), style = label.style_label_left, color = color.new(colSell, 10 + fade / 2), textcolor = color.new(color.white, fade / 2), size = size.small))
+    array.push(pb, label.new(x2, posSL,  (posBE ? "SL·BE " : "SL   ") + str.tostring(posSL,  format.mintick), style = label.style_label_left, color = color.new(colSell, 10 + fade / 2), textcolor = color.new(color.white, fade / 2), size = size.small))
     array.push(pb, label.new(x2, posTP1, "TP1  " + str.tostring(posTP1, format.mintick), style = label.style_label_left, color = color.new(colBuy, 10 + fade / 2), textcolor = color.new(color.white, fade / 2), size = size.small))
     if posOn or posStat >= 2
         array.push(pb, label.new(x2, posTP2, "TP2  " + str.tostring(posTP2, format.mintick), style = label.style_label_left, color = color.new(colBuy, 35 + fade / 2), textcolor = color.new(color.white, fade / 2), size = size.small))
@@ -561,9 +607,9 @@ if showPanel and barstate.islast
     for z in zones
         if not z.dead
             activeCnt += 1
-    stTxt = posStat == -1 ? " ✗SL" : posStat > 0 ? " ✓TP" + str.tostring(posStat) : " •"
+    stTxt = posStat == -2 ? " =BE" : posStat == -1 ? " ✗SL" : posStat > 0 ? " ✓TP" + str.tostring(posStat) : " •"
     posTxt = not na(posEntry) ? ((posBuy ? "BUY " : "SELL ") + (posSwing ? "SWING" : "SCALP") + " @ " + str.tostring(posEntry, format.mintick) + stTxt + (posOn ? "" : " (closed)")) : "—"
-    table.cell(info, 0, 0, "⚜  SNRZ v5.2  —  ZiNDAN", text_color = colGold, text_size = size.normal)
+    table.cell(info, 0, 0, "⚜  SNRZ v5.3  —  ZiNDAN", text_color = colGold, text_size = size.normal)
     table.cell(info, 0, 1, "The Gold Chaser", text_color = color.new(colGold, 35), text_size = size.tiny)
     table.cell(info, 0, 2, trendTxt, text_color = trendCol, text_size = size.small)
     table.cell(info, 0, 3, "Zones: " + str.tostring(activeCnt) + " @ " + zoneTFx + "   ⇢ confirm " + timeframe.period, text_color = color.new(color.white, 20), text_size = size.small)

@@ -14,7 +14,7 @@
 //|   • One position at a time with SL / TP1 / TP2 / TP3 drawn       |
 //+------------------------------------------------------------------+
 #property copyright   "SNRZ (Zindan The Gold Chaser) — indicator port"
-#property version     "5.20"
+#property version     "5.30"
 #property description "SNRZ zones on the higher analysis timeframe, confirmation on the chart, one trade at a time"
 #property indicator_chart_window
 #property indicator_buffers 4
@@ -58,6 +58,11 @@ input bool   InpTrendFilter  = true;  // Trade only with structure trend
 input bool   InpAllowCounterInv = false; // Allow counter-trend entries on inversion zones
 input bool   InpNeedConfirm  = true;  // Require confirmation candle
 input int    InpMaxTouches   = 3;     // Max touches per zone (3-touch rule)
+input int    InpMaxFlips     = 2;     // Max role flips before a zone is finished
+input bool   InpKillOnStop   = true;  // A zone that got stopped out is finished
+input bool   InpNeedMicroBos = true;  // Confirmation must break the last bars' structure
+input int    InpMicroBosLen  = 2;     // ...over the last N bars (higher = stricter)
+input bool   InpBreakEven    = true;  // Move stop to entry once TP1 is reached
 input bool   InpNeedReject   = true;  // Confirmation candle must close OUTSIDE the zone
 input int    InpRangeBars    = 10;    // Range lockout (analysis-TF bars since opposite BOS)
 input bool   InpOneTrade     = true;  // One trade at a time (no overtrade)
@@ -91,6 +96,8 @@ struct SZone
    bool     srr;       // qualified as SRR (support) / RSS (resistance)
    bool     wasValid;
    bool     dead;      // 3-touch rule exhausted -> no more trades
+   int      flips;     // role inversions — a level broken from both sides
+                       // repeatedly is range noise, not a zone
    int      sigTouch;  // anti-spam latch: one signal per touch
    int      bornH;     // analysis-TF index it was born on
    datetime bornTime;  // pivot time — where the rectangle starts
@@ -115,7 +122,9 @@ bool   g_bosUpPrev = false, g_bosDnPrev = false;
 //--- active position --------------------------------------------------------
 bool     g_posOn = false, g_posBuy = false, g_posPO2 = false, g_posSwing = false;
 double   g_posEntry = 0, g_posSL = 0, g_posTP1 = 0, g_posTP2 = 0, g_posTP3 = 0;
-int      g_posStat = 0;                   // 0 running · 1/2/3 TP hit · -1 stopped
+int      g_posStat = 0;                   // 0 running · 1/2/3 TP · -1 stop · -2 BE
+bool     g_posBE   = false;               // stop already moved to entry
+long     g_posUid  = -1;                  // which zone produced this setup
 int      g_posBar  = 0;
 datetime g_posTime = 0;
 string   g_posZone = "";
@@ -293,6 +302,7 @@ void AddZone(double top, double bot, const int role, const int bornH, const doub
    g_zones[n].srr        = false;
    g_zones[n].wasValid   = false;
    g_zones[n].dead       = false;
+   g_zones[n].flips      = 0;
    g_zones[n].sigTouch   = 0;
    g_zones[n].bornH      = bornH;
    g_zones[n].bornTime   = t1;
@@ -405,7 +415,8 @@ void DrawPosition(const datetime tNow)
    int   st     = g_posOn ? STYLE_SOLID : STYLE_DOT;
    string kind  = g_posSwing ? "SWING" : "SCALP";
    string dir   = g_posBuy ? "BUY" : "SELL";
-   string stat  = g_posStat == -1 ? "  x SL" :
+   string stat  = g_posStat == -2 ? "  = TP1 -> BE" :
+                  g_posStat == -1 ? "  x SL" :
                   g_posStat == 3  ? "  v TP3" :
                   g_posStat == 2  ? "  v TP2" :
                   g_posStat == 1  ? "  v TP1" : (g_posOn ? "  . running" : "  . closed");
@@ -431,7 +442,7 @@ void DrawPosition(const datetime tNow)
 
    PosText("E",  t2, g_posEntry, dir + " " + kind + (g_posPO2 ? " PO2" : "") + " " +
            g_posZone + stat + "  " + DoubleToString(g_posEntry, _Digits), head);
-   PosText("SL", t2, g_posSL,  "SL  "  + DoubleToString(g_posSL,  _Digits), clrTomato);
+   PosText("SL", t2, g_posSL,  (g_posBE ? "SL-BE " : "SL  ") + DoubleToString(g_posSL, _Digits), clrTomato);
    PosText("T1", t2, g_posTP1, "TP1 " + DoubleToString(g_posTP1, _Digits), clrMediumSeaGreen);
    if(g_posOn || g_posStat >= 2)
       PosText("T2", t2, g_posTP2, "TP2 " + DoubleToString(g_posTP2, _Digits), clrMediumSeaGreen);
@@ -617,6 +628,7 @@ int OnCalculate(const int rates_total,
       g_lastBosUpH = g_lastBosDnH = -999999;
       g_bosUpPrev = g_bosDnPrev = false;
       g_posOn = false; g_posTime = 0; g_posStat = 0;
+      g_posBE = false; g_posUid = -1;
      }
 
    int start = MathMax(prev_calculated - 1, InpPivotLen * 2 + 15);
@@ -675,6 +687,17 @@ int OnCalculate(const int rates_total,
       bool bearPin = rng > 0 && (h - MathMax(o, c)) >= 0.6 * rng && c <= o;
       bool bullConfirm = bullEngulf || bullPin;
       bool bearConfirm = bearEngulf || bearPin;
+      // book, confirmation list: "a small Break of Structure in the trade
+      // direction" — without it a sell fires in the middle of a rally just
+      // because one candle poked the zone
+      double microHi = close[bar - 1], microLo = close[bar - 1];
+      for(int k = 1; k <= InpMicroBosLen && bar - k >= 0; k++)
+        {
+         microHi = MathMax(microHi, close[bar - k]);
+         microLo = MathMin(microLo, close[bar - k]);
+        }
+      bool bosBuyOK  = !InpNeedMicroBos || c > microHi;
+      bool bosSellOK = !InpNeedMicroBos || c < microLo;
       bool brokeSupportNow    = false;
       bool brokeResistanceNow = false;
 
@@ -683,20 +706,36 @@ int OnCalculate(const int rates_total,
         {
          if(g_posBuy)
            {
-            if(l <= g_posSL)                          { g_posStat = -1; g_posOn = false; }
-            else if(h >= g_posTP3)                    { g_posStat =  3; g_posOn = false; }
-            else if(h >= g_posTP2 && g_posStat < 2)     g_posStat =  2;
-            else if(h >= g_posTP1 && g_posStat < 1)     g_posStat =  1;
+            if(l <= g_posSL)              { g_posStat = g_posBE ? -2 : -1; g_posOn = false; }
+            else if(h >= g_posTP3)        { g_posStat =  3; g_posOn = false; }
+            else if(h >= g_posTP2 && g_posStat < 2) g_posStat = 2;
+            else if(h >= g_posTP1 && g_posStat < 1) g_posStat = 1;
            }
          else
            {
-            if(h >= g_posSL)                          { g_posStat = -1; g_posOn = false; }
-            else if(l <= g_posTP3)                    { g_posStat =  3; g_posOn = false; }
-            else if(l <= g_posTP2 && g_posStat < 2)     g_posStat =  2;
-            else if(l <= g_posTP1 && g_posStat < 1)     g_posStat =  1;
+            if(h >= g_posSL)              { g_posStat = g_posBE ? -2 : -1; g_posOn = false; }
+            else if(l <= g_posTP3)        { g_posStat =  3; g_posOn = false; }
+            else if(l <= g_posTP2 && g_posStat < 2) g_posStat = 2;
+            else if(l <= g_posTP1 && g_posStat < 1) g_posStat = 1;
+           }
+         // book: once the trade has paid 1:1, make it risk free (Zero Float)
+         if(InpBreakEven && g_posOn && g_posStat >= 1 && !g_posBE)
+           {
+            g_posSL = g_posEntry;
+            g_posBE = true;
            }
          if(g_posOn && bar - g_posBar > InpMaxTradeBars)
             g_posOn = false;                 // never block the next setup forever
+
+         // book: a zone whose signal got stopped out has been broken — it is
+         // finished, and must not hand out the opposite trade at the same level
+         if(InpKillOnStop && !g_posOn && g_posStat == -1 && g_posUid >= 0)
+           {
+            for(int i = 0; i < ArraySize(g_zones); i++)
+               if(g_zones[i].id == g_posUid)
+                  g_zones[i].dead = true;
+            g_posUid = -1;
+           }
         }
 
       // A Weekly/Daily zone can be years old and hundreds of points away. It is
@@ -731,7 +770,9 @@ int OnCalculate(const int rates_total,
                g_zones[i].touches  = 0;
                g_zones[i].sigTouch = 0;
                g_zones[i].srr      = false;
-               g_zones[i].dead     = false;
+               g_zones[i].flips++;
+               // a level broken from both sides repeatedly is a range boundary
+               g_zones[i].dead     = (g_zones[i].flips >= InpMaxFlips);
                brokeSupportNow     = true;
                Notify((g_zones[i].wasValid ? "I.VS" : "SBR") + " — Support broken (75% rule), zone inverted to SELL", live);
               }
@@ -756,7 +797,7 @@ int OnCalculate(const int rates_total,
                bool okConf  = !InpNeedConfirm || bullConfirm;
                bool fresh   = (g_zones[i].sigTouch != g_zones[i].touches);
                bool rejectOK = InpNeedReject ? (c > g_zones[i].top) : (c > g_zones[i].bot);
-               if(tradable && okTrend && okConf && fresh && rejectOK && canFire && !sigFired)
+               if(tradable && okTrend && okConf && fresh && rejectOK && bosBuyOK && canFire && !sigFired)
                  {
                   g_zones[i].sigTouch = g_zones[i].touches;
                   bool isPO2 = (g_zones[i].state == 2 && g_zones[i].touches == 2);
@@ -783,6 +824,7 @@ int OnCalculate(const int rates_total,
                   g_posSwing = (PeriodSeconds(_Period) >= 3600);
                   g_posBar = bar; g_posTime = time[bar];
                   g_posZone = ZoneText(g_zones[i]); g_posStat = 0;
+                  g_posBE = false; g_posUid = g_zones[i].id;
                  }
               }
            }
@@ -796,7 +838,8 @@ int OnCalculate(const int rates_total,
                g_zones[i].touches  = 0;
                g_zones[i].sigTouch = 0;
                g_zones[i].srr      = false;
-               g_zones[i].dead     = false;
+               g_zones[i].flips++;
+               g_zones[i].dead     = (g_zones[i].flips >= InpMaxFlips);
                brokeResistanceNow  = true;
                Notify((g_zones[i].wasValid ? "I.VR" : "RBS") + " — Resistance broken (75% rule), zone inverted to BUY", live);
               }
@@ -820,7 +863,7 @@ int OnCalculate(const int rates_total,
                bool okConf  = !InpNeedConfirm || bearConfirm;
                bool fresh   = (g_zones[i].sigTouch != g_zones[i].touches);
                bool rejectOK = InpNeedReject ? (c < g_zones[i].bot) : (c < g_zones[i].top);
-               if(tradable && okTrend && okConf && fresh && rejectOK && canFire && !sigFired)
+               if(tradable && okTrend && okConf && fresh && rejectOK && bosSellOK && canFire && !sigFired)
                  {
                   g_zones[i].sigTouch = g_zones[i].touches;
                   bool isPO2 = (g_zones[i].state == 2 && g_zones[i].touches == 2);
@@ -846,6 +889,7 @@ int OnCalculate(const int rates_total,
                   g_posSwing = (PeriodSeconds(_Period) >= 3600);
                   g_posBar = bar; g_posTime = time[bar];
                   g_posZone = ZoneText(g_zones[i]); g_posStat = 0;
+                  g_posBE = false; g_posUid = g_zones[i].id;
                  }
               }
            }
