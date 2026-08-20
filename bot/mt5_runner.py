@@ -18,9 +18,23 @@ except ImportError:  # keeps the repo importable on non-Windows dev machines
 from snrz_core import Candle, Config, SnrzEngine
 
 SYMBOL = "XAUUSD"
-TIMEFRAME_MIN = 15          # M15 for confirmation per the course
+# ANALYSIS timeframe — the book draws zones on 1H/4H/Daily and only monitors
+# below. M15 is a confirmation timeframe, not a zone timeframe.
+TIMEFRAME_MIN = 60
 RISK_PCT = 1.0              # max 1% risk per trade (book rule)
 MAGIC = 20260819
+
+
+def mt5_timeframe(minutes: int):
+    """MT5 has no TIMEFRAME_M60 — anything from an hour up has its own name."""
+    named = {60: "H1", 120: "H2", 180: "H3", 240: "H4", 360: "H6",
+             480: "H8", 720: "H12", 1440: "D1", 10080: "W1", 43200: "MN1"}
+    key = named.get(minutes)
+    attr = f"TIMEFRAME_{key}" if key else f"TIMEFRAME_M{minutes}"
+    tf = getattr(mt5, attr, None)
+    if tf is None:
+        raise SystemExit(f"unsupported timeframe: {minutes} minutes")
+    return tf
 
 
 def lots_for_risk(symbol: str, sl_distance: float, risk_pct: float) -> float:
@@ -65,7 +79,7 @@ def main():
     if not mt5.initialize():
         raise SystemExit(f"MT5 init failed: {mt5.last_error()}")
 
-    tf = getattr(mt5, f"TIMEFRAME_M{TIMEFRAME_MIN}")
+    tf = mt5_timeframe(TIMEFRAME_MIN)
     engine = SnrzEngine(Config())
 
     # warm up with history

@@ -16,7 +16,10 @@ from snrz_core import Candle, Config, SnrzEngine
 
 EXCHANGE = "binance"
 SYMBOL = "BTC/USDT"
-TIMEFRAME = "15m"
+# Feed the engine the ANALYSIS timeframe — the book draws zones on 1H/4H/D and
+# only monitors below. (The indicators pick this automatically from the chart;
+# here it is explicit. Separate lower-TF confirmation is the next step.)
+TIMEFRAME = "1h"
 RISK_PCT = 1.0
 DRY_RUN = True              # True = فقط سیگنال چاپ می‌شود، سفارشی ارسال نمی‌شود
 

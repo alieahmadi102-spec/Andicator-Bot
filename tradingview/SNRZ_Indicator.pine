@@ -1,8 +1,12 @@
 //@version=6
-// build: v4.6 — no trading while the market ranges (both sides of structure
-//               broken recently), and the confirmation candle must now close
-//               OUTSIDE the zone — a real rejection, as the book asks — which
-//               removes the scatter of arrows through choppy areas.
+// build: v5.0 — the book's timeframe table is now applied automatically: zones
+//               and trend are ALWAYS read from the higher analysis timeframe
+//               (5m chart → 15m zones, 15m → 1H, 30m → 4H, 1H → Daily,
+//               4H → Weekly) while the confirmation candle stays on the chart.
+//               Drawing zones on the chart timeframe itself was the real cause
+//               of the scattered arrows. Also: ONE trade at a time (no new
+//               signal while a position is open), and the last position keeps
+//               its Entry/SL/TP1-3 on screen after it closes.
 // ═══════════════════════════════════════════════════════════════════════════
 //  SNRZ Strategy Indicator — "Zindan The Gold Chaser" Masterclass (2026 book)
 //
@@ -17,23 +21,26 @@ indicator("SNRZ Strategy [Zindan]", "SNRZ", overlay = true, max_boxes_count = 20
 
 // ───────────────────────────── Inputs ──────────────────────────────────────
 grpZ  = "Zones (SNRZ)"
-zoneTF        = input.timeframe("", "Zone timeframe (book: 1H/4H — empty = chart TF)", group = grpZ)
+zoneTF        = input.timeframe("", "Zone timeframe (empty = AUTO from the book's table)", group = grpZ, tooltip = "جدول رسمی کتاب: چارت 5m ⇒ زون 15m · 15m ⇒ 1H · 30m ⇒ 4H · 1H ⇒ Daily · 4H ⇒ Weekly. زون‌ها فقط در تایم بالا کشیده می‌شوند و تأیید روی خود چارت گرفته می‌شود.")
 pivotLen      = input.int(10,   "Pivot length (swing sensitivity)",        minval = 2,  group = grpZ)
 maxZones      = input.int(6,    "Max active zones",                        minval = 2,  maxval = 20, group = grpZ)
 bigMoveMult   = input.float(1.5,"Big Movement ≥ ATR ×",                    minval = 0.1, step = 0.1, group = grpZ)
 breakoutPct   = input.float(75, "Breakout rule (%)",                       minval = 50, maxval = 100, group = grpZ)
 minZoneATR    = input.float(0.15,"Min zone height (ATR ×)",                minval = 0.05, step = 0.05, group = grpZ)
 maxZoneATR    = input.float(1.2, "Max zone height (ATR ×)",                minval = 0.2,  step = 0.1,  group = grpZ)
-zoneMaxAge    = input.int(400,  "Zone lifetime (chart bars)",              minval = 50, group = grpZ)
+zoneMaxAge    = input.int(400,  "Zone lifetime (analysis-TF bars)",        minval = 50, group = grpZ)
 
 grpS  = "Signals"
 useTrendFilter = input.bool(true,  "Trade only with structure trend (Trend is King)", group = grpS)
 allowCounterInv = input.bool(false, "Allow counter-trend entries on inversion zones", group = grpS, tooltip = "کتاب: «ترند پادشاه است». پیش‌فرض خاموش تا در روند صعودی سیگنال فروش ندهد.")
 maxTouches     = input.int(3,      "Max touches on VALID zone (3-touch rule)", minval = 2, maxval = 4, group = grpS)
-swingAtrMult   = input.float(3.0,  "Also SWING when TP1 distance ≥ ATR ×",  minval = 1, step = 0.5, group = grpS, tooltip = "کتاب: اسکلپ روی M5/M15 و سوینگ روی H1/H4/Daily. تایم‌فریم زون ≥ ۱ ساعت یعنی SWING.")
-minSlAtr       = input.float(0.5,  "Minimum stop distance (ATR ×)",         minval = 0.1, step = 0.1, group = grpS, tooltip = "استاپ خیلی نزدیک با نویز عادی بازار سویپ می‌شود. حداقل فاصله‌ی استاپ از ورود.")
-needReject     = input.bool(true,  "Confirmation candle must close OUTSIDE the zone", group = grpS, tooltip = "کتاب: چاوەڕێی کێندڵی ڕەتکردنەوە — کندل تأیید باید زون را رد کند و بیرونش بسته شود، نه اینکه وسط زون بسته شود.")
-rangeBars      = input.int(30,     "Range lockout (bars since opposite BOS)", minval = 5, group = grpS, tooltip = "کتاب: بازار Sideway خطرناک است. اگر هر دو طرف ساختار در این تعداد کندل اخیر شکسته شده باشد، بازار رنج است و ترید نمی‌کنیم.")
+swingAtrMult   = input.float(3.0,  "Also SWING when TP1 distance ≥ ATR ×",  minval = 1, step = 0.5, group = grpS, tooltip = "کتاب: اسکلپ روی M5/M15 و سوینگ روی H1/H4/Daily. تایم‌فریم خودِ چارت ≥ ۱ ساعت یعنی SWING.")
+minSlAtr       = input.float(0.5,  "Minimum stop distance (analysis ATR ×)", minval = 0.1, step = 0.1, group = grpS, tooltip = "استاپ خیلی نزدیک با نویز عادی بازار سویپ می‌شود. حداقل فاصله بر مبنای ATR تایم تحلیل.")
+needReject     = input.bool(true,  "Confirmation candle must close OUTSIDE the zone", group = grpS, tooltip = "کتاب: کندل تأیید باید زون را رد کند و بیرونش بسته شود، نه اینکه وسط زون بسته شود.")
+rangeBars      = input.int(10,     "Range lockout (analysis-TF bars since opposite BOS)", minval = 2, group = grpS, tooltip = "کتاب: بازار Sideway خطرناک است. اگر هر دو طرف ساختار در این تعداد کندلِ تایم تحلیل شکسته شده باشد، بازار رنج است و ترید نمی‌کنیم.")
+oneTrade       = input.bool(true,  "One trade at a time (no overtrade)",    group = grpS, tooltip = "کتاب: Overtrade نکن. تا وقتی پوزیشن باز است سیگنال جدید صادر نمی‌شود.")
+tpMaxR         = input.float(6.0,  "Max R for TP1/TP2 (farther zone → TP3)", minval = 1, step = 0.5, group = grpS, tooltip = "کتاب: تارگت اول نزدیک‌ترین لیکوییدیتی است. زونی که خیلی دورتر است تارگت اول نیست و به TP3 منتقل می‌شود.")
+maxTradeBars   = input.int(300,    "Close an open trade after N chart bars", minval = 20, group = grpS)
 showPosition   = input.bool(true,  "Show active position (Entry/SL/TP1-3)", group = grpS)
 showFresh      = input.bool(true,  "Show fresh (not yet valid) zones",     group = grpS)
 showPanel      = input.bool(true,  "Show SNRZ info panel",                 group = grpS)
@@ -50,57 +57,80 @@ colGold  = input.color(#d4af37, "Accent (Zindan gold)", group = grpV)
 
 // ─────────────────────────── Core series ───────────────────────────────────
 atr = ta.atr(14)
-bigMove = atr * bigMoveMult
+
+// Book timeframe table (Analysis → SKIP → Confirmation):
+//   Weekly→Daily→4H · Daily→4H→1H · 4H→1H→30m · 1H→30m→15m · 15m→5m→5m
+// Read right-to-left: the chart is the CONFIRMATION column, so 5m⇒15m,
+// 15m⇒1H, 30m⇒4H, 1H⇒Daily, 4H⇒Weekly.
+// The chart we watch IS the confirmation timeframe, so the analysis timeframe
+// is read straight off that table. Zones must never be drawn on the chart
+// timeframe itself — the book says zones live on W/D/4H/1H and the low
+// timeframe is only for monitoring and confirmation.
+chartMin = timeframe.in_seconds(timeframe.period) / 60
+autoTF   = chartMin <= 5 ? "15" : chartMin <= 15 ? "60" : chartMin <= 30 ? "240" : chartMin <= 60 ? "D" : chartMin <= 1440 ? "W" : "M"
+zoneTFx   = zoneTF == "" ? autoTF : zoneTF
+zoneTfMin = timeframe.in_seconds(zoneTFx) / 60
+tfRatio   = math.max(1.0, zoneTfMin / math.max(chartMin, 1.0))
+// the pivot that created a zone sits pivotLen ANALYSIS bars back, which is this
+// many CHART bars back — that is where the rectangle has to start
+zoneBack  = math.min(100, int(math.round(pivotLen * tfRatio)))
 
 // book: "put the SL beyond the shadow / on the liquidity", never inside the zone
 swingLo3 = ta.lowest(low, 3)
 swingHi3 = ta.highest(high, 3)
-// book: Scalper works M5/M15 (20-50 pips) · Swing works H1/H4/Daily (300-1000)
-zoneTfMin = timeframe.in_seconds(zoneTF == "" ? timeframe.period : zoneTF) / 60
 
 phSrc = ta.pivothigh(high, pivotLen, pivotLen)
 plSrc = ta.pivotlow(low,  pivotLen, pivotLen)
 bodyHiSrc = math.max(open[pivotLen], close[pivotLen])
 bodyLoSrc = math.min(open[pivotLen], close[pivotLen])
+// size of the movement made AFTER the pivot — the book's "Big Movement"
+hiRunSrc = ta.highest(high, pivotLen)
+loRunSrc = ta.lowest(low,  pivotLen)
 
-[phZ, plZ, pBodyHiZ, pBodyLoZ] = request.security(syminfo.tickerid, zoneTF, [phSrc, plSrc, bodyHiSrc, bodyLoSrc], lookahead = barmerge.lookahead_off)
+[phZ, plZ, pBodyHiZ, pBodyLoZ, closeZ, atrZ, hiRunZ, loRunZ] = request.security(syminfo.tickerid, zoneTFx, [phSrc, plSrc, bodyHiSrc, bodyLoSrc, close[1], atr[1], hiRunSrc, loRunSrc], lookahead = barmerge.lookahead_off)
+
+atrA    = na(atrZ) ? atr : atrZ           // ATR of the analysis timeframe
+bigMove = atrA * bigMoveMult
 
 newPH = not na(phZ) and (na(phZ[1]) or phZ != phZ[1])
 newPL = not na(plZ) and (na(plZ[1]) or plZ != plZ[1])
 
+// Trend is read on the ANALYSIS timeframe, never on the chart. "Trend is King"
+// in the book means the Daily/H4 trend; measuring it on a 1m/5m chart made it
+// flip every few candles, which is what let buys and sells alternate through
+// the same range. Structure = the higher-timeframe swings; a break of one of
+// them (BOS) is what turns the trend.
 var float lastHigh = na
 var float prevHigh = na
 var float lastLow  = na
 var float prevLow  = na
-prevHigh := not na(phSrc) ? lastHigh : prevHigh
-lastHigh := not na(phSrc) ? phSrc : lastHigh
-prevLow := not na(plSrc) ? lastLow : prevLow
-lastLow := not na(plSrc) ? plSrc : lastLow
-// Trend flips on a Break of Structure, exactly as the book defines it: a close
-// beyond the last confirmed swing IS the structure break. Comparing only the
-// last two pivots lagged so badly that a strong rally still read DOWNTREND,
-// which then blocked every valid buy.
-// A tiny poke past the swing is not a break, so the close must clear it by a
-// buffer. And when BOTH sides get broken within a short window the market is
-// simply ranging — the book calls sideway dangerous and says to stand aside,
-// so no trade is allowed until one side is broken on its own.
-var int trendState    = 0
-var int lastBosUpBar  = -99999
-var int lastBosDnBar  = -99999
-bosUp = not na(lastHigh) and close > lastHigh + atr * 0.1
-bosDn = not na(lastLow)  and close < lastLow  - atr * 0.1
-if bosUp
+prevHigh := newPH ? lastHigh : prevHigh
+lastHigh := newPH ? phZ : lastHigh
+prevLow := newPL ? lastLow : prevLow
+lastLow := newPL ? plZ : lastLow
+
+var int trendState   = 0
+var int lastBosUpBar = -99999
+var int lastBosDnBar = -99999
+bosUp = not na(lastHigh) and not na(closeZ) and closeZ > lastHigh + atrA * 0.1
+bosDn = not na(lastLow)  and not na(closeZ) and closeZ < lastLow  - atrA * 0.1
+// only the moment the structure breaks counts, not every bar it stays broken
+bosUpNew = bosUp and not bosUp[1]
+bosDnNew = bosDn and not bosDn[1]
+if bosUpNew
     lastBosUpBar := bar_index
     trendState   := 1
-if bosDn
+if bosDnNew
     lastBosDnBar := bar_index
     trendState   := -1
-if not bosUp and not bosDn and trendState == 0 and not na(prevHigh) and not na(prevLow)
+if trendState == 0 and not na(prevHigh) and not na(prevLow)
     if lastHigh > prevHigh and lastLow > prevLow
         trendState := 1
     else if lastHigh < prevHigh and lastLow < prevLow
         trendState := -1
-inRange   = (bar_index - lastBosUpBar) <= rangeBars and (bar_index - lastBosDnBar) <= rangeBars
+// both sides of structure broken recently = sideway. Book: "No Setup, No Trade".
+rangeSpan = math.round(rangeBars * tfRatio)
+inRange   = (bar_index - lastBosUpBar) <= rangeSpan and (bar_index - lastBosDnBar) <= rangeSpan
 trendUp   = trendState == 1 and not inRange
 trendDown = trendState == -1 and not inRange
 
@@ -148,14 +178,14 @@ refreshZone(Zone z) =>
     box.set_text_color(z.bx, hidden ? color.new(color.gray, 100) : color.new(c, 0))
     box.set_text_size(z.bx, size.small)
     box.set_text_halign(z.bx, text.align_right)
-    line.set_xy1(z.mid, z.bornBar - pivotLen, (z.top + z.bot) / 2)
+    line.set_xy1(z.mid, z.bornBar - zoneBack, (z.top + z.bot) / 2)
     line.set_xy2(z.mid, bar_index + 8, (z.top + z.bot) / 2)
     line.set_color(z.mid, hidden ? color.new(color.gray, 100) : color.new(c, 45))
 
 newZone(float _top, float _bot, int _role) =>
     h  = _top - _bot
-    mn = atr * minZoneATR
-    mx = atr * maxZoneATR
+    mn = atrA * minZoneATR
+    mx = atrA * maxZoneATR
     t  = _top
     b  = _bot
     if h < mn
@@ -167,8 +197,8 @@ newZone(float _top, float _bot, int _role) =>
             t := b + mx
         else
             b := t - mx
-    bx = box.new(bar_index - pivotLen, t, bar_index + 8, b, border_color = color.new(color.gray, 60), bgcolor = colSup)
-    md = line.new(bar_index - pivotLen, (t + b) / 2, bar_index + 8, (t + b) / 2, style = line.style_dashed, color = color.new(color.gray, 50))
+    bx = box.new(bar_index - zoneBack, t, bar_index + 8, b, border_color = color.new(color.gray, 60), bgcolor = colSup)
+    md = line.new(bar_index - zoneBack, (t + b) / 2, bar_index + 8, (t + b) / 2, style = line.style_dashed, color = color.new(color.gray, 50))
     Zone.new(t, b, _role, 0, 0, 0, 0, false, false, false, bar_index, bx, md)
 
 overlaps(float _top, float _bot) =>
@@ -186,25 +216,30 @@ killZone(int idx) =>
     array.remove(zones, idx)
 
 // ─────────────── Cleanup ────────────────────────────────────────────────────
+// lifetime counted in ANALYSIS-timeframe bars, so a 1H zone is not thrown away
+// after a couple of hours just because the chart is on 1m
+zoneLife = zoneMaxAge * tfRatio
 if array.size(zones) > 0
     for i = array.size(zones) - 1 to 0
         Zone z = array.get(zones, i)
-        if bar_index - z.bornBar > zoneMaxAge
+        if bar_index - z.bornBar > zoneLife
             killZone(i)
 while array.size(zones) > maxZones
     killZone(0)
 
 // ─────────────── Create zones from confirmed HTF pivots ────────────────────
-if newPL
+// book: the zone is only born if the price left it with a BIG MOVEMENT, and
+// the movement is measured on the analysis timeframe, not on the chart.
+if newPL and not na(atrZ)
     pTop = pBodyLoZ
     pBot = plZ
-    if (high - pBot) >= bigMove and not overlaps(pTop, pBot)
+    if (hiRunZ - pBot) >= bigMove and not overlaps(pTop, pBot)
         array.push(zones, newZone(pTop, pBot, 1))
 
-if newPH
+if newPH and not na(atrZ)
     pTop = phZ
     pBot = pBodyHiZ
-    if (pTop - low) >= bigMove and not overlaps(pTop, pBot)
+    if (pTop - loRunZ) >= bigMove and not overlaps(pTop, pBot)
         array.push(zones, newZone(pTop, pBot, -1))
 
 // ───────────────── Confirmation candles ────────────────────────────────────
@@ -235,6 +270,21 @@ bearBreak75(float lvl) =>
         partial := len > 0 and (math.min(lvl, bodyHigh) - low) / len * 100 >= breakoutPct
     fullBody or partial
 
+// ───────────── Active position state (declared before the engine so a new
+//               signal can be blocked while a trade is still running) ────────
+var bool   posOn    = false
+var bool   posBuy   = false
+var bool   posPO2   = false
+var float  posEntry = na
+var float  posSL    = na
+var float  posTP1   = na
+var float  posTP2   = na
+var float  posTP3   = na
+var bool   posSwing = false
+var int    posBar   = 0
+var string posZone  = ""
+var int    posStat  = 0     // 0 running · 1/2/3 TP hit · -1 stopped out
+
 // ─────────────────────── Zone engine ───────────────────────────────────────
 bool buySig      = false
 bool sellSig     = false
@@ -251,6 +301,8 @@ bool  sigIsBuy = false
 bool  sigIsPO2 = false
 float sigSl    = na
 string sigZone = ""
+// book: don't overtrade — manage one setup at a time
+canFire = not (oneTrade and posOn)
 
 for z in zones
     if bar_index <= z.bornBar
@@ -281,7 +333,7 @@ for z in zones
             okTrend  = not useTrendFilter or trendUp or (allowCounterInv and z.state == 2)
             freshSig = z.sigTouch != z.touches
             rejectOK = needReject ? close > z.top : close > z.bot
-            if tradable and okTrend and freshSig and bullConfirm and rejectOK
+            if tradable and okTrend and freshSig and bullConfirm and rejectOK and canFire and not sigFired
                 z.sigTouch := z.touches
                 isPO2 = z.state == 2 and z.touches == 2
                 po2Buy := isPO2 ? true : po2Buy
@@ -289,7 +341,7 @@ for z in zones
                 sigFired := true
                 sigIsBuy := true
                 sigIsPO2 := isPO2
-                sigSl := math.min(z.bot, swingLo3) - atr * 0.2
+                sigSl := math.min(z.bot, swingLo3) - atrA * 0.15
                 sigZone := zoneText(z)
     else
         if bullBreak75(z.top)
@@ -313,7 +365,7 @@ for z in zones
             okTrend  = not useTrendFilter or trendDown or (allowCounterInv and z.state == 2)
             freshSig = z.sigTouch != z.touches
             rejectOK = needReject ? close < z.bot : close < z.top
-            if tradable and okTrend and freshSig and bearConfirm and rejectOK
+            if tradable and okTrend and freshSig and bearConfirm and rejectOK and canFire and not sigFired
                 z.sigTouch := z.touches
                 isPO2 = z.state == 2 and z.touches == 2
                 po2Sell := isPO2 ? true : po2Sell
@@ -321,7 +373,7 @@ for z in zones
                 sigFired := true
                 sigIsBuy := false
                 sigIsPO2 := isPO2
-                sigSl := math.max(z.top, swingHi3) + atr * 0.2
+                sigSl := math.max(z.top, swingHi3) + atrA * 0.15
                 sigZone := zoneText(z)
     refreshZone(z)
 
@@ -340,24 +392,11 @@ if brokeResistanceNow or brokeSupportNow
                 z.srr := true
         refreshZone(z)
 
-// ───────────── Active position state (updated only on a NEW signal) ────────
-var bool   posOn    = false
-var bool   posBuy   = false
-var bool   posPO2   = false
-var float  posEntry = na
-var float  posSL    = na
-var float  posTP1   = na
-var float  posTP2   = na
-var float  posTP3   = na
-var bool   posSwing = false
-var int    posBar   = 0
-var string posZone  = ""
-var int    posStat  = 0     // 0 running · 1/2/3 TP hit · -1 stopped out
-
+// ───────────── Open the position on a NEW signal ───────────────────────────
 if sigFired
     entry = close
     rawRisk = math.abs(entry - sigSl)
-    risk  = math.max(rawRisk, atr * minSlAtr)
+    risk  = math.max(rawRisk, atrA * minSlAtr)
     slLvl = sigIsBuy ? entry - risk : entry + risk
     // targets = opposite zones ahead of price (book), else 1R / 2R / 3R
     // collect the DISTANCE of every opposite zone lying ahead of price, so the
@@ -373,10 +412,22 @@ if sigFired
             array.push(dists, math.abs(lvl - entry))
     if array.size(dists) > 1
         array.sort(dists, order.ascending)
-    n = array.size(dists)
-    float d1 = n >= 1 ? array.get(dists, 0) : risk
-    float d2 = n >= 2 ? array.get(dists, 1) : d1 + risk
-    float d3 = n >= 3 ? array.get(dists, 2) : d2 + risk
+    // The book takes TP1 at the NEAREST liquidity. A zone sitting 15R away is
+    // a destination, not a first target — only zones within tpMaxR feed
+    // TP1/TP2; anything beyond that can still serve as TP3.
+    cap  = risk * tpMaxR
+    near = array.new<float>()
+    far  = array.new<float>()
+    for d in dists
+        if d <= cap
+            array.push(near, d)
+        else
+            array.push(far, d)
+    n  = array.size(near)
+    nf = array.size(far)
+    float d1 = n >= 1 ? array.get(near, 0) : risk
+    float d2 = n >= 2 ? array.get(near, 1) : math.max(d1 + risk, risk * 2)
+    float d3 = n >= 3 ? array.get(near, 2) : (nf > 0 ? array.get(far, 0) : math.max(d2 + risk, risk * 3))
     // book: RR at least 1:1, and each target must sit beyond the previous one
     d1 := math.max(d1, risk)
     d2 := math.max(d2, d1 + risk * 0.5)
@@ -392,7 +443,9 @@ if sigFired
     posTP1   := t1
     posTP2   := t2
     posTP3   := t3
-    posSwing := zoneTfMin >= 60 or math.abs(t1 - entry) >= atr * swingAtrMult
+    // book: Scalper works M5/M15 (20-50 pips) · Swing works H1/H4/Daily
+    // the timeframe you TRADE on decides it, so the chart TF is the reference
+    posSwing := chartMin >= 60 or math.abs(t1 - entry) >= atr * swingAtrMult
     posBar   := bar_index
     posZone  := sigZone
     posStat  := 0
@@ -421,6 +474,9 @@ else if posOn and posStat >= 0
             posStat := 2
         else if low <= posTP1 and posStat < 1
             posStat := 1
+    // a setup that never resolved must not block the next one forever
+    if posOn and bar_index - posBar > maxTradeBars
+        posOn := false
 
 // ───────────── Draw the single active position (clean) ─────────────────────
 var line[]  pl = array.new<line>()
@@ -434,28 +490,32 @@ if barstate.islast
         label.delete(lb)
     array.clear(pb)
 
-if showPosition and posOn and barstate.islast
+// the LAST setup stays on the chart even after it closed, so the levels are
+// always visible — a closed one is just drawn faded and tagged with its result
+if showPosition and not na(posEntry) and barstate.islast
 
     x1 = posBar
     x2 = bar_index + 25
+    fade    = posOn ? 0 : 55
     dirCol  = posBuy ? colBuy : colSell
-    headCol = posPO2 ? colGold : dirCol
-    headTxt = posPO2 ? color.black : color.white
+    headCol = color.new(posPO2 ? colGold : dirCol, fade)
+    headTxt = color.new(posPO2 ? color.black : color.white, posOn ? 0 : 30)
     kind    = posSwing ? "SWING" : "SCALP"
     dir     = posBuy ? "BUY" : "SELL"
+    stStyle = posOn ? line.style_solid : line.style_dotted
 
-    array.push(pl, line.new(x1, posEntry, x2, posEntry, color = color.new(color.white, 25), width = 2, style = line.style_dotted))
-    array.push(pl, line.new(x1, posSL,    x2, posSL,    color = colSell, width = 2))
-    array.push(pl, line.new(x1, posTP1,   x2, posTP1,   color = colBuy,  width = 2))
-    array.push(pl, line.new(x1, posTP2,   x2, posTP2,   color = color.new(colBuy, 35), width = 1, style = line.style_dashed))
-    array.push(pl, line.new(x1, posTP3,   x2, posTP3,   color = color.new(colBuy, 55), width = 1, style = line.style_dashed))
+    array.push(pl, line.new(x1, posEntry, x2, posEntry, color = color.new(color.white, 25 + fade / 2), width = 2, style = line.style_dotted))
+    array.push(pl, line.new(x1, posSL,    x2, posSL,    color = color.new(colSell, fade), width = 2, style = stStyle))
+    array.push(pl, line.new(x1, posTP1,   x2, posTP1,   color = color.new(colBuy, fade),  width = 2, style = stStyle))
+    array.push(pl, line.new(x1, posTP2,   x2, posTP2,   color = color.new(colBuy, 35 + fade / 2), width = 1, style = line.style_dashed))
+    array.push(pl, line.new(x1, posTP3,   x2, posTP3,   color = color.new(colBuy, 55 + fade / 2), width = 1, style = line.style_dashed))
 
-    statTxt = posStat == -1 ? "  ✗ SL" : posStat == 3 ? "  ✓ TP3" : posStat == 2 ? "  ✓ TP2" : posStat == 1 ? "  ✓ TP1" : "  • running"
+    statTxt = posStat == -1 ? "  ✗ SL" : posStat == 3 ? "  ✓ TP3" : posStat == 2 ? "  ✓ TP2" : posStat == 1 ? "  ✓ TP1" : posOn ? "  • running" : "  • closed"
     array.push(pb, label.new(x2, posEntry, dir + " · " + kind + (posPO2 ? " · PO2" : "") + " · " + posZone + statTxt + "\n" + str.tostring(posEntry, format.mintick), style = label.style_label_left, color = headCol, textcolor = headTxt, size = size.normal))
-    array.push(pb, label.new(x2, posSL,  "SL   " + str.tostring(posSL,  format.mintick), style = label.style_label_left, color = color.new(colSell, 10), textcolor = color.white, size = size.small))
-    array.push(pb, label.new(x2, posTP1, "TP1  " + str.tostring(posTP1, format.mintick), style = label.style_label_left, color = color.new(colBuy, 10), textcolor = color.white, size = size.small))
-    array.push(pb, label.new(x2, posTP2, "TP2  " + str.tostring(posTP2, format.mintick), style = label.style_label_left, color = color.new(colBuy, 35), textcolor = color.white, size = size.small))
-    array.push(pb, label.new(x2, posTP3, "TP3  " + str.tostring(posTP3, format.mintick), style = label.style_label_left, color = color.new(colBuy, 55), textcolor = color.white, size = size.small))
+    array.push(pb, label.new(x2, posSL,  "SL   " + str.tostring(posSL,  format.mintick), style = label.style_label_left, color = color.new(colSell, 10 + fade / 2), textcolor = color.new(color.white, fade / 2), size = size.small))
+    array.push(pb, label.new(x2, posTP1, "TP1  " + str.tostring(posTP1, format.mintick), style = label.style_label_left, color = color.new(colBuy, 10 + fade / 2), textcolor = color.new(color.white, fade / 2), size = size.small))
+    array.push(pb, label.new(x2, posTP2, "TP2  " + str.tostring(posTP2, format.mintick), style = label.style_label_left, color = color.new(colBuy, 35 + fade / 2), textcolor = color.new(color.white, fade / 2), size = size.small))
+    array.push(pb, label.new(x2, posTP3, "TP3  " + str.tostring(posTP3, format.mintick), style = label.style_label_left, color = color.new(colBuy, 55 + fade / 2), textcolor = color.new(color.white, fade / 2), size = size.small))
 
 // ───────────────────── Small history arrows ────────────────────────────────
 plotshape(buySig,  "BUY",      shape.triangleup,   location.belowbar, color.new(#00c853, 0), size = size.tiny,  display = display.pane)
@@ -466,7 +526,7 @@ plotshape(po2Sell, "PO2 SELL", shape.triangledown, location.abovebar, color.new(
 // ───────────────────── Zindan info panel ───────────────────────────────────
 var table info = table.new(position.top_right, 1, 5, bgcolor = color.new(#0b0b0b, 8), frame_width = 2, frame_color = color.new(#d4af37, 20), border_width = 1, border_color = color.new(#d4af37, 75))
 if showPanel and barstate.islast
-    trendTxt = inRange ? "◆ RANGE — no trade" : trendUp ? "▲ UPTREND" : trendDown ? "▼ DOWNTREND" : "◆ RANGE"
+    trendTxt = inRange ? "◆ RANGE — no trade" : trendUp ? "▲ UPTREND " + zoneTFx : trendDown ? "▼ DOWNTREND " + zoneTFx : "◆ RANGE"
     trendCol = inRange ? colGold : trendUp ? colBuy : trendDown ? colSell : colGold
     activeCnt = 0
     for z in zones
@@ -477,7 +537,7 @@ if showPanel and barstate.islast
     table.cell(info, 0, 0, "⚜  SNRZ  —  ZiNDAN", text_color = colGold, text_size = size.normal)
     table.cell(info, 0, 1, "The Gold Chaser", text_color = color.new(colGold, 35), text_size = size.tiny)
     table.cell(info, 0, 2, trendTxt, text_color = trendCol, text_size = size.small)
-    table.cell(info, 0, 3, "Zones: " + str.tostring(activeCnt) + "   TF: " + (zoneTF == "" ? timeframe.period : zoneTF), text_color = color.new(color.white, 20), text_size = size.small)
+    table.cell(info, 0, 3, "Zones: " + str.tostring(activeCnt) + " @ " + zoneTFx + "   ⇢ confirm " + timeframe.period, text_color = color.new(color.white, 20), text_size = size.small)
     table.cell(info, 0, 4, "Position: " + posTxt, text_color = color.new(color.white, 20), text_size = size.small)
 
 // ───────────────────────────── Alerts ──────────────────────────────────────
