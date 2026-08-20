@@ -17,7 +17,7 @@
 //  SCALP vs SWING (book): M5/M15 = SCALP · H1/H4/Daily = SWING.
 //  Nothing more, nothing less than the strategy in the book.
 // ═══════════════════════════════════════════════════════════════════════════
-indicator("SNRZ Strategy [Zindan]", "SNRZ", overlay = true, max_boxes_count = 200, max_labels_count = 200, max_lines_count = 200)
+indicator("SNRZ Strategy [Zindan] v5", "SNRZ v5", overlay = true, max_boxes_count = 200, max_labels_count = 200, max_lines_count = 200)
 
 // ───────────────────────────── Inputs ──────────────────────────────────────
 grpZ  = "Zones (SNRZ)"
@@ -534,7 +534,7 @@ if showPanel and barstate.islast
             activeCnt += 1
     stTxt = posStat == -1 ? " ✗SL" : posStat > 0 ? " ✓TP" + str.tostring(posStat) : " •"
     posTxt = not na(posEntry) ? ((posBuy ? "BUY " : "SELL ") + (posSwing ? "SWING" : "SCALP") + " @ " + str.tostring(posEntry, format.mintick) + stTxt + (posOn ? "" : " (closed)")) : "—"
-    table.cell(info, 0, 0, "⚜  SNRZ  —  ZiNDAN", text_color = colGold, text_size = size.normal)
+    table.cell(info, 0, 0, "⚜  SNRZ v5.0  —  ZiNDAN", text_color = colGold, text_size = size.normal)
     table.cell(info, 0, 1, "The Gold Chaser", text_color = color.new(colGold, 35), text_size = size.tiny)
     table.cell(info, 0, 2, trendTxt, text_color = trendCol, text_size = size.small)
     table.cell(info, 0, 3, "Zones: " + str.tostring(activeCnt) + " @ " + zoneTFx + "   ⇢ confirm " + timeframe.period, text_color = color.new(color.white, 20), text_size = size.small)
