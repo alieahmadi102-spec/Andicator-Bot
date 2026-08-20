@@ -102,6 +102,7 @@ class Config:
     need_reject: bool = True    # confirmation candle must close outside the zone
     range_bars: int = 10        # both sides of structure broken this recently = range
     max_touches: int = 3
+    max_zone_dist_atr: float = 5.0   # a zone this far from price is not tradeable
     min_sl_atr: float = 0.5     # a stop closer than this gets swept by noise
     one_trade: bool = True      # book: don't overtrade — one setup at a time
     max_trade_bars: int = 300   # a setup that never resolves must not block forever
@@ -338,6 +339,11 @@ class SnrzEngine:
         self._detect_pivots(idx, atr)
         self._update_trend(c, atr, idx)
         self._update_position(c, idx)
+        # a zone far away from price is no longer tradeable — drop it
+        max_dist = atr * self.cfg.max_zone_dist_atr
+        self.zones = [z for z in self.zones
+                      if (c.close - z.top if c.close > z.top else
+                          z.bot - c.close if c.close < z.bot else 0.0) <= max_dist]
         bull_conf, bear_conf = self._confirm(c, self.candles[idx - 1])
         cfg = self.cfg
         broke_support = broke_resistance = False

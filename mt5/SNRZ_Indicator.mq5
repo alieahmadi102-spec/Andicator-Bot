@@ -51,6 +51,7 @@ input double InpBreakoutPct  = 75.0;  // Breakout rule (%) — the 75% rule
 input double InpMinZoneATR   = 0.15;  // Min zone height (ATR x)
 input double InpMaxZoneATR   = 1.20;  // Max zone height (ATR x)
 input int    InpZoneMaxAge   = 400;   // Zone lifetime (analysis-TF bars)
+input double InpMaxZoneDistATR = 5.0; // Drop zones further than (analysis ATR x)
 
 input group "Signals"
 input bool   InpTrendFilter  = true;  // Trade only with structure trend
@@ -62,7 +63,6 @@ input int    InpRangeBars    = 10;    // Range lockout (analysis-TF bars since o
 input bool   InpOneTrade     = true;  // One trade at a time (no overtrade)
 input int    InpMaxTradeBars = 300;   // Close an open trade after N chart bars
 input double InpMinSlATR     = 0.5;   // Minimum stop distance (analysis ATR x)
-input double InpSwingAtrMult = 3.0;   // Also SWING when TP1 distance >= ATR x
 input double InpTpMaxR       = 6.0;   // Max R for TP1/TP2 (farther zone -> TP3)
 input bool   InpShowPosition = true;  // Draw Entry / SL / TP1-3 of the last setup
 
@@ -672,6 +672,17 @@ int OnCalculate(const int rates_total,
             g_posOn = false;                 // never block the next setup forever
         }
 
+      // A Weekly/Daily zone can be years old and hundreds of points away. It is
+      // not tradeable any more and it wrecks the chart scale, so drop it.
+      double maxZoneDist = atrA * InpMaxZoneDistATR;
+      for(int i = ArraySize(g_zones) - 1; i >= 0; i--)
+        {
+         double gap = c > g_zones[i].top ? c - g_zones[i].top
+                      : (c < g_zones[i].bot ? g_zones[i].bot - c : 0.0);
+         if(gap > maxZoneDist)
+            RemoveZoneAt(i);
+        }
+
       // book: don't overtrade — manage one setup at a time
       bool canFire  = !(InpOneTrade && g_posOn);
       bool sigFired = false;
@@ -742,8 +753,7 @@ int OnCalculate(const int rates_total,
                   g_posOn = true; g_posBuy = true; g_posPO2 = isPO2;
                   g_posEntry = c; g_posSL = c - risk;
                   g_posTP1 = t1; g_posTP2 = t2; g_posTP3 = t3;
-                  g_posSwing = (PeriodSeconds(_Period) >= 3600) ||
-                               (MathAbs(t1 - c) >= atr * InpSwingAtrMult);
+                  g_posSwing = (PeriodSeconds(_Period) >= 3600);
                   g_posBar = bar; g_posTime = time[bar];
                   g_posZone = ZoneText(g_zones[i]); g_posStat = 0;
                  }
@@ -806,8 +816,7 @@ int OnCalculate(const int rates_total,
                   g_posOn = true; g_posBuy = false; g_posPO2 = isPO2;
                   g_posEntry = c; g_posSL = c + risk;
                   g_posTP1 = t1; g_posTP2 = t2; g_posTP3 = t3;
-                  g_posSwing = (PeriodSeconds(_Period) >= 3600) ||
-                               (MathAbs(t1 - c) >= atr * InpSwingAtrMult);
+                  g_posSwing = (PeriodSeconds(_Period) >= 3600);
                   g_posBar = bar; g_posTime = time[bar];
                   g_posZone = ZoneText(g_zones[i]); g_posStat = 0;
                  }
