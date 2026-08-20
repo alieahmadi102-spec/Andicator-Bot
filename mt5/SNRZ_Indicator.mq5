@@ -14,7 +14,7 @@
 //|   • One position at a time with SL / TP1 / TP2 / TP3 drawn       |
 //+------------------------------------------------------------------+
 #property copyright   "SNRZ (Zindan The Gold Chaser) — indicator port"
-#property version     "5.00"
+#property version     "5.20"
 #property description "SNRZ zones on the higher analysis timeframe, confirmation on the chart, one trade at a time"
 #property indicator_chart_window
 #property indicator_buffers 4
@@ -121,9 +121,10 @@ datetime g_posTime = 0;
 string   g_posZone = "";
 
 //+------------------------------------------------------------------+
-//| Book timeframe table: the chart is the CONFIRMATION timeframe,    |
-//| so the analysis timeframe is one step up from it.                 |
-//|   5m -> 15m · 15m -> 1H · 30m -> 4H · 1H -> Daily · 4H -> Weekly  |
+//| The book marks zones only on Weekly / Daily / 4H / 1H, and        |
+//| "Timeframe = Pips". So the analysis timeframe is ONE rung up that  |
+//| ladder {15m, 1H, 4H, D, W}:                                       |
+//|   1m/5m -> 15m · 15m/30m -> 1H · 1H -> 4H · 4H -> D · D -> W      |
 //+------------------------------------------------------------------+
 ENUM_TIMEFRAMES AnalysisTF()
   {
@@ -131,9 +132,9 @@ ENUM_TIMEFRAMES AnalysisTF()
       return InpZoneTF;
    int m = PeriodSeconds(_Period) / 60;
    if(m <= 5)    return PERIOD_M15;
-   if(m <= 15)   return PERIOD_H1;
-   if(m <= 30)   return PERIOD_H4;
-   if(m <= 60)   return PERIOD_D1;
+   if(m <= 30)   return PERIOD_H1;
+   if(m <= 60)   return PERIOD_H4;
+   if(m <= 240)  return PERIOD_D1;
    if(m <= 1440) return PERIOD_W1;
    return PERIOD_MN1;
   }
@@ -252,10 +253,12 @@ void RemoveZoneAt(const int idx)
 //+------------------------------------------------------------------+
 //| Zone overlap check                                                |
 //+------------------------------------------------------------------+
+// an exhausted (dead) zone must not keep the area reserved forever — once a
+// zone has had its touches the book says you redraw it
 bool Overlaps(const double top, const double bot)
   {
    for(int i = 0; i < ArraySize(g_zones); i++)
-      if(!(bot > g_zones[i].top || top < g_zones[i].bot))
+      if(!g_zones[i].dead && !(bot > g_zones[i].top || top < g_zones[i].bot))
          return true;
    return false;
   }
@@ -299,7 +302,16 @@ void AddZone(double top, double bot, const int role, const int bornH, const doub
    DrawZone(g_zones[n], t1, t2);
 
    while(ArraySize(g_zones) > InpMaxZones)
-      RemoveZoneAt(0);
+     {
+      int victim = 0;                      // evict an exhausted zone first
+      for(int i = 0; i < ArraySize(g_zones); i++)
+         if(g_zones[i].dead)
+           {
+            victim = i;
+            break;
+           }
+      RemoveZoneAt(victim);
+     }
   }
 //+------------------------------------------------------------------+
 //| 75% breakout rule                                                 |
@@ -401,15 +413,30 @@ void DrawPosition(const datetime tNow)
    PosLine("E",  g_posTime, t2, g_posEntry, clrWhite,           2, STYLE_DOT);
    PosLine("SL", g_posTime, t2, g_posSL,    clrTomato,          2, st);
    PosLine("T1", g_posTime, t2, g_posTP1,   clrMediumSeaGreen,  2, st);
-   PosLine("T2", g_posTime, t2, g_posTP2,   clrMediumSeaGreen,  1, STYLE_DASH);
-   PosLine("T3", g_posTime, t2, g_posTP3,   clrMediumSeaGreen,  1, STYLE_DASH);
+   // on a FINISHED trade only the levels it actually reached stay drawn
+   if(g_posOn || g_posStat >= 2)
+      PosLine("T2", g_posTime, t2, g_posTP2, clrMediumSeaGreen, 1, STYLE_DASH);
+   else
+     {
+      ObjectDelete(0, g_prefix + "P_T2");
+      ObjectDelete(0, g_prefix + "T_T2");
+     }
+   if(g_posOn || g_posStat >= 3)
+      PosLine("T3", g_posTime, t2, g_posTP3, clrMediumSeaGreen, 1, STYLE_DASH);
+   else
+     {
+      ObjectDelete(0, g_prefix + "P_T3");
+      ObjectDelete(0, g_prefix + "T_T3");
+     }
 
    PosText("E",  t2, g_posEntry, dir + " " + kind + (g_posPO2 ? " PO2" : "") + " " +
            g_posZone + stat + "  " + DoubleToString(g_posEntry, _Digits), head);
    PosText("SL", t2, g_posSL,  "SL  "  + DoubleToString(g_posSL,  _Digits), clrTomato);
    PosText("T1", t2, g_posTP1, "TP1 " + DoubleToString(g_posTP1, _Digits), clrMediumSeaGreen);
-   PosText("T2", t2, g_posTP2, "TP2 " + DoubleToString(g_posTP2, _Digits), clrMediumSeaGreen);
-   PosText("T3", t2, g_posTP3, "TP3 " + DoubleToString(g_posTP3, _Digits), clrMediumSeaGreen);
+   if(g_posOn || g_posStat >= 2)
+      PosText("T2", t2, g_posTP2, "TP2 " + DoubleToString(g_posTP2, _Digits), clrMediumSeaGreen);
+   if(g_posOn || g_posStat >= 3)
+      PosText("T3", t2, g_posTP3, "TP3 " + DoubleToString(g_posTP3, _Digits), clrMediumSeaGreen);
   }
 //+------------------------------------------------------------------+
 //| Targets: nearest opposite zones ahead of price, else 1R/2R/3R     |

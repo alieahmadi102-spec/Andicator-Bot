@@ -4,12 +4,14 @@
 //               4H → Weekly); the confirmation candle stays on the chart.
 //               ONE trade at a time, and the last position keeps its
 //               Entry/SL/TP1-3 on screen after it closes.
-//               v5.1: a Weekly/Daily zone can be years old and thousands of
-//               points away — TradingView scales the chart to fit every
-//               drawing, so those ancient zones squashed the live candles into
-//               a stripe. Zones further than 5 analysis-ATRs are dropped now.
-//               SCALP/SWING is decided purely by the traded timeframe, so a
-//               1m chart can no longer report a SWING trade.
+//               v5.1: zones further than 5 analysis-ATRs from price are
+//               dropped (an ancient Weekly zone was squashing the live candles
+//               into a stripe, because TradingView scales to fit every
+//               drawing). SCALP/SWING is decided purely by the traded TF.
+//               v5.2: the analysis timeframe is ONE rung up the book's zone
+//               ladder, not two — Daily zones on a 1H chart are ~300 points
+//               tall and produced a 276-point stop. An exhausted zone no
+//               longer blocks a fresh zone from forming in the same area.
 // ═══════════════════════════════════════════════════════════════════════════
 //  SNRZ Strategy Indicator — "Zindan The Gold Chaser" Masterclass (2026 book)
 //
@@ -20,7 +22,7 @@
 //  SCALP vs SWING (book): M5/M15 = SCALP · H1/H4/Daily = SWING.
 //  Nothing more, nothing less than the strategy in the book.
 // ═══════════════════════════════════════════════════════════════════════════
-indicator("SNRZ Strategy [Zindan] v5", "SNRZ v5.1", overlay = true, max_boxes_count = 200, max_labels_count = 200, max_lines_count = 200)
+indicator("SNRZ Strategy [Zindan] v5", "SNRZ v5.2", overlay = true, max_boxes_count = 200, max_labels_count = 200, max_lines_count = 200)
 
 // ───────────────────────────── Inputs ──────────────────────────────────────
 grpZ  = "Zones (SNRZ)"
@@ -61,16 +63,18 @@ colGold  = input.color(#d4af37, "Accent (Zindan gold)", group = grpV)
 // ─────────────────────────── Core series ───────────────────────────────────
 atr = ta.atr(14)
 
-// Book timeframe table (Analysis → SKIP → Confirmation):
-//   Weekly→Daily→4H · Daily→4H→1H · 4H→1H→30m · 1H→30m→15m · 15m→5m→5m
-// Read right-to-left: the chart is the CONFIRMATION column, so 5m⇒15m,
-// 15m⇒1H, 30m⇒4H, 1H⇒Daily, 4H⇒Weekly.
-// The chart we watch IS the confirmation timeframe, so the analysis timeframe
-// is read straight off that table. Zones must never be drawn on the chart
-// timeframe itself — the book says zones live on W/D/4H/1H and the low
-// timeframe is only for monitoring and confirmation.
+// The book: zones are only marked on Weekly / Daily / 4H / 1H, the low
+// timeframes are for monitoring and confirmation, and "Timeframe = Pips" —
+// a bigger zone timeframe means a bigger stop and a bigger target.
+// So the analysis timeframe is ONE rung up that ladder {15m, 1H, 4H, D, W}:
+//   1m/5m ⇒ 15m · 15m/30m ⇒ 1H · 1H ⇒ 4H · 4H ⇒ Daily · Daily ⇒ Weekly
+// (The book's skipping table jumps TWO rungs for the 1H and 4H rows — Daily
+// and Weekly zones. That is right for the analysis workflow, but a Daily zone
+// is ~300 points tall on gold, so a stop placed beyond it is 276 points: not a
+// trade anybody takes off a 1H chart. Set "Zone timeframe" manually to follow
+// the strict table.)
 chartMin = timeframe.in_seconds(timeframe.period) / 60
-autoTF   = chartMin <= 5 ? "15" : chartMin <= 15 ? "60" : chartMin <= 30 ? "240" : chartMin <= 60 ? "D" : chartMin <= 1440 ? "W" : "M"
+autoTF   = chartMin <= 5 ? "15" : chartMin <= 30 ? "60" : chartMin <= 60 ? "240" : chartMin <= 240 ? "D" : chartMin <= 1440 ? "W" : "M"
 zoneTFx   = zoneTF == "" ? autoTF : zoneTF
 zoneTfMin = timeframe.in_seconds(zoneTFx) / 60
 tfRatio   = math.max(1.0, zoneTfMin / math.max(chartMin, 1.0))
@@ -204,10 +208,13 @@ newZone(float _top, float _bot, int _role) =>
     md = line.new(bar_index - zoneBack, (t + b) / 2, bar_index + 8, (t + b) / 2, style = line.style_dashed, color = color.new(color.gray, 50))
     Zone.new(t, b, _role, 0, 0, 0, 0, false, false, false, bar_index, bx, md)
 
+// an exhausted (dead) zone must not keep the area reserved forever — the book
+// says once a zone has had its touches you redraw, so a fresh pivot there is
+// allowed to create a new zone
 overlaps(float _top, float _bot) =>
     res = false
     for z in zones
-        if not (_bot > z.top or _top < z.bot)
+        if not z.dead and not (_bot > z.top or _top < z.bot)
             res := true
             break
     res
@@ -234,7 +241,13 @@ if array.size(zones) > 0
         if bar_index - z.bornBar > zoneLife or (not na(atrA) and gap > maxZoneDist)
             killZone(i)
 while array.size(zones) > maxZones
-    killZone(0)
+    int victim = 0
+    for i = 0 to array.size(zones) - 1
+        Zone zv = array.get(zones, i)
+        if zv.dead
+            victim := i
+            break
+    killZone(victim)
 
 // ─────────────── Create zones from confirmed HTF pivots ────────────────────
 // book: the zone is only born if the price left it with a BIG MOVEMENT, and
@@ -517,15 +530,21 @@ if showPosition and not na(posEntry) and barstate.islast
     array.push(pl, line.new(x1, posEntry, x2, posEntry, color = color.new(color.white, 25 + fade / 2), width = 2, style = line.style_dotted))
     array.push(pl, line.new(x1, posSL,    x2, posSL,    color = color.new(colSell, fade), width = 2, style = stStyle))
     array.push(pl, line.new(x1, posTP1,   x2, posTP1,   color = color.new(colBuy, fade),  width = 2, style = stStyle))
-    array.push(pl, line.new(x1, posTP2,   x2, posTP2,   color = color.new(colBuy, 35 + fade / 2), width = 1, style = line.style_dashed))
-    array.push(pl, line.new(x1, posTP3,   x2, posTP3,   color = color.new(colBuy, 55 + fade / 2), width = 1, style = line.style_dashed))
+    // on a FINISHED trade only the levels it actually reached stay drawn — an
+    // unreached TP3 far away would otherwise stretch the whole price scale
+    if posOn or posStat >= 2
+        array.push(pl, line.new(x1, posTP2, x2, posTP2, color = color.new(colBuy, 35 + fade / 2), width = 1, style = line.style_dashed))
+    if posOn or posStat >= 3
+        array.push(pl, line.new(x1, posTP3, x2, posTP3, color = color.new(colBuy, 55 + fade / 2), width = 1, style = line.style_dashed))
 
     statTxt = posStat == -1 ? "  ✗ SL" : posStat == 3 ? "  ✓ TP3" : posStat == 2 ? "  ✓ TP2" : posStat == 1 ? "  ✓ TP1" : posOn ? "  • running" : "  • closed"
     array.push(pb, label.new(x2, posEntry, dir + " · " + kind + (posPO2 ? " · PO2" : "") + " · " + posZone + statTxt + "\n" + str.tostring(posEntry, format.mintick), style = label.style_label_left, color = headCol, textcolor = headTxt, size = size.normal))
     array.push(pb, label.new(x2, posSL,  "SL   " + str.tostring(posSL,  format.mintick), style = label.style_label_left, color = color.new(colSell, 10 + fade / 2), textcolor = color.new(color.white, fade / 2), size = size.small))
     array.push(pb, label.new(x2, posTP1, "TP1  " + str.tostring(posTP1, format.mintick), style = label.style_label_left, color = color.new(colBuy, 10 + fade / 2), textcolor = color.new(color.white, fade / 2), size = size.small))
-    array.push(pb, label.new(x2, posTP2, "TP2  " + str.tostring(posTP2, format.mintick), style = label.style_label_left, color = color.new(colBuy, 35 + fade / 2), textcolor = color.new(color.white, fade / 2), size = size.small))
-    array.push(pb, label.new(x2, posTP3, "TP3  " + str.tostring(posTP3, format.mintick), style = label.style_label_left, color = color.new(colBuy, 55 + fade / 2), textcolor = color.new(color.white, fade / 2), size = size.small))
+    if posOn or posStat >= 2
+        array.push(pb, label.new(x2, posTP2, "TP2  " + str.tostring(posTP2, format.mintick), style = label.style_label_left, color = color.new(colBuy, 35 + fade / 2), textcolor = color.new(color.white, fade / 2), size = size.small))
+    if posOn or posStat >= 3
+        array.push(pb, label.new(x2, posTP3, "TP3  " + str.tostring(posTP3, format.mintick), style = label.style_label_left, color = color.new(colBuy, 55 + fade / 2), textcolor = color.new(color.white, fade / 2), size = size.small))
 
 // ───────────────────── Small history arrows ────────────────────────────────
 plotshape(buySig,  "BUY",      shape.triangleup,   location.belowbar, color.new(#00c853, 0), size = size.tiny,  display = display.pane)
@@ -544,7 +563,7 @@ if showPanel and barstate.islast
             activeCnt += 1
     stTxt = posStat == -1 ? " ✗SL" : posStat > 0 ? " ✓TP" + str.tostring(posStat) : " •"
     posTxt = not na(posEntry) ? ((posBuy ? "BUY " : "SELL ") + (posSwing ? "SWING" : "SCALP") + " @ " + str.tostring(posEntry, format.mintick) + stTxt + (posOn ? "" : " (closed)")) : "—"
-    table.cell(info, 0, 0, "⚜  SNRZ v5.1  —  ZiNDAN", text_color = colGold, text_size = size.normal)
+    table.cell(info, 0, 0, "⚜  SNRZ v5.2  —  ZiNDAN", text_color = colGold, text_size = size.normal)
     table.cell(info, 0, 1, "The Gold Chaser", text_color = color.new(colGold, 35), text_size = size.tiny)
     table.cell(info, 0, 2, trendTxt, text_color = trendCol, text_size = size.small)
     table.cell(info, 0, 3, "Zones: " + str.tostring(activeCnt) + " @ " + zoneTFx + "   ⇢ confirm " + timeframe.period, text_color = color.new(color.white, 20), text_size = size.small)

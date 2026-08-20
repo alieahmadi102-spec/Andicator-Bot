@@ -200,7 +200,10 @@ class SnrzEngine:
 
     # ── zone creation from pivots ──────────────────────────────────────────
     def _overlaps(self, top: float, bot: float) -> bool:
-        return any(not (bot > z.top or top < z.bot) for z in self.zones)
+        # an exhausted zone must not keep the area reserved forever — once a
+        # zone has had its touches the book says you redraw it
+        return any(not z.dead and not (bot > z.top or top < z.bot)
+                   for z in self.zones)
 
     def _add_zone(self, top: float, bot: float, role: Role, atr: float, idx: int):
         mn, mx = atr * self.cfg.min_zone_atr, atr * self.cfg.max_zone_atr
@@ -213,8 +216,9 @@ class SnrzEngine:
             else:
                 bot = top - mx
         self.zones.append(Zone(top, bot, role, born_index=idx))
-        if len(self.zones) > self.cfg.max_zones:
-            self.zones.pop(0)
+        while len(self.zones) > self.cfg.max_zones:
+            victim = next((i for i, z in enumerate(self.zones) if z.dead), 0)
+            self.zones.pop(victim)
 
     def _detect_pivots(self, idx: int, atr: float):
         n = self.cfg.pivot_len
