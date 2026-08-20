@@ -1,8 +1,8 @@
 //@version=6
-// build: v4.5 — trend now flips on a Break of Structure (book: BOS) instead of
-//               lagging two pivots behind, so a rally no longer reads
-//               DOWNTREND and block every valid buy. Stops also get a
-//               minimum ATR distance so noise can't sweep them.
+// build: v4.6 — no trading while the market ranges (both sides of structure
+//               broken recently), and the confirmation candle must now close
+//               OUTSIDE the zone — a real rejection, as the book asks — which
+//               removes the scatter of arrows through choppy areas.
 // ═══════════════════════════════════════════════════════════════════════════
 //  SNRZ Strategy Indicator — "Zindan The Gold Chaser" Masterclass (2026 book)
 //
@@ -32,6 +32,8 @@ allowCounterInv = input.bool(false, "Allow counter-trend entries on inversion zo
 maxTouches     = input.int(3,      "Max touches on VALID zone (3-touch rule)", minval = 2, maxval = 4, group = grpS)
 swingAtrMult   = input.float(3.0,  "Also SWING when TP1 distance ≥ ATR ×",  minval = 1, step = 0.5, group = grpS, tooltip = "کتاب: اسکلپ روی M5/M15 و سوینگ روی H1/H4/Daily. تایم‌فریم زون ≥ ۱ ساعت یعنی SWING.")
 minSlAtr       = input.float(0.5,  "Minimum stop distance (ATR ×)",         minval = 0.1, step = 0.1, group = grpS, tooltip = "استاپ خیلی نزدیک با نویز عادی بازار سویپ می‌شود. حداقل فاصله‌ی استاپ از ورود.")
+needReject     = input.bool(true,  "Confirmation candle must close OUTSIDE the zone", group = grpS, tooltip = "کتاب: چاوەڕێی کێندڵی ڕەتکردنەوە — کندل تأیید باید زون را رد کند و بیرونش بسته شود، نه اینکه وسط زون بسته شود.")
+rangeBars      = input.int(30,     "Range lockout (bars since opposite BOS)", minval = 5, group = grpS, tooltip = "کتاب: بازار Sideway خطرناک است. اگر هر دو طرف ساختار در این تعداد کندل اخیر شکسته شده باشد، بازار رنج است و ترید نمی‌کنیم.")
 showPosition   = input.bool(true,  "Show active position (Entry/SL/TP1-3)", group = grpS)
 showFresh      = input.bool(true,  "Show fresh (not yet valid) zones",     group = grpS)
 showPanel      = input.bool(true,  "Show SNRZ info panel",                 group = grpS)
@@ -78,18 +80,29 @@ lastLow := not na(plSrc) ? plSrc : lastLow
 // beyond the last confirmed swing IS the structure break. Comparing only the
 // last two pivots lagged so badly that a strong rally still read DOWNTREND,
 // which then blocked every valid buy.
-var int trendState = 0
-if not na(lastHigh) and close > lastHigh
-    trendState := 1
-else if not na(lastLow) and close < lastLow
-    trendState := -1
-else if not na(prevHigh) and not na(prevLow)
+// A tiny poke past the swing is not a break, so the close must clear it by a
+// buffer. And when BOTH sides get broken within a short window the market is
+// simply ranging — the book calls sideway dangerous and says to stand aside,
+// so no trade is allowed until one side is broken on its own.
+var int trendState    = 0
+var int lastBosUpBar  = -99999
+var int lastBosDnBar  = -99999
+bosUp = not na(lastHigh) and close > lastHigh + atr * 0.1
+bosDn = not na(lastLow)  and close < lastLow  - atr * 0.1
+if bosUp
+    lastBosUpBar := bar_index
+    trendState   := 1
+if bosDn
+    lastBosDnBar := bar_index
+    trendState   := -1
+if not bosUp and not bosDn and trendState == 0 and not na(prevHigh) and not na(prevLow)
     if lastHigh > prevHigh and lastLow > prevLow
         trendState := 1
     else if lastHigh < prevHigh and lastLow < prevLow
         trendState := -1
-trendUp   = trendState == 1
-trendDown = trendState == -1
+inRange   = (bar_index - lastBosUpBar) <= rangeBars and (bar_index - lastBosDnBar) <= rangeBars
+trendUp   = trendState == 1 and not inRange
+trendDown = trendState == -1 and not inRange
 
 // ─────────────────────────── Zone object ───────────────────────────────────
 type Zone
@@ -267,7 +280,8 @@ for z in zones
             tradable = not z.dead and ((z.state == 1 and z.touches >= 2) or (z.srr and z.touches >= 1) or (z.state == 2 and z.touches >= 1 and z.touches <= 2))
             okTrend  = not useTrendFilter or trendUp or (allowCounterInv and z.state == 2)
             freshSig = z.sigTouch != z.touches
-            if tradable and okTrend and freshSig and bullConfirm and close > z.bot
+            rejectOK = needReject ? close > z.top : close > z.bot
+            if tradable and okTrend and freshSig and bullConfirm and rejectOK
                 z.sigTouch := z.touches
                 isPO2 = z.state == 2 and z.touches == 2
                 po2Buy := isPO2 ? true : po2Buy
@@ -298,7 +312,8 @@ for z in zones
             tradable = not z.dead and ((z.state == 1 and z.touches >= 2) or (z.srr and z.touches >= 1) or (z.state == 2 and z.touches >= 1 and z.touches <= 2))
             okTrend  = not useTrendFilter or trendDown or (allowCounterInv and z.state == 2)
             freshSig = z.sigTouch != z.touches
-            if tradable and okTrend and freshSig and bearConfirm and close < z.top
+            rejectOK = needReject ? close < z.bot : close < z.top
+            if tradable and okTrend and freshSig and bearConfirm and rejectOK
                 z.sigTouch := z.touches
                 isPO2 = z.state == 2 and z.touches == 2
                 po2Sell := isPO2 ? true : po2Sell
@@ -451,8 +466,8 @@ plotshape(po2Sell, "PO2 SELL", shape.triangledown, location.abovebar, color.new(
 // ───────────────────── Zindan info panel ───────────────────────────────────
 var table info = table.new(position.top_right, 1, 5, bgcolor = color.new(#0b0b0b, 8), frame_width = 2, frame_color = color.new(#d4af37, 20), border_width = 1, border_color = color.new(#d4af37, 75))
 if showPanel and barstate.islast
-    trendTxt = trendUp ? "▲ UPTREND" : trendDown ? "▼ DOWNTREND" : "◆ RANGE"
-    trendCol = trendUp ? colBuy : trendDown ? colSell : colGold
+    trendTxt = inRange ? "◆ RANGE — no trade" : trendUp ? "▲ UPTREND" : trendDown ? "▼ DOWNTREND" : "◆ RANGE"
+    trendCol = inRange ? colGold : trendUp ? colBuy : trendDown ? colSell : colGold
     activeCnt = 0
     for z in zones
         if not z.dead

@@ -52,6 +52,8 @@ input group "Signals"
 input bool   InpTrendFilter  = true;  // Trade only with structure trend
 input bool   InpNeedConfirm  = true;  // Require confirmation candle
 input int    InpMaxTouches   = 3;     // Max touches per zone (3-touch rule)
+input bool   InpNeedReject   = true;  // Confirmation candle must close OUTSIDE the zone
+input int    InpRangeBars    = 30;    // Range lockout (bars since opposite BOS)
 
 input group "Alerts"
 input bool   InpAlertPopup   = true;  // Alert window
@@ -315,6 +317,7 @@ int OnCalculate(const int rates_total,
    // structure trend state persists across calls
    static double lastHigh = 0, prevHigh = 0, lastLow = 0, prevLow = 0;
    static int    trendState = 0;   // 1 up · -1 down · 0 undecided (BOS based)
+   static int    lastBosUpBar = -999999, lastBosDnBar = -999999;
    static int    lastProcessed = -1;
 
    for(int bar = start; bar < rates_total - 1; bar++)   // closed bars only
@@ -372,18 +375,20 @@ int OnCalculate(const int rates_total,
         }
 
       // Book: a close beyond the last confirmed swing is a Break of Structure
-      // and that is what turns the trend; comparing two pivots lags too far.
-      if(lastHigh > 0 && c > lastHigh)
-         trendState = 1;
-      else if(lastLow > 0 && c < lastLow)
-         trendState = -1;
-      else if(prevHigh > 0 && prevLow > 0)
+      // and that is what turns the trend; a tiny poke past it is not a break.
+      bool bosUp = (lastHigh > 0 && c > lastHigh + atr * 0.1);
+      bool bosDn = (lastLow  > 0 && c < lastLow  - atr * 0.1);
+      if(bosUp) { lastBosUpBar = bar; trendState = 1; }
+      if(bosDn) { lastBosDnBar = bar; trendState = -1; }
+      if(!bosUp && !bosDn && trendState == 0 && prevHigh > 0 && prevLow > 0)
         {
          if(lastHigh > prevHigh && lastLow > prevLow) trendState = 1;
          else if(lastHigh < prevHigh && lastLow < prevLow) trendState = -1;
         }
-      bool trendUp   = (trendState == 1);
-      bool trendDown = (trendState == -1);
+      // both sides broken recently = ranging; the book says stand aside
+      bool inRange   = (bar - lastBosUpBar) <= InpRangeBars && (bar - lastBosDnBar) <= InpRangeBars;
+      bool trendUp   = (trendState == 1 && !inRange);
+      bool trendDown = (trendState == -1 && !inRange);
 
       //--- confirmation candles (SNRZ style) ------------------------------
       double o = open[bar], h = high[bar], l = low[bar], c = close[bar];
@@ -438,7 +443,8 @@ int OnCalculate(const int rates_total,
                bool okTrend = !InpTrendFilter || trendUp || g_zones[i].state == 2;
                bool okConf  = !InpNeedConfirm || bullConfirm;
                bool fresh   = (g_zones[i].sigTouch != g_zones[i].touches);
-               if(tradable && okTrend && okConf && fresh && c > g_zones[i].bot)
+               bool rejectOK = InpNeedReject ? (c > g_zones[i].top) : (c > g_zones[i].bot);
+               if(tradable && okTrend && okConf && fresh && rejectOK)
                  {
                   g_zones[i].sigTouch = g_zones[i].touches;
                   if(g_zones[i].state == 2 && g_zones[i].touches == 2)
@@ -486,7 +492,8 @@ int OnCalculate(const int rates_total,
                bool okTrend = !InpTrendFilter || trendDown || g_zones[i].state == 2;
                bool okConf  = !InpNeedConfirm || bearConfirm;
                bool fresh   = (g_zones[i].sigTouch != g_zones[i].touches);
-               if(tradable && okTrend && okConf && fresh && c < g_zones[i].top)
+               bool rejectOK = InpNeedReject ? (c < g_zones[i].bot) : (c < g_zones[i].top);
+               if(tradable && okTrend && okConf && fresh && rejectOK)
                  {
                   g_zones[i].sigTouch = g_zones[i].touches;
                   if(g_zones[i].state == 2 && g_zones[i].touches == 2)

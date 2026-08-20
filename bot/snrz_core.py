@@ -96,6 +96,8 @@ class Config:
     atr_len: int = 14
     trend_filter: bool = True
     need_confirm: bool = True
+    need_reject: bool = True    # confirmation candle must close outside the zone
+    range_bars: int = 30        # both sides of structure broken this recently = range
     max_touches: int = 3
     rr_tp1: float = 1.0     # TP1 = SL distance x this (book: at least 1:1)
 
@@ -111,6 +113,9 @@ class SnrzEngine:
         self.last_high = self.prev_high = None
         self.last_low = self.prev_low = None
         self.trend_state = 0        # 1 up · -1 down · 0 undecided
+        self.last_bos_up = -10**9
+        self.last_bos_dn = -10**9
+        self.in_range = False
 
     # ── indicators ─────────────────────────────────────────────────────────
     def _atr(self) -> Optional[float]:
@@ -201,27 +206,35 @@ class SnrzEngine:
             if (cur.high - bot) >= big and not self._overlaps(top, bot):
                 self._add_zone(top, bot, Role.SUPPORT, atr, idx)
 
-    def _update_trend(self, c: Candle):
+    def _update_trend(self, c: Candle, atr: float, idx: int):
         # The book calls a close beyond the last confirmed swing a Break of
-        # Structure, and that is what turns the trend. Comparing only the last
-        # two pivots lags far behind an impulsive move.
-        if self.last_high is not None and c.close > self.last_high:
+        # Structure, and that is what turns the trend. A tiny poke past the
+        # swing is not a break, so the close has to clear it by a buffer.
+        bos_up = self.last_high is not None and c.close > self.last_high + atr * 0.1
+        bos_dn = self.last_low is not None and c.close < self.last_low - atr * 0.1
+        if bos_up:
+            self.last_bos_up = idx
             self.trend_state = 1
-        elif self.last_low is not None and c.close < self.last_low:
+        if bos_dn:
+            self.last_bos_dn = idx
             self.trend_state = -1
-        elif None not in (self.prev_high, self.prev_low):
+        if not bos_up and not bos_dn and self.trend_state == 0 \
+                and None not in (self.prev_high, self.prev_low):
             if self.last_high > self.prev_high and self.last_low > self.prev_low:
                 self.trend_state = 1
             elif self.last_high < self.prev_high and self.last_low < self.prev_low:
                 self.trend_state = -1
+        # both sides broken recently = ranging; the book says stand aside
+        self.in_range = (idx - self.last_bos_up) <= self.cfg.range_bars \
+            and (idx - self.last_bos_dn) <= self.cfg.range_bars
 
     @property
     def trend_up(self) -> bool:
-        return self.trend_state == 1
+        return self.trend_state == 1 and not self.in_range
 
     @property
     def trend_down(self) -> bool:
-        return self.trend_state == -1
+        return self.trend_state == -1 and not self.in_range
 
     # ── main entry: feed one CLOSED candle ─────────────────────────────────
     def on_candle(self, c: Candle) -> List[Signal]:
@@ -234,7 +247,7 @@ class SnrzEngine:
             return out
 
         self._detect_pivots(idx, atr)
-        self._update_trend(c)
+        self._update_trend(c, atr, idx)
         bull_conf, bear_conf = self._confirm(c, self.candles[idx - 1])
         cfg = self.cfg
         broke_support = broke_resistance = False
@@ -266,7 +279,8 @@ class SnrzEngine:
                         (z.state == State.INVERTED and 1 <= z.touches <= 2))
                     ok_trend = (not cfg.trend_filter) or self.trend_up or z.state == State.INVERTED
                     ok_conf = (not cfg.need_confirm) or bull_conf
-                    if tradable and ok_trend and ok_conf and z.sig_touch != z.touches and c.close > z.bot:
+                    reject_ok = c.close > z.top if cfg.need_reject else c.close > z.bot
+                    if tradable and ok_trend and ok_conf and z.sig_touch != z.touches and reject_ok:
                         z.sig_touch = z.touches            # one signal per touch
                         sl = z.bot - atr * 0.3
                         risk = c.close - sl
@@ -295,7 +309,8 @@ class SnrzEngine:
                         (z.state == State.INVERTED and 1 <= z.touches <= 2))
                     ok_trend = (not cfg.trend_filter) or self.trend_down or z.state == State.INVERTED
                     ok_conf = (not cfg.need_confirm) or bear_conf
-                    if tradable and ok_trend and ok_conf and z.sig_touch != z.touches and c.close < z.top:
+                    reject_ok = c.close < z.bot if cfg.need_reject else c.close < z.top
+                    if tradable and ok_trend and ok_conf and z.sig_touch != z.touches and reject_ok:
                         z.sig_touch = z.touches
                         sl = z.top + atr * 0.3
                         risk = sl - c.close
