@@ -61,6 +61,7 @@ class Zone:
     flips: int = 0              # role inversions — a level broken from both
                                 # sides repeatedly is range noise, not a zone
     uid: int = 0
+    htf: bool = False           # analysis-timeframe zone (book: the TP2 zone)
     born_index: int = 0
     in_zone_prev: bool = False
 
@@ -92,12 +93,23 @@ class Signal:
 
 @dataclass
 class Config:
-    pivot_len: int = 10
+    # Book p.41/p.44: zones are marked on the ANALYSIS timeframe and on the
+    # chart itself at the same time — TP1 comes from a chart-timeframe zone,
+    # TP2 from an analysis-timeframe one. htf_mult says how many chart candles
+    # make one analysis candle (5m chart -> 15m analysis = 3).
+    htf_mult: int = 3
+    pivot_ltf: int = 5          # smaller -> more chart zones -> more signals
+    pivot_htf: int = 8
+    max_zones_ltf: int = 8
+    max_zones_htf: int = 4
+    life_ltf: int = 250         # chart bars
+    life_htf: int = 60          # analysis bars
+    pivot_len: int = 10         # (kept for compatibility)
     max_zones: int = 6
-    big_move_atr: float = 1.5
+    big_move_atr: float = 1.2
     breakout_pct: float = 75.0
     min_zone_atr: float = 0.15
-    max_zone_atr: float = 1.2
+    max_zone_atr: float = 1.0
     atr_len: int = 14
     trend_filter: bool = True
     allow_counter_inv: bool = False  # "Trend is King" — inversion zones obey it too
@@ -105,7 +117,7 @@ class Config:
     need_reject: bool = True    # confirmation candle must close outside the zone
     range_bars: int = 10        # both sides of structure broken this recently = range
     max_touches: int = 3
-    max_zone_dist_atr: float = 5.0   # a zone this far from price is not tradeable
+    max_zone_dist_atr: float = 6.0   # a zone this far from price is not tradeable
     max_flips: int = 2          # role inversions before a level is retired
     kill_on_stop: bool = True   # a zone whose signal got stopped out is finished
     need_micro_bos: bool = True # book: "a small BOS in the trade direction"
@@ -159,6 +171,14 @@ class SnrzEngine:
         # the single open setup (book: one trade at a time)
         self.position: Optional["Position"] = None
         self._zone_seq = 0
+        # analysis-timeframe stream, aggregated from the chart candles
+        self.htf_candles: List[Candle] = []
+        self._htf_buf: List[Candle] = []
+        self._htf_tr: List[float] = []
+        # chart-structure fallback for when the analysis timeframe has not
+        # printed enough swings to have an opinion yet
+        self.c_high = self.c_prev_high = None
+        self.c_low = self.c_prev_low = None
 
     # ── indicators ─────────────────────────────────────────────────────────
     def _atr(self) -> Optional[float]:
@@ -210,13 +230,15 @@ class SnrzEngine:
         return bull_engulf or bull_pin, bear_engulf or bear_pin
 
     # ── zone creation from pivots ──────────────────────────────────────────
-    def _overlaps(self, top: float, bot: float) -> bool:
-        # an exhausted zone must not keep the area reserved forever — once a
-        # zone has had its touches the book says you redraw it
-        return any(not z.dead and not (bot > z.top or top < z.bot)
+    def _overlaps(self, top: float, bot: float, htf: bool) -> bool:
+        # Checked WITHIN a set only: a small chart zone is expected to sit
+        # inside a big analysis zone. An exhausted zone reserves nothing —
+        # once a zone has had its touches the book says you redraw it.
+        return any(z.htf == htf and not z.dead and not (bot > z.top or top < z.bot)
                    for z in self.zones)
 
-    def _add_zone(self, top: float, bot: float, role: Role, atr: float, idx: int):
+    def _add_zone(self, top: float, bot: float, role: Role, atr: float,
+                  idx: int, htf: bool):
         mn, mx = atr * self.cfg.min_zone_atr, atr * self.cfg.max_zone_atr
         if top - bot < mn:
             mid = (top + bot) / 2
@@ -227,37 +249,77 @@ class SnrzEngine:
             else:
                 bot = top - mx
         self._zone_seq += 1
-        self.zones.append(Zone(top, bot, role, uid=self._zone_seq, born_index=idx))
-        while len(self.zones) > self.cfg.max_zones:
-            victim = next((i for i, z in enumerate(self.zones) if z.dead), 0)
+        self.zones.append(Zone(top, bot, role, uid=self._zone_seq,
+                               htf=htf, born_index=idx))
+        cap = self.cfg.max_zones_htf if htf else self.cfg.max_zones_ltf
+        while sum(1 for z in self.zones if z.htf == htf) > cap:
+            same = [i for i, z in enumerate(self.zones) if z.htf == htf]
+            victim = next((i for i in same if self.zones[i].dead), same[0])
             self.zones.pop(victim)
 
-    def _detect_pivots(self, idx: int, atr: float):
-        n = self.cfg.pivot_len
-        p = idx - n
+    def _pivot_zones(self, series: List[Candle], n: int, atr: float,
+                     idx: int, htf: bool, track_trend: bool):
+        """One pivot pass over a candle series. Runs twice per bar: once on the
+        chart candles and once on the aggregated analysis candles, because the
+        book marks zones on both at the same time (p.41)."""
+        j = len(series) - 1
+        p = j - n
         if p < n:
             return
-        window = self.candles[p - n: p + n + 1]
-        pc = self.candles[p]
+        window = series[p - n: p + n + 1]
+        pc = series[p]
         is_ph = all(w.high < pc.high for i, w in enumerate(window) if i != n)
         is_pl = all(w.low > pc.low for i, w in enumerate(window) if i != n)
         big = atr * self.cfg.big_move_atr
         # the movement made AFTER the pivot is the book's "Big Movement"
-        run = self.candles[p: idx + 1]
+        run = series[p: j + 1]
         hi_run = max(w.high for w in run)
         lo_run = min(w.low for w in run)
         if is_ph:
-            self.prev_high, self.last_high = self.last_high, pc.high
+            if track_trend:
+                self.prev_high, self.last_high = self.last_high, pc.high
+            else:
+                self.c_prev_high, self.c_high = self.c_high, pc.high
             top, bot = pc.high, max(pc.open, pc.close)
-            if (top - lo_run) >= big and not self._overlaps(top, bot):
-                self._add_zone(top, bot, Role.RESISTANCE, atr, idx)
+            if (top - lo_run) >= big and not self._overlaps(top, bot, htf):
+                self._add_zone(top, bot, Role.RESISTANCE, atr, idx, htf)
         if is_pl:
-            self.prev_low, self.last_low = self.last_low, pc.low
+            if track_trend:
+                self.prev_low, self.last_low = self.last_low, pc.low
+            else:
+                self.c_prev_low, self.c_low = self.c_low, pc.low
             top, bot = min(pc.open, pc.close), pc.low
-            if (hi_run - bot) >= big and not self._overlaps(top, bot):
-                self._add_zone(top, bot, Role.SUPPORT, atr, idx)
+            if (hi_run - bot) >= big and not self._overlaps(top, bot, htf):
+                self._add_zone(top, bot, Role.SUPPORT, atr, idx, htf)
+
+    def _push_htf(self, c: Candle) -> bool:
+        """Aggregate chart candles into analysis candles. Returns True on the
+        bar that completes one."""
+        m = max(1, self.cfg.htf_mult)
+        self._htf_buf.append(c)
+        if len(self._htf_buf) < m:
+            return False
+        b = self._htf_buf
+        self.htf_candles.append(Candle(b[0].time, b[0].open,
+                                       max(w.high for w in b),
+                                       min(w.low for w in b), b[-1].close))
+        self._htf_buf = []
+        if len(self.htf_candles) > 1:
+            prev = self.htf_candles[-2].close
+            h = self.htf_candles[-1]
+            self._htf_tr.append(max(h.high - h.low, abs(h.high - prev),
+                                    abs(h.low - prev)))
+        return True
+
+    def _htf_atr(self) -> Optional[float]:
+        n = self.cfg.atr_len
+        if len(self._htf_tr) < n:
+            return None
+        return sum(self._htf_tr[-n:]) / n
 
     def _update_trend(self, c: Candle, atr: float, idx: int):
+        """c is the last CLOSED analysis candle — "Trend is King" in the book
+        means the higher-timeframe trend, not the chart's."""
         # The book calls a close beyond the last confirmed swing a Break of
         # Structure, and that is what turns the trend. A tiny poke past the
         # swing is not a break, so the close has to clear it by a buffer, and
@@ -277,34 +339,33 @@ class SnrzEngine:
             elif self.last_high < self.prev_high and self.last_low < self.prev_low:
                 self.trend_state = -1
         # both sides broken recently = ranging; the book says stand aside
-        self.in_range = (idx - self.last_bos_up) <= self.cfg.range_bars \
-            and (idx - self.last_bos_dn) <= self.cfg.range_bars
+        span = self.cfg.range_bars * max(1, self.cfg.htf_mult)
+        self.in_range = (idx - self.last_bos_up) <= span \
+            and (idx - self.last_bos_dn) <= span
 
-    # ── targets: nearest opposite zones ahead of price, else 1R / 2R / 3R ──
+    # ── targets (book p.44): TP1 from a CHART zone, TP2 from an ANALYSIS
+    #    zone, TP3 whatever lies beyond — 1R / 2R / 3R when no zone is there ──
     def _targets(self, is_buy: bool, entry: float, risk: float) -> tuple[float, float, float]:
-        dists = []
+        cap = risk * self.cfg.tp_max_r
+        d1 = d2 = d3 = None
         for z in self.zones:
             if z.dead:
                 continue
             lvl = z.bot if is_buy else z.top
             ahead = (z.role == Role.RESISTANCE and lvl > entry) if is_buy \
                 else (z.role == Role.SUPPORT and lvl < entry)
-            if ahead:
-                dists.append(abs(lvl - entry))
-        dists.sort()
-        # The book takes TP1 at the NEAREST liquidity. A zone sitting 15R away
-        # is a destination, not a first target, so only zones within tp_max_r
-        # feed TP1/TP2; anything beyond that can still serve as TP3.
-        cap = risk * self.cfg.tp_max_r
-        near = [d for d in dists if d <= cap]
-        far = [d for d in dists if d > cap]
-        d1 = near[0] if len(near) >= 1 else risk
-        d2 = near[1] if len(near) >= 2 else max(d1 + risk, risk * 2)
-        d3 = near[2] if len(near) >= 3 else (far[0] if far else max(d2 + risk, risk * 3))
-        # book: RR at least 1:1, and each target beyond the previous one
-        d1 = max(d1, risk * self.cfg.rr_tp1)
-        d2 = max(d2, d1 + risk * 0.5)
-        d3 = max(d3, d2 + risk * 0.5)
+            if not ahead:
+                continue
+            d = abs(lvl - entry)
+            if not z.htf and d <= cap and (d1 is None or d < d1):
+                d1 = d
+            if z.htf and (d2 is None or d < d2):
+                d2 = d
+            if d3 is None or d > d3:
+                d3 = d
+        d1 = risk if d1 is None else max(d1, risk)
+        d2 = max(d1 + risk, risk * 2) if (d2 is None or d2 <= d1) else d2
+        d3 = max(d2 + risk, risk * 3) if (d3 is None or d3 <= d2) else d3
         if is_buy:
             return entry + d1, entry + d2, entry + d3
         return entry - d1, entry - d2, entry - d3
@@ -343,12 +404,33 @@ class SnrzEngine:
                     z.dead = True
 
     @property
+    def _effective_trend(self) -> int:
+        """The analysis timeframe decides — "Trend is King" means the higher
+        timeframe. But until it has printed two swings it has no opinion, and
+        blocking every trade forever is not what the book means, so the chart's
+        own structure answers instead."""
+        if self.trend_state != 0:
+            return self.trend_state
+        if None in (self.c_prev_high, self.c_prev_low):
+            return 0
+        if self.c_high > self.c_prev_high and self.c_low > self.c_prev_low:
+            return 1
+        if self.c_high < self.c_prev_high and self.c_low < self.c_prev_low:
+            return -1
+        return 0
+
+    @property
+    def trend_unknown(self) -> bool:
+        """Neither timeframe can tell. No opinion is not the same as no trade."""
+        return self._effective_trend == 0
+
+    @property
     def trend_up(self) -> bool:
-        return self.trend_state == 1 and not self.in_range
+        return self._effective_trend == 1 and not self.in_range
 
     @property
     def trend_down(self) -> bool:
-        return self.trend_state == -1 and not self.in_range
+        return self._effective_trend == -1 and not self.in_range
 
     # ── main entry: feed one CLOSED candle ─────────────────────────────────
     def on_candle(self, c: Candle) -> List[Signal]:
@@ -360,14 +442,28 @@ class SnrzEngine:
         if atr is None or atr <= 0 or idx < 1:
             return out
 
-        self._detect_pivots(idx, atr)
-        self._update_trend(c, atr, idx)
+        # Book p.41: zones are marked on the analysis timeframe AND the chart,
+        # so both passes run. Only the analysis pass feeds the trend.
+        self._pivot_zones(self.candles, self.cfg.pivot_ltf, atr, idx,
+                          htf=False, track_trend=False)
+        if self._push_htf(c):
+            atr_h = self._htf_atr()
+            if atr_h and atr_h > 0:
+                self._pivot_zones(self.htf_candles, self.cfg.pivot_htf, atr_h,
+                                  idx, htf=True, track_trend=True)
+                self._update_trend(self.htf_candles[-1], atr_h, idx)
         self._update_position(c, idx)
-        # a zone far away from price is no longer tradeable — drop it
-        max_dist = atr * self.cfg.max_zone_dist_atr
-        self.zones = [z for z in self.zones
-                      if (c.close - z.top if c.close > z.top else
-                          z.bot - c.close if c.close < z.bot else 0.0) <= max_dist]
+        # expire zones by age, and drop any that price has left far behind
+        atr_h = self._htf_atr() or atr
+        kept: List[Zone] = []
+        for z in self.zones:
+            ref = atr_h if z.htf else atr
+            life = self.cfg.life_htf * max(1, self.cfg.htf_mult) if z.htf else self.cfg.life_ltf
+            gap = (c.close - z.top if c.close > z.top else
+                   z.bot - c.close if c.close < z.bot else 0.0)
+            if idx - z.born_index <= life and gap <= ref * self.cfg.max_zone_dist_atr:
+                kept.append(z)
+        self.zones = kept
         bull_conf, bear_conf = self._confirm(c, self.candles[idx - 1])
         # book, confirmation list: "a small Break of Structure in the trade
         # direction" — without it a sell fires in the middle of a rally just
@@ -410,8 +506,9 @@ class SnrzEngine:
                         (z.state == State.VALID and z.touches >= 2) or
                         (z.srr and z.touches >= 1) or
                         (z.state == State.INVERTED and 1 <= z.touches <= 2))
-                    ok_trend = (not cfg.trend_filter) or self.trend_up or \
-                        (cfg.allow_counter_inv and z.state == State.INVERTED)
+                    ok_trend = (not cfg.trend_filter) or self.trend_up \
+                        or (self.trend_unknown and not self.in_range) \
+                        or (cfg.allow_counter_inv and z.state == State.INVERTED)
                     ok_conf = (not cfg.need_confirm) or bull_conf
                     reject_ok = c.close > z.top if cfg.need_reject else c.close > z.bot
                     if tradable and ok_trend and ok_conf and z.sig_touch != z.touches \
@@ -448,8 +545,9 @@ class SnrzEngine:
                         (z.state == State.VALID and z.touches >= 2) or
                         (z.srr and z.touches >= 1) or
                         (z.state == State.INVERTED and 1 <= z.touches <= 2))
-                    ok_trend = (not cfg.trend_filter) or self.trend_down or \
-                        (cfg.allow_counter_inv and z.state == State.INVERTED)
+                    ok_trend = (not cfg.trend_filter) or self.trend_down \
+                        or (self.trend_unknown and not self.in_range) \
+                        or (cfg.allow_counter_inv and z.state == State.INVERTED)
                     ok_conf = (not cfg.need_confirm) or bear_conf
                     reject_ok = c.close < z.bot if cfg.need_reject else c.close < z.top
                     if tradable and ok_trend and ok_conf and z.sig_touch != z.touches \

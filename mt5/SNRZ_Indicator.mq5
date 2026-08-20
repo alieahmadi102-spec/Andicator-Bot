@@ -9,13 +9,13 @@
 //|   • SRR / RSS (support / resistance that broke >= 2 opposites)   |
 //|   • PO2 — 2nd retest of an INVERSION zone (strongest entry)      |
 //|   • SNRZ engulfing / pin-bar confirmation                        |
-//|   • Book timeframe table: zones + trend on the ANALYSIS TF,      |
-//|     confirmation on the chart TF                                 |
+//|   • TWO zone sets at once (book p.41/p.44): the chart's own zones |
+//|     give TP1, the analysis timeframe's give the trend and TP2     |
 //|   • One position at a time with SL / TP1 / TP2 / TP3 drawn       |
 //+------------------------------------------------------------------+
 #property copyright   "SNRZ (Zindan The Gold Chaser) — indicator port"
-#property version     "5.30"
-#property description "SNRZ zones on the higher analysis timeframe, confirmation on the chart, one trade at a time"
+#property version     "6.00"
+#property description "SNRZ: chart zones AND analysis zones together (book p.41/p.44), one trade at a time"
 #property indicator_chart_window
 #property indicator_buffers 4
 #property indicator_plots   4
@@ -44,14 +44,17 @@
 //--- inputs -----------------------------------------------------------------
 input group "Zones (SNRZ)"
 input ENUM_TIMEFRAMES InpZoneTF = PERIOD_CURRENT; // Zone timeframe (CURRENT = AUTO from book table)
-input int    InpPivotLen     = 10;    // Pivot length (swing sensitivity)
-input int    InpMaxZones     = 6;     // Max active zones
-input double InpBigMoveATR   = 1.5;   // "Big Movement" >= ATR x
+input int    InpPivotLtf     = 5;     // Pivot length — chart zones (smaller = more)
+input int    InpPivotHtf     = 8;     // Pivot length — analysis zones
+input int    InpMaxZonesLtf  = 8;     // Max chart zones
+input int    InpMaxZonesHtf  = 4;     // Max analysis zones
+input double InpBigMoveATR   = 1.2;   // "Big Movement" >= ATR x
 input double InpBreakoutPct  = 75.0;  // Breakout rule (%) — the 75% rule
 input double InpMinZoneATR   = 0.15;  // Min zone height (ATR x)
-input double InpMaxZoneATR   = 1.20;  // Max zone height (ATR x)
-input int    InpZoneMaxAge   = 400;   // Zone lifetime (analysis-TF bars)
-input double InpMaxZoneDistATR = 5.0; // Drop zones further than (analysis ATR x)
+input double InpMaxZoneATR   = 1.00;  // Max zone height (ATR x)
+input int    InpLifeLtf      = 250;   // Chart zone lifetime (chart bars)
+input int    InpLifeHtf      = 60;    // Analysis zone lifetime (analysis bars)
+input double InpMaxZoneDistATR = 6.0; // Drop zones further than (ATR x)
 
 input group "Signals"
 input bool   InpTrendFilter  = true;  // Trade only with structure trend
@@ -98,6 +101,7 @@ struct SZone
    bool     dead;      // 3-touch rule exhausted -> no more trades
    int      flips;     // role inversions — a level broken from both sides
                        // repeatedly is range noise, not a zone
+   bool     htf;       // true = analysis-timeframe zone (book: the TP2 zone)
    int      sigTouch;  // anti-spam latch: one signal per touch
    int      bornH;     // analysis-TF index it was born on
    datetime bornTime;  // pivot time — where the rectangle starts
@@ -118,6 +122,8 @@ double g_lastHigh = 0, g_prevHigh = 0, g_lastLow = 0, g_prevLow = 0;
 int    g_trendState = 0;                  // 1 up · -1 down · 0 undecided
 int    g_lastBosUpH = -999999, g_lastBosDnH = -999999;
 bool   g_bosUpPrev = false, g_bosDnPrev = false;
+// chart-structure fallback for when the analysis timeframe has no opinion yet
+double g_cHigh = 0, g_cPrevHigh = 0, g_cLow = 0, g_cPrevLow = 0;
 
 //--- active position --------------------------------------------------------
 bool     g_posOn = false, g_posBuy = false, g_posPO2 = false, g_posSwing = false;
@@ -264,10 +270,13 @@ void RemoveZoneAt(const int idx)
 //+------------------------------------------------------------------+
 // an exhausted (dead) zone must not keep the area reserved forever — once a
 // zone has had its touches the book says you redraw it
-bool Overlaps(const double top, const double bot)
+bool Overlaps(const double top, const double bot, const bool htf)
   {
+   // within a set only: a small chart zone is expected to sit inside a big
+   // analysis zone, and an exhausted zone reserves nothing
    for(int i = 0; i < ArraySize(g_zones); i++)
-      if(!g_zones[i].dead && !(bot > g_zones[i].top || top < g_zones[i].bot))
+      if(g_zones[i].htf == htf && !g_zones[i].dead &&
+         !(bot > g_zones[i].top || top < g_zones[i].bot))
          return true;
    return false;
   }
@@ -275,7 +284,7 @@ bool Overlaps(const double top, const double bot)
 //| Add zone (with SNRZ min/max height clamps)                        |
 //+------------------------------------------------------------------+
 void AddZone(double top, double bot, const int role, const int bornH, const double atr,
-             const datetime t1, const datetime t2)
+             const datetime t1, const datetime t2, const bool htf)
   {
    double h  = top - bot;
    double mn = atr * InpMinZoneATR;
@@ -303,6 +312,7 @@ void AddZone(double top, double bot, const int role, const int bornH, const doub
    g_zones[n].wasValid   = false;
    g_zones[n].dead       = false;
    g_zones[n].flips      = 0;
+   g_zones[n].htf        = htf;
    g_zones[n].sigTouch   = 0;
    g_zones[n].bornH      = bornH;
    g_zones[n].bornTime   = t1;
@@ -311,15 +321,31 @@ void AddZone(double top, double bot, const int role, const int bornH, const doub
    g_zones[n].inZonePrev = false;
    DrawZone(g_zones[n], t1, t2);
 
-   while(ArraySize(g_zones) > InpMaxZones)
+   int cap = htf ? InpMaxZonesHtf : InpMaxZonesLtf;
+   while(true)
      {
-      int victim = 0;                      // evict an exhausted zone first
+      int cnt = 0;
       for(int i = 0; i < ArraySize(g_zones); i++)
-         if(g_zones[i].dead)
+         if(g_zones[i].htf == htf)
+            cnt++;
+      if(cnt <= cap)
+         break;
+      int victim = -1;                     // evict an exhausted zone first
+      for(int i = 0; i < ArraySize(g_zones); i++)
+         if(g_zones[i].htf == htf && g_zones[i].dead)
            {
             victim = i;
             break;
            }
+      if(victim < 0)
+         for(int i = 0; i < ArraySize(g_zones); i++)
+            if(g_zones[i].htf == htf)
+              {
+               victim = i;
+               break;
+              }
+      if(victim < 0)
+         break;
       RemoveZoneAt(victim);
      }
   }
@@ -455,7 +481,11 @@ void DrawPosition(const datetime tNow)
 void BuildTargets(const bool isBuy, const double entry, const double risk,
                   double &t1, double &t2, double &t3)
   {
-   double dists[];
+   // Book p.44: "TP1 from the 5m timeframe, TP2 from the 1h timeframe" — so
+   // the first target is the nearest opposite CHART zone and the second is the
+   // nearest opposite ANALYSIS zone. 1R/2R/3R when no zone sits there.
+   double cap = risk * InpTpMaxR;
+   double d1 = -1, d2 = -1, d3 = -1;
    for(int i = 0; i < ArraySize(g_zones); i++)
      {
       if(g_zones[i].dead)
@@ -465,43 +495,17 @@ void BuildTargets(const bool isBuy, const double entry, const double risk,
                    : (g_zones[i].role ==  1 && lvl < entry);
       if(!ahead)
          continue;
-      int n = ArraySize(dists);
-      ArrayResize(dists, n + 1);
-      dists[n] = MathAbs(lvl - entry);
+      double d = MathAbs(lvl - entry);
+      if(!g_zones[i].htf && d <= cap && (d1 < 0 || d < d1))
+         d1 = d;
+      if(g_zones[i].htf && (d2 < 0 || d < d2))
+         d2 = d;
+      if(d3 < 0 || d > d3)
+         d3 = d;
      }
-   if(ArraySize(dists) > 1)
-      ArraySort(dists);
-
-   // The book takes TP1 at the NEAREST liquidity. A zone sitting 15R away is a
-   // destination, not a first target — only zones within InpTpMaxR feed
-   // TP1/TP2; anything beyond that can still serve as TP3.
-   double cap = risk * InpTpMaxR;
-   double nearD[], farD[];
-   for(int i = 0; i < ArraySize(dists); i++)
-     {
-      if(dists[i] <= cap)
-        {
-         int k = ArraySize(nearD);
-         ArrayResize(nearD, k + 1);
-         nearD[k] = dists[i];
-        }
-      else
-        {
-         int k = ArraySize(farD);
-         ArrayResize(farD, k + 1);
-         farD[k] = dists[i];
-        }
-     }
-
-   int    n  = ArraySize(nearD);
-   int    nf = ArraySize(farD);
-   double d1 = n >= 1 ? nearD[0] : risk;
-   double d2 = n >= 2 ? nearD[1] : MathMax(d1 + risk, risk * 2.0);
-   double d3 = n >= 3 ? nearD[2] : (nf > 0 ? farD[0] : MathMax(d2 + risk, risk * 3.0));
-   // book: RR at least 1:1, and each target beyond the previous one
-   d1 = MathMax(d1, risk);
-   d2 = MathMax(d2, d1 + risk * 0.5);
-   d3 = MathMax(d3, d2 + risk * 0.5);
+   d1 = (d1 < 0) ? risk : MathMax(d1, risk);
+   d2 = (d2 < 0 || d2 <= d1) ? MathMax(d1 + risk, risk * 2.0) : d2;
+   d3 = (d3 < 0 || d3 <= d2) ? MathMax(d2 + risk, risk * 3.0) : d3;
    t1 = isBuy ? entry + d1 : entry - d1;
    t2 = isBuy ? entry + d2 : entry - d2;
    t3 = isBuy ? entry + d3 : entry - d3;
@@ -515,11 +519,11 @@ void ProcessHtfBar(const int j, const MqlRates &htf[], const double &atrH[], con
    if(atr <= 0.0)
       return;
 
-   int p = j - InpPivotLen;                  // pivot candidate
-   if(p >= InpPivotLen)
+   int p = j - InpPivotHtf;                  // pivot candidate
+   if(p >= InpPivotHtf)
      {
       bool isPH = true, isPL = true;
-      for(int k = p - InpPivotLen; k <= p + InpPivotLen; k++)
+      for(int k = p - InpPivotHtf; k <= p + InpPivotHtf; k++)
         {
          if(k == p) continue;
          if(htf[k].high >= htf[p].high) isPH = false;
@@ -542,15 +546,15 @@ void ProcessHtfBar(const int j, const MqlRates &htf[], const double &atrH[], con
         {
          double zTop = MathMin(htf[p].open, htf[p].close);
          double zBot = htf[p].low;
-         if((hiRun - zBot) >= bigMove && !Overlaps(zTop, zBot))
-            AddZone(zTop, zBot, 1, j, atr, htf[p].time, htf[j].time);
+         if((hiRun - zBot) >= bigMove && !Overlaps(zTop, zBot, true))
+            AddZone(zTop, zBot, 1, j, atr, htf[p].time, htf[j].time, true);
         }
       if(isPH)
         {
          double zTop = htf[p].high;
          double zBot = MathMax(htf[p].open, htf[p].close);
-         if((zTop - loRun) >= bigMove && !Overlaps(zTop, zBot))
-            AddZone(zTop, zBot, -1, j, atr, htf[p].time, htf[j].time);
+         if((zTop - loRun) >= bigMove && !Overlaps(zTop, zBot, true))
+            AddZone(zTop, zBot, -1, j, atr, htf[p].time, htf[j].time, true);
         }
      }
 
@@ -569,9 +573,9 @@ void ProcessHtfBar(const int j, const MqlRates &htf[], const double &atrH[], con
       else if(g_lastHigh < g_prevHigh && g_lastLow < g_prevLow) g_trendState = -1;
      }
 
-   // expire zones by analysis-TF age
+   // expire ANALYSIS zones by analysis-TF age (chart zones age on chart bars)
    for(int i = ArraySize(g_zones) - 1; i >= 0; i--)
-      if(j - g_zones[i].bornH > InpZoneMaxAge)
+      if(g_zones[i].htf && j - g_zones[i].bornH > InpLifeHtf)
          RemoveZoneAt(i);
   }
 //+------------------------------------------------------------------+
@@ -586,17 +590,17 @@ int OnCalculate(const int rates_total,
                 const long &volume[],
                 const int &spread[])
   {
-   if(rates_total < InpPivotLen * 2 + 20)
+   if(rates_total < MathMax(InpPivotLtf, InpPivotHtf) * 2 + 20)
       return 0;
 
    //--- analysis-timeframe series -------------------------------------------
    double tfRatio = (double)PeriodSeconds(g_atf) / (double)PeriodSeconds(_Period);
-   int need = (int)MathMin(5000.0, rates_total / MathMax(tfRatio, 1.0) + InpPivotLen * 4 + 60);
-   need = MathMax(need, InpPivotLen * 4 + 60);
+   int need = (int)MathMin(5000.0, rates_total / MathMax(tfRatio, 1.0) + InpPivotHtf * 4 + 60);
+   need = MathMax(need, InpPivotHtf * 4 + 60);
 
    static MqlRates htf[];
    int hCount = CopyRates(_Symbol, g_atf, 0, need, htf);
-   if(hCount <= InpPivotLen * 2 + 5)
+   if(hCount <= InpPivotHtf * 2 + 5)
       return prev_calculated;               // higher timeframe not loaded yet
    ArraySetAsSeries(htf, false);
 
@@ -627,11 +631,12 @@ int OnCalculate(const int rates_total,
       g_trendState = 0;
       g_lastBosUpH = g_lastBosDnH = -999999;
       g_bosUpPrev = g_bosDnPrev = false;
+      g_cHigh = g_cPrevHigh = g_cLow = g_cPrevLow = 0;
       g_posOn = false; g_posTime = 0; g_posStat = 0;
       g_posBE = false; g_posUid = -1;
      }
 
-   int start = MathMax(prev_calculated - 1, InpPivotLen * 2 + 15);
+   int start = MathMax(prev_calculated - 1, MathMax(InpPivotLtf, InpPivotHtf) * 2 + 15);
 
    for(int bar = start; bar < rates_total - 1; bar++)   // closed bars only
      {
@@ -659,7 +664,7 @@ int OnCalculate(const int rates_total,
          int j = 0;
          while(j + 1 < hCount && htf[j + 1].time <= time[bar])
             j++;
-         if(j < InpPivotLen * 2 + 1)
+         if(j < InpPivotHtf * 2 + 1)
             continue;                        // not enough history yet
          hIdx = j;
         }
@@ -671,11 +676,63 @@ int OnCalculate(const int rates_total,
 
       double atrA = atrH[hIdx] > 0.0 ? atrH[hIdx] : atr;
 
+      //--- CHART-timeframe zones (book p.41: zones are marked on the analysis
+      //    timeframe AND on the chart; TP1 comes from a chart zone) ---------
+      int pc = bar - InpPivotLtf;
+      if(pc >= InpPivotLtf)
+        {
+         bool isPH = true, isPL = true;
+         for(int k = pc - InpPivotLtf; k <= pc + InpPivotLtf; k++)
+           {
+            if(k == pc) continue;
+            if(high[k] >= high[pc]) isPH = false;
+            if(low[k]  <= low[pc])  isPL = false;
+            if(!isPH && !isPL) break;
+           }
+         double hiRunC = high[pc], loRunC = low[pc];
+         for(int k = pc; k <= bar; k++)
+           {
+            hiRunC = MathMax(hiRunC, high[k]);
+            loRunC = MathMin(loRunC, low[k]);
+           }
+         double bigC = atr * InpBigMoveATR;
+         if(isPH)
+           {
+            g_cPrevHigh = g_cHigh;  g_cHigh = high[pc];
+            double zTop = high[pc], zBot = MathMax(open[pc], close[pc]);
+            if((zTop - loRunC) >= bigC && !Overlaps(zTop, zBot, false))
+               AddZone(zTop, zBot, -1, bar, atr, time[pc], time[bar], false);
+           }
+         if(isPL)
+           {
+            g_cPrevLow = g_cLow;    g_cLow = low[pc];
+            double zTop = MathMin(open[pc], close[pc]), zBot = low[pc];
+            if((hiRunC - zBot) >= bigC && !Overlaps(zTop, zBot, false))
+               AddZone(zTop, zBot, 1, bar, atr, time[pc], time[bar], false);
+           }
+        }
+
+      //--- expire chart zones by chart-bar age, and drop far ones -----------
+      for(int i = ArraySize(g_zones) - 1; i >= 0; i--)
+         if(!g_zones[i].htf && bar - g_zones[i].bornH > InpLifeLtf)
+            RemoveZoneAt(i);
+
       // both sides of structure broken recently = sideway. "No Setup, No Trade".
       bool inRange   = (hIdx - g_lastBosUpH) <= InpRangeBars &&
                        (hIdx - g_lastBosDnH) <= InpRangeBars;
-      bool trendUp   = (g_trendState ==  1 && !inRange);
-      bool trendDown = (g_trendState == -1 && !inRange);
+      // Until the analysis timeframe has printed two swings it has NO opinion,
+      // and with g_trendState stuck at 0 the filter blocked every trade
+      // forever. "Trend is King" does not mean "no opinion, no trade" — the
+      // chart's own last two swings answer instead.
+      int effTrend = g_trendState;
+      if(effTrend == 0 && g_cPrevHigh > 0 && g_cPrevLow > 0)
+        {
+         if(g_cHigh > g_cPrevHigh && g_cLow > g_cPrevLow)      effTrend = 1;
+         else if(g_cHigh < g_cPrevHigh && g_cLow < g_cPrevLow) effTrend = -1;
+        }
+      bool trendUp      = (effTrend ==  1 && !inRange);
+      bool trendDown    = (effTrend == -1 && !inRange);
+      bool trendUnknown = (effTrend ==  0 && !inRange);
 
       //--- confirmation candles (SNRZ style, on the CHART timeframe) --------
       double o = open[bar], h = high[bar], l = low[bar], c = close[bar];
@@ -740,12 +797,12 @@ int OnCalculate(const int rates_total,
 
       // A Weekly/Daily zone can be years old and hundreds of points away. It is
       // not tradeable any more and it wrecks the chart scale, so drop it.
-      double maxZoneDist = atrA * InpMaxZoneDistATR;
       for(int i = ArraySize(g_zones) - 1; i >= 0; i--)
         {
+         double ref = g_zones[i].htf ? atrA : atr;
          double gap = c > g_zones[i].top ? c - g_zones[i].top
                       : (c < g_zones[i].bot ? g_zones[i].bot - c : 0.0);
-         if(gap > maxZoneDist)
+         if(gap > ref * InpMaxZoneDistATR)
             RemoveZoneAt(i);
         }
 
@@ -792,7 +849,7 @@ int OnCalculate(const int rates_total,
                                ((g_zones[i].state == 1 && g_zones[i].touches >= 2) ||
                                 (g_zones[i].srr && g_zones[i].touches >= 1) ||
                                 (g_zones[i].state == 2 && g_zones[i].touches >= 1 && g_zones[i].touches <= 2));
-               bool okTrend = !InpTrendFilter || trendUp ||
+               bool okTrend = !InpTrendFilter || trendUp || trendUnknown ||
                               (InpAllowCounterInv && g_zones[i].state == 2);
                bool okConf  = !InpNeedConfirm || bullConfirm;
                bool fresh   = (g_zones[i].sigTouch != g_zones[i].touches);
@@ -814,8 +871,9 @@ int OnCalculate(const int rates_total,
                     }
                   // open the position
                   double swingLo = MathMin(MathMin(low[bar], low[bar - 1]), low[bar - 2]);
-                  double rawSl   = MathMin(g_zones[i].bot, swingLo) - atrA * 0.15;
-                  double risk    = MathMax(MathAbs(c - rawSl), atrA * InpMinSlATR);
+                  double zAtr    = g_zones[i].htf ? atrA : atr;
+                  double rawSl   = MathMin(g_zones[i].bot, swingLo) - zAtr * 0.15;
+                  double risk    = MathMax(MathAbs(c - rawSl), atr * InpMinSlATR);
                   double t1, t2, t3;
                   BuildTargets(true, c, risk, t1, t2, t3);
                   g_posOn = true; g_posBuy = true; g_posPO2 = isPO2;
@@ -858,7 +916,7 @@ int OnCalculate(const int rates_total,
                                ((g_zones[i].state == 1 && g_zones[i].touches >= 2) ||
                                 (g_zones[i].srr && g_zones[i].touches >= 1) ||
                                 (g_zones[i].state == 2 && g_zones[i].touches >= 1 && g_zones[i].touches <= 2));
-               bool okTrend = !InpTrendFilter || trendDown ||
+               bool okTrend = !InpTrendFilter || trendDown || trendUnknown ||
                               (InpAllowCounterInv && g_zones[i].state == 2);
                bool okConf  = !InpNeedConfirm || bearConfirm;
                bool fresh   = (g_zones[i].sigTouch != g_zones[i].touches);
@@ -879,8 +937,9 @@ int OnCalculate(const int rates_total,
                      Notify("SELL — rejection at " + ZoneText(g_zones[i]), live);
                     }
                   double swingHi = MathMax(MathMax(high[bar], high[bar - 1]), high[bar - 2]);
-                  double rawSl   = MathMax(g_zones[i].top, swingHi) + atrA * 0.15;
-                  double risk    = MathMax(MathAbs(rawSl - c), atrA * InpMinSlATR);
+                  double zAtr    = g_zones[i].htf ? atrA : atr;
+                  double rawSl   = MathMax(g_zones[i].top, swingHi) + zAtr * 0.15;
+                  double risk    = MathMax(MathAbs(rawSl - c), atr * InpMinSlATR);
                   double t1, t2, t3;
                   BuildTargets(false, c, risk, t1, t2, t3);
                   g_posOn = true; g_posBuy = false; g_posPO2 = isPO2;
