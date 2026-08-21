@@ -61,9 +61,11 @@ class Report:
 
 
 def realized_r(p) -> float:
-    """What one finished setup actually paid, in units of its own initial
-    risk: half the position off at TP1, a quarter at TP2, a quarter at TP3,
-    stop to entry once TP1 has paid."""
+    """What one finished setup actually paid, in units of its own initial risk.
+
+    The book's plan (image 41): money comes off at the 1:1 line and the stop
+    goes to entry there, then the rest rides to the zone targets — a quarter
+    at TP2 and a quarter at TP3."""
     risk = p.risk0            # break-even overwrites p.sl, so never derive it
     if risk <= 0:
         return 0.0
@@ -71,15 +73,17 @@ def realized_r(p) -> float:
     r1 = sign * (p.tp1 - p.entry) / risk
     r2 = sign * (p.tp2 - p.entry) / risk
     r3 = sign * (p.tp3 - p.entry) / risk
-    if p.stat == 3:
-        return 0.5 * r1 + 0.25 * r2 + 0.25 * r3
-    if p.stat == 2:
-        return 0.5 * r1 + 0.25 * r2          # rest closed at entry
-    if p.stat == 1 or p.stat == -2:
-        return 0.5 * r1                      # TP1 paid, the rest came back
     if p.stat == -1:
-        return -1.0
-    return 0.0
+        return -1.0                          # stopped before the 1:1 line
+    # Image 41: at the 1:1 red line money comes off and the stop goes to
+    # entry. p.peak is how far the trade actually got before it ended, which
+    # p.stat forgets once the break-even stop closes it.
+    paid = 0.5 * (r1 if p.peak >= 1 else 1.0)     # the first half
+    if p.peak >= 2:
+        paid += 0.25 * r2
+    if p.peak >= 3:
+        paid += 0.25 * r3
+    return paid
 
 
 def run(candles: Iterable[Candle], cfg: Config) -> Report:

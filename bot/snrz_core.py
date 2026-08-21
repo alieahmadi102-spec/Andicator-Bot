@@ -138,6 +138,13 @@ class Config:
     need_micro_bos: bool = True # book: "a small BOS in the trade direction"
     micro_bos_len: int = 2
     break_even: bool = True     # book: risk free once the trade pays 1:1
+    # Master class image 41, the fully worked trade: zone 4706-4720, stop
+    # 4698.67, and a RED LINE drawn at 4732.33 — exactly 1:1 against that
+    # stop. "On the 5-minute we go break-even and take money off the account,
+    # and we wait for the target." So break-even happens at 1R, NOT when the
+    # first zone target is reached: that zone can be far away and the trade
+    # would ride all the way back to the stop before it ever got protected.
+    be_at_r: float = 1.0
     min_sl_atr: float = 2.5     # a floor against noise, NOT a way to buy a
                                 # win rate. A stop so wide it can never be hit
                                 # turns every open loser into a fake 'win'.
@@ -239,6 +246,7 @@ class Position:
     tp2: float
     tp3: float
     risk0: float = 0.0     # the ORIGINAL stop distance — break-even overwrites sl
+    peak: int = 0          # best target reached before the exit (stat loses it)
     stat: int = 0          # 0 running · 1/2/3 TP reached · -1 stopped · -2 BE
     closed: bool = False
     be: bool = False       # stop already moved to entry
@@ -701,25 +709,30 @@ class SnrzEngine:
                 elif entry_bar:
                     pass
                 elif c.high >= p.tp3:
-                    p.stat, p.closed = 3, True
+                    p.stat, p.peak, p.closed = 3, 3, True
                 elif c.high >= p.tp2 and p.stat < 2:
-                    p.stat = 2
+                    p.stat = p.peak = 2
                 elif c.high >= p.tp1 and p.stat < 1:
-                    p.stat = 1
+                    p.stat = p.peak = 1
             else:
                 if c.high >= p.sl:
                     p.stat, p.closed = (-2 if p.be else -1), True
                 elif entry_bar:
                     pass
                 elif c.low <= p.tp3:
-                    p.stat, p.closed = 3, True
+                    p.stat, p.peak, p.closed = 3, 3, True
                 elif c.low <= p.tp2 and p.stat < 2:
-                    p.stat = 2
+                    p.stat = p.peak = 2
                 elif c.low <= p.tp1 and p.stat < 1:
-                    p.stat = 1
-            # book p41: once it pays, make it risk free
-            if self.cfg.break_even and not p.closed and p.stat >= 1 and not p.be:
-                p.sl, p.be = p.entry, True
+                    p.stat = p.peak = 1
+            # image 41: the red 1:1 line is where the stop goes to entry and
+            # money comes off — not the first zone target
+            if self.cfg.break_even and not p.closed and not p.be and not entry_bar:
+                r1 = p.entry + p.risk0 * self.cfg.be_at_r if p.side == "buy" \
+                    else p.entry - p.risk0 * self.cfg.be_at_r
+                reached = (c.high >= r1) if p.side == "buy" else (c.low <= r1)
+                if reached or p.stat >= 1:
+                    p.sl, p.be = p.entry, True
             if not p.closed and idx - p.index > self.cfg.max_trade_bars:
                 p.closed = True
             if self.cfg.kill_on_stop and p.closed and p.stat == -1:

@@ -30,7 +30,7 @@
 //                  TP3 = the one beyond. 1R/2R/3R when no zone sits there.
 //  SCALP vs SWING (book): M5/M15 = SCALP · H1/H4/Daily = SWING.
 // ═══════════════════════════════════════════════════════════════════════════
-indicator("SNRZ Strategy [Zindan] v9", "SNRZ v9.1", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500)
+indicator("SNRZ Strategy [Zindan] v9", "SNRZ v9.2", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500)
 
 // ───────────────────────────── Inputs ──────────────────────────────────────
 grpZ  = "Zones (SNRZ)"
@@ -64,7 +64,8 @@ minRR          = input.float(1.0, "زون بعدی حداقل چند برابر 
 maxTradeBars   = input.int(60,     "Close an open trade after N chart bars", minval = 20, group = grpS)
 minSlAtr       = input.float(2.5,   "Minimum stop distance (ATR ×)",         minval = 0.1, step = 0.5, group = grpS, tooltip = "کتاب: استاپ روی لیکوییدیتی است، نه یک تار مو بیرونِ لبه‌ی زون. ولی خیلی پهن هم نکن — نسخه‌ی قبلی این را ۱۶ ATR گذاشته بود و روی ۱ ساعته استاپ ۱۸۲۷ دلاری می‌ساخت که هیچ‌وقت نمی‌خورَد؛ آن وین‌ریت ۹۵٪ واقعی نبود.")
 tpMaxR         = input.float(6.0,  "Max R for TP1 (farther zone → TP2/TP3)", minval = 1, step = 0.5, group = grpS)
-useBreakEven   = input.bool(true,  "Move stop to entry once TP1 is reached", group = grpS, tooltip = "کتاب ص۴۱: «روی ۵ دقیقه بریک‌ایون می‌کنیم و پول را از حساب برمی‌داریم».")
+useBreakEven   = input.bool(true,  "بریک‌ایون روی خط ۱:۱",                  group = grpS, tooltip = "عکس ۴۱ مسترکلاس — معامله‌ی کامل: زون ۴۷۰۶–۴۷۲۰، استاپ ۴۶۹۸٫۶۷، و یک **خط قرمز** روی ۴۷۳۲٫۳۳ که دقیقاً ۱:۱ همان استاپ است. «روی ۵ دقیقه بریک‌ایون می‌کنیم و پول را از حساب برمی‌داریم و منتظر تارگت می‌مانیم.» پس بریک‌ایون روی **۱:۱** است، نه وقتی اولین زونِ تارگت خورد — آن زون می‌تواند خیلی دور باشد و معامله تا استاپ برگردد بدون اینکه هیچ‌وقت محافظت شود.")
+beAtR          = input.float(1.0, "…یعنی چند برابر فاصله‌ی استاپ",          minval = 0.2, step = 0.1, group = grpS)
 entryAtZone    = input.bool(true,  "ورود = اردر لیمیت روی خود زون (نه کلوز کندل تأیید)", group = grpS, tooltip = "کتاب ص۴۱/۴۲: اردر روی زون گذاشته می‌شود، استاپ کمی بیرون زون، و تارگت اول خط ۱:۱. ورود روی کلوزِ کندل تأیید استاپ را به اندازه‌ی کل زون + خود کندل پهن می‌کرد.")
 entryEdge      = input.bool(true,  "…لیمیت روی لبه‌ی نزدیک زون (نه وسط آن)", group = grpS)
 slBufferATR    = input.float(0.8,  "استاپ چقدر بیرون زون (ATR ×)",          minval = 0.0, step = 0.25, group = grpS)
@@ -734,10 +735,13 @@ if array.size(orders) > 0
                         o.stat := 2
                     else if low <= o.tp1 and o.stat < 1
                         o.stat := 1
-            // book p41: once it pays, make it risk free
-            if useBreakEven and o.stat >= 1 and not o.be
-                o.sl := o.entry
-                o.be := true
+            // image 41: the red 1:1 line is where the stop goes to entry and
+            // money comes off — not the first zone target, which can be far
+            if useBreakEven and not o.be and not entryBar
+                r1 = o.buy ? o.entry + o.risk0 * beAtR : o.entry - o.risk0 * beAtR
+                if (o.buy ? high >= r1 : low <= r1) or o.stat >= 1
+                    o.sl := o.entry
+                    o.be := true
             if o.stat == 3
                 o.stat := 3
             if o.stat == 0 and bar_index - o.bar > maxTradeBars
@@ -822,7 +826,7 @@ if showPanel and barstate.islast
             nRun += 1
     posTxt = nOrd + nRun == 0 ? "— no setup right now —" :
              str.tostring(nOrd) + " limit waiting · " + str.tostring(nRun) + " running"
-    table.cell(info, 0, 0, "⚜  SNRZ v9.1  —  ZiNDAN", text_color = colGold, text_size = size.normal)
+    table.cell(info, 0, 0, "⚜  SNRZ v9.2  —  ZiNDAN", text_color = colGold, text_size = size.normal)
     table.cell(info, 0, 1, "The Gold Chaser", text_color = color.new(colGold, 35), text_size = size.tiny)
     table.cell(info, 0, 2, trendTxt, text_color = trendCol, text_size = size.small)
     table.cell(info, 0, 3, "Zones: " + str.tostring(liveLtf) + " @ " + timeframe.period + "  +  " + str.tostring(liveHtf) + " @ " + htfTF, text_color = color.new(color.white, 20), text_size = size.small)

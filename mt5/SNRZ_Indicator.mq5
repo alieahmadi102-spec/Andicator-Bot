@@ -14,7 +14,7 @@
 //|   • One position at a time with SL / TP1 / TP2 / TP3 drawn       |
 //+------------------------------------------------------------------+
 #property copyright   "SNRZ (Zindan The Gold Chaser) — indicator port"
-#property version     "9.10"
+#property version     "9.20"
 #property description "SNRZ: chart zones AND analysis zones together (book p.41/p.44), one trade at a time"
 #property indicator_chart_window
 #property indicator_buffers 4
@@ -67,7 +67,14 @@ input bool   InpAllowCounterInv = false; // Allow counter-trend entries on inver
 input int    InpMaxTouches   = 3;     // Max touches per zone (3-touch rule)
 input int    InpMaxFlips     = 2;     // Max role flips before a zone is finished
 input bool   InpKillOnStop   = true;  // A zone that got stopped out is finished
-input bool   InpBreakEven    = true;  // Move stop to entry once TP1 is reached
+// Master class image 41, the fully worked trade: zone 4706-4720, stop 4698.67
+// and a RED LINE at 4732.33 - exactly 1:1 against that stop. "On the 5-minute
+// we go break-even and take money off the account, and we wait for the
+// target." So break-even happens at 1R, NOT when the first zone target is
+// reached: that zone can be far away and the trade would ride all the way
+// back to the stop before it was ever protected.
+input bool   InpBreakEven    = true;  // Move stop to entry at the 1:1 line
+input double InpBeAtR        = 1.0;   // ...meaning this many times the stop distance
 input int    InpRangeBars    = 10;    // Range lockout (analysis-TF bars since opposite BOS)
 input int    InpMaxOpen      = 3;     // How many zones may carry a live order/trade at once
 input double InpMinRR        = 1.0;   // The next zone must be at least this many R away
@@ -975,11 +982,19 @@ int OnCalculate(const int rates_total,
             else if(l <= g_orders[i].tp2 && g_orders[i].stat < 2) g_orders[i].stat = 2;
             else if(l <= g_orders[i].tp1 && g_orders[i].stat < 1) g_orders[i].stat = 1;
            }
-         // book p41: once it pays, make it risk free (Zero Float)
-         if(InpBreakEven && g_orders[i].stat >= 1 && !g_orders[i].be)
+         // image 41: the red 1:1 line is where the stop goes to entry and
+         // money comes off - not the first zone target, which can be far
+         if(InpBreakEven && !g_orders[i].be && !entryBar)
            {
-            g_orders[i].sl = g_orders[i].entry;
-            g_orders[i].be = true;
+            double r1 = g_orders[i].buy
+                        ? g_orders[i].entry + g_orders[i].risk0 * InpBeAtR
+                        : g_orders[i].entry - g_orders[i].risk0 * InpBeAtR;
+            bool hit = g_orders[i].buy ? (h >= r1) : (l <= r1);
+            if(hit || g_orders[i].stat >= 1)
+              {
+               g_orders[i].sl = g_orders[i].entry;
+               g_orders[i].be = true;
+              }
            }
          if(g_orders[i].stat == 0 && bar - g_orders[i].bar > InpMaxTradeBars)
             g_orders[i].stat = -3;               // timed out, closed flat
