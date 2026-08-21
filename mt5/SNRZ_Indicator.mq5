@@ -14,7 +14,7 @@
 //|   • One position at a time with SL / TP1 / TP2 / TP3 drawn       |
 //+------------------------------------------------------------------+
 #property copyright   "SNRZ (Zindan The Gold Chaser) — indicator port"
-#property version     "9.50"
+#property version     "9.60"
 #property description "SNRZ: chart zones AND analysis zones together (book p.41/p.44), one trade at a time"
 #property indicator_chart_window
 #property indicator_buffers 4
@@ -54,6 +54,7 @@ input double InpBigMoveATR   = 1.2;   // "Big Movement" >= ATR x
 // BIG MOVEMENT, the market respects that zone MORE." The pairing path never
 // checked this, so zones were born VALID off swings the market barely reacted to.
 input bool   InpNeedBigMove  = true;  // A paired zone must have a big movement too
+input bool   InpNeedFirstMove = true;  // ...and its FIRST movement must be big too (image 35)
 input double InpBreakoutPct  = 75.0;  // Breakout rule (%) — the 75% rule
 input double InpMinZoneATR   = 0.15;  // Min zone height (ATR x)
 input double InpMaxZoneATR   = 0.40;  // Max zone height (ATR x)
@@ -445,6 +446,47 @@ void PushSwing(const bool htf, const double price, const bool isHigh, const int 
      }
   }
 
+//+------------------------------------------------------------------+
+//| Image 35: a valid zone has a FIRST movement as well as a second,  |
+//| "and the more each of the movements is momentum, the more the     |
+//| market respects that zone". These two helpers measure the first   |
+//| one: the extreme price reached between the mate swing and this    |
+//| one. They read the same bar-index space the swings are stored in. |
+//+------------------------------------------------------------------+
+int FindMate(const bool htf, const double price, const int bar, const double atr);
+
+void MateSeg(const bool htf, const double price, const int bar, const double atr,
+             const double &hi[], const double &lo[], double &outHi, double &outLo)
+  {
+   outHi = -DBL_MAX; outLo = DBL_MAX;
+   int mi = FindMate(htf, price, bar, atr);
+   if(mi < 0) return;
+   int mb = htf ? g_swHtf[mi].bar : g_swLtf[mi].bar;
+   if(mb < 0 || mb > bar) return;
+   outHi = hi[mb]; outLo = lo[mb];
+   for(int k = mb; k <= bar; k++)
+     {
+      outHi = MathMax(outHi, hi[k]);
+      outLo = MathMin(outLo, lo[k]);
+     }
+  }
+
+void MateSegRates(const double price, const int bar, const double atr,
+                  const MqlRates &r[], double &outHi, double &outLo)
+  {
+   outHi = -DBL_MAX; outLo = DBL_MAX;
+   int mi = FindMate(true, price, bar, atr);
+   if(mi < 0) return;
+   int mb = g_swHtf[mi].bar;
+   if(mb < 0 || mb > bar) return;
+   outHi = r[mb].high; outLo = r[mb].low;
+   for(int k = mb; k <= bar; k++)
+     {
+      outHi = MathMax(outHi, r[k].high);
+      outLo = MathMin(outLo, r[k].low);
+     }
+  }
+
 // index of the newest earlier swing at a similar price, or -1
 int FindMate(const bool htf, const double price, const int bar, const double atr)
   {
@@ -541,7 +583,8 @@ void AddSwingZone(const bool htf, const double price, const bool isHigh,
                   const int bar, const int bornH, const double atr,
                   const double bodyHi, const double bodyLo,
                   const double hiRun, const double loRun,
-                  const double refClose, const datetime t1, const datetime t2)
+                  const double refClose, const datetime t1, const datetime t2,
+                  const double firstHi, const double firstLo)
   {
    int mi = InpPairZones ? FindMate(htf, price, bar, atr) : -1;
    double matePrice = 0.0;
@@ -614,9 +657,14 @@ void AddSwingZone(const bool htf, const double price, const bool isHigh,
    else if(!isHigh && !mateHigh) role =  1;             // S+S
    else                                                 // S+R / R+S — the
       role = (refClose > (t + b) / 2.0) ? 1 : -1;       // GAP band (p51)
-   // image 36: BOTH movements must be big
-   double away = (role == 1) ? (hiRun - t) : (b - loRun);
-   if(!Overlaps(t, b, htf) && (!InpNeedBigMove || away >= atr * InpBigMoveATR))
+   // image 36: the move AWAY must be big — and image 35: so must the FIRST
+   // movement, the stretch between the two touches.
+   double bigA  = atr * InpBigMoveATR;
+   double away  = (role == 1) ? (hiRun - t) : (b - loRun);
+   double first = (role == 1) ? (firstHi - t) : (b - firstLo);
+   bool okBig = (!InpNeedBigMove   || away  >= bigA);
+   bool okFst = (!InpNeedFirstMove || (firstHi > -DBL_MAX && first >= bigA));
+   if(!Overlaps(t, b, htf) && okBig && okFst)
       AddZone(t, b, role, bornH, atr, t1, t2, htf, true);
   }
 //+------------------------------------------------------------------+
@@ -797,12 +845,21 @@ void ProcessHtfBar(const int j, const MqlRates &htf[], const double &atrH[], con
 
       double bodyHiH = MathMax(htf[p].open, htf[p].close);
       double bodyLoH = MathMin(htf[p].open, htf[p].close);
+      double fHi = 0.0, fLo = 0.0;
       if(isPL)
+        {
+         MateSegRates(htf[p].low, p, atr, htf, fHi, fLo);
          AddSwingZone(true, htf[p].low, false, p, j, atr, bodyHiH, bodyLoH,
-                      hiRun, loRun, htf[j].close, htf[p].time, htf[j].time);
+                      hiRun, loRun, htf[j].close, htf[p].time, htf[j].time,
+                      fHi, fLo);
+        }
       if(isPH)
+        {
+         MateSegRates(htf[p].high, p, atr, htf, fHi, fLo);
          AddSwingZone(true, htf[p].high, true, p, j, atr, bodyHiH, bodyLoH,
-                      hiRun, loRun, htf[j].close, htf[p].time, htf[j].time);
+                      hiRun, loRun, htf[j].close, htf[p].time, htf[j].time,
+                      fHi, fLo);
+        }
      }
 
    // Book: a close beyond the last confirmed swing IS the Break of Structure,
@@ -943,17 +1000,22 @@ int OnCalculate(const int rates_total,
            }
          double bodyHiC = MathMax(open[pc], close[pc]);
          double bodyLoC = MathMin(open[pc], close[pc]);
+         double fHiC = 0.0, fLoC = 0.0;
          if(isPH)
            {
             g_cPrevHigh = g_cHigh;  g_cHigh = high[pc];
+            MateSeg(false, high[pc], pc, atr, high, low, fHiC, fLoC);
             AddSwingZone(false, high[pc], true, pc, bar, atr, bodyHiC, bodyLoC,
-                         hiRunC, loRunC, close[bar], time[pc], time[bar]);
+                         hiRunC, loRunC, close[bar], time[pc], time[bar],
+                         fHiC, fLoC);
            }
          if(isPL)
            {
             g_cPrevLow = g_cLow;    g_cLow = low[pc];
+            MateSeg(false, low[pc], pc, atr, high, low, fHiC, fLoC);
             AddSwingZone(false, low[pc], false, pc, bar, atr, bodyHiC, bodyLoC,
-                         hiRunC, loRunC, close[bar], time[pc], time[bar]);
+                         hiRunC, loRunC, close[bar], time[pc], time[bar],
+                         fHiC, fLoC);
            }
         }
 

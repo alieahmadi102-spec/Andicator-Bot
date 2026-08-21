@@ -18,9 +18,10 @@
 //
 // Measured on 83 days of real XAUUSD, honest fills (a limit can only fill on
 // a bar AFTER it was placed, and on the fill bar only the stop is judged):
-//   M1 -0.18R - M5 -0.09R - M15 -0.13R - M30 -0.06R - H1 +0.13R - H4 -0.02R
-// Median -0.07R, against -0.18R for the single-trade model. Better, and still
-// not profitable. Do not trade it with real money until YOU have watched it.
+//   M1 -0.06R - M5 +0.01R - M15 +0.06R - M30 -0.08R - H1 -0.35R - H4 +0.03R
+// Median -0.02R, against -0.18R for the single-trade model this replaced.
+// Better, and still not profitable. Spread is NOT in those numbers. Do not
+// trade it with real money until YOU have watched it on your own chart.
 // ═══════════════════════════════════════════════════════════════════════════
 //  SNRZ Strategy Indicator — "Zindan The Gold Chaser" Masterclass (2026 book)
 //
@@ -30,7 +31,7 @@
 //                  TP3 = the one beyond. 1R/2R/3R when no zone sits there.
 //  SCALP vs SWING (book): M5/M15 = SCALP · H1/H4/Daily = SWING.
 // ═══════════════════════════════════════════════════════════════════════════
-indicator("SNRZ Strategy [Zindan] v9", "SNRZ v9.5", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500)
+indicator("SNRZ Strategy [Zindan] v9", "SNRZ v9.6", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500)
 
 // ───────────────────────────── Inputs ──────────────────────────────────────
 grpZ  = "Zones (SNRZ)"
@@ -41,6 +42,7 @@ maxZonesLtf   = input.int(14,    "Max chart zones",                         minv
 maxZonesHtf   = input.int(8,    "Max analysis zones",                      minval = 1,  maxval = 15, group = grpZ)
 bigMoveMult   = input.float(1.2,"Big Movement ≥ ATR ×",                    minval = 0.1, step = 0.1, group = grpZ)
 needBigMove   = input.bool(true, "زون جفت‌شده هم باید حرکت بزرگ داشته باشد",  group = grpZ, tooltip = "عکس ۳۶: «تفاوتش با ساپورت معمولی فقط این است که First Movement و Second Movement دارد — و اگر **هرکدام** از حرکت‌ها یک **Big Movement** باشد، بازار خودبه‌خود به آن زون **بیشتر احترام** می‌گذارد.» مسیر جفت‌سازی این را چک نمی‌کرد، پس زون از دو سوئینگی ساخته می‌شد که بازار به‌سختی به آن‌ها واکنش نشان داده بود.")
+needFirstMove = input.bool(true, "…و حرکتِ اولش هم باید بزرگ باشد",          group = grpZ, tooltip = "عکس ۳۵: زون معتبر یک First Movement دارد و یک Second Movement — «هرچه هرکدام از حرکت‌ها مومنتوم‌تر باشد، بازار بیشتر به آن زون احترام می‌گذارد». تا اینجا فقط حرکتِ بعد از لمس دوم اندازه گرفته می‌شد؛ فاصله‌ی بین دو لمس — یعنی حرکت اول — هیچ‌وقت چک نمی‌شد.")
 breakoutPct   = input.float(75, "Breakout rule (%)",                       minval = 50, maxval = 100, group = grpZ)
 minZoneATR    = input.float(0.15,"Min zone height (ATR ×)",                minval = 0.05, step = 0.05, group = grpZ)
 maxZoneATR    = input.float(0.4, "Max zone height (ATR ×)",                minval = 0.1,  step = 0.05, group = grpZ, tooltip = "زون به ارتفاع یک ATR دیگر زون نیست، یک ناحیه است — روی ۴ ساعته باندهای ۲۸۷ دلاری روی کل چارت می‌کشید.")
@@ -342,6 +344,15 @@ var ltfSwBar   = array.new<int>()
 var htfSwPrice = array.new<float>()
 var htfSwHigh  = array.new<bool>()
 var htfSwBar   = array.new<int>()
+// Image 35: a valid zone has a FIRST movement as well as a second one, and
+// "the more each of the movements is momentum, the more the market respects
+// that zone". These hold, for every remembered swing, how far price has run
+// away from it SO FAR — measured up to the pivot bar, so the second movement
+// (which is checked separately) cannot pay for the first one.
+var ltfSegHi = array.new<float>()
+var ltfSegLo = array.new<float>()
+var htfSegHi = array.new<float>()
+var htfSegLo = array.new<float>()
 // The analysis swings must measure their gap in ANALYSIS bars. Passing
 // bar_index here compared a 4H swing distance against a 60-CHART-bar limit,
 // so on a 1H chart two 4H swings 20 bars apart looked 80 apart and almost
@@ -365,17 +376,37 @@ findMate(bool _htf, float _price, int _bar, float _atr) =>
                 break
     found
 
-pushSwing(bool _htf, float _price, bool _isHigh, int _bar) =>
+pushSwing(bool _htf, float _price, bool _isHigh, int _bar, float _segHi, float _segLo) =>
     aP = _htf ? htfSwPrice : ltfSwPrice
     aH = _htf ? htfSwHigh  : ltfSwHigh
     aB = _htf ? htfSwBar   : ltfSwBar
+    sH = _htf ? htfSegHi   : ltfSegHi
+    sL = _htf ? htfSegLo   : ltfSegLo
     array.push(aP, _price)
     array.push(aH, _isHigh)
     array.push(aB, _bar)
+    array.push(sH, _segHi)
+    array.push(sL, _segLo)
     if array.size(aP) > 40
         array.shift(aP)
         array.shift(aH)
         array.shift(aB)
+        array.shift(sH)
+        array.shift(sL)
+
+// Every bar, each remembered swing's first-movement extreme is extended by the
+// candle that has just become a PIVOT candidate — `high[_back]`, not `high` —
+// so the reading stops exactly at the pivot bar the next zone is drawn from.
+extendSeg(bool _htf, int _back) =>
+    sH = _htf ? htfSegHi : ltfSegHi
+    sL = _htf ? htfSegLo : ltfSegLo
+    n  = array.size(sH)
+    if n > 0
+        h = high[_back]
+        l = low[_back]
+        for i = 0 to n - 1
+            array.set(sH, i, math.max(array.get(sH, i), h))
+            array.set(sL, i, math.min(array.get(sL, i), l))
 
 // one swing -> at most one zone, drawn with its mate when pairing is on
 addSwing(bool _htf, float _price, bool _isHigh, int _bar, int _back, float _atr, float _bodyHi, float _bodyLo, float _hiRun, float _loRun, int _uid) =>
@@ -386,10 +417,15 @@ addSwing(bool _htf, float _price, bool _isHigh, int _bar, int _back, float _atr,
     // not taken.
     float matePrice = na
     bool  mateHigh  = false
+    float mateSegHi = na
+    float mateSegLo = na
     if mi >= 0
         matePrice := array.get(_htf ? htfSwPrice : ltfSwPrice, mi)
         mateHigh  := array.get(_htf ? htfSwHigh  : ltfSwHigh,  mi)
-    pushSwing(_htf, _price, _isHigh, _bar)
+        // read BEFORE the push: a push that trims the array shifts every index
+        mateSegHi := array.get(_htf ? htfSegHi : ltfSegHi, mi)
+        mateSegLo := array.get(_htf ? htfSegLo : ltfSegLo, mi)
+    pushSwing(_htf, _price, _isHigh, _bar, _price, _price)
 
     // A GAP mate is the OPPOSITE kind of swing at a DIFFERENT price, so the
     // same-price search above can never find one — it needs its own pass.
@@ -429,10 +465,14 @@ addSwing(bool _htf, float _price, bool _isHigh, int _bar, int _back, float _atr,
             // S+R / R+S — the GAP band (p51). Which side we trade it from
             // depends on where price is standing now.
             role := close > (t + b) / 2 ? 1 : -1
-        // image 36: BOTH movements must be big, or the market has no reason
-        // to respect the zone
-        away = role == 1 ? _hiRun - t : b - _loRun
-        if not overlaps(t, b, _htf) and (not needBigMove or away >= _atr * bigMoveMult)
+        // image 36: the move AWAY must be big, or the market has no reason to
+        // respect the zone — and image 35: so must the FIRST movement, the one
+        // between the two touches.
+        away  = role == 1 ? _hiRun - t : b - _loRun
+        first = role == 1 ? mateSegHi - t : b - mateSegLo
+        okBig = not needBigMove or away >= _atr * bigMoveMult
+        okFst = not needFirstMove or (not na(first) and first >= _atr * bigMoveMult)
+        if not overlaps(t, b, _htf) and okBig and okFst
             array.push(zones, newZone(t, b, role, _htf, _uid, _atr, _back, true))
     else
         // p24, the FIFTH way to draw a zone: "when there is no S/R pair to
@@ -447,6 +487,12 @@ addSwing(bool _htf, float _price, bool _isHigh, int _bar, int _back, float _atr,
             if (_hiRun - _price) >= _atr * bigMoveMult and not overlaps(_bodyLo, _price, _htf)
                 array.push(zones, newZone(_bodyLo, _price, 1, _htf, _uid, _atr, _back, false))
 
+// The first-movement readings are extended BEFORE this bar's swings are drawn,
+// so a zone born now measures the run right up to its own pivot bar.
+htfBackSeg = math.min(200, int(math.round(pivotHtf * tfRatio)))
+extendSeg(false, pivotLtf)
+extendSeg(true,  htfBackSeg)
+
 // chart timeframe: the many small zones that give TP1 and the low-timeframe
 // setups (book p.44: "let TP1 be a 5-minute zone")
 if not na(plL)
@@ -455,7 +501,7 @@ if not na(phL)
     addSwing(false, phL, true,  bar_index - pivotLtf, pivotLtf, atr, bodyHiL, bodyLoL, hiRunL, loRunL, bar_index * 4 + 1)
 
 // analysis timeframe: the few big zones that set the trend and TP2
-htfBack = math.min(200, int(math.round(pivotHtf * tfRatio)))
+htfBack = htfBackSeg
 if newPLh and not na(atrH)
     addSwing(true, plH, false, htfBarNo, htfBack, atrA, bodyHiH, bodyLoH, hiRunH, loRunH, bar_index * 4 + 2)
 if newPHh and not na(atrH)
@@ -860,7 +906,7 @@ if showPanel and barstate.islast
             nRun += 1
     posTxt = nOrd + nRun == 0 ? "— no setup right now —" :
              str.tostring(nOrd) + " limit waiting · " + str.tostring(nRun) + " running"
-    table.cell(info, 0, 0, "⚜  SNRZ v9.5  —  ZiNDAN", text_color = colGold, text_size = size.normal)
+    table.cell(info, 0, 0, "⚜  SNRZ v9.6  —  ZiNDAN", text_color = colGold, text_size = size.normal)
     table.cell(info, 0, 1, "The Gold Chaser", text_color = color.new(colGold, 35), text_size = size.tiny)
     table.cell(info, 0, 2, trendTxt, text_color = trendCol, text_size = size.small)
     table.cell(info, 0, 3, "Zones: " + str.tostring(liveLtf) + " @ " + timeframe.period + "  +  " + str.tostring(liveHtf) + " @ " + htfTF, text_color = color.new(color.white, 20), text_size = size.small)

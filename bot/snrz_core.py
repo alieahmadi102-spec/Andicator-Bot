@@ -121,7 +121,8 @@ class Config:
     pivot_len: int = 10         # (kept for compatibility)
     max_zones: int = 6
     big_move_atr: float = 1.2
-    need_big_move: bool = True  # image 36: BOTH movements must be big
+    need_big_move: bool = True  # image 36: the move AWAY must be big
+    need_first_move: bool = True  # image 35: the FIRST movement too
     breakout_pct: float = 75.0
     min_zone_atr: float = 0.15
     max_zone_atr: float = 0.4   # a zone 1 ATR tall is a region, not a zone —
@@ -512,6 +513,18 @@ class SnrzEngine:
             if cfg.need_big_move:
                 away = (hi_run - top) if role == Role.SUPPORT else (bot - lo_run)
                 if away < big:
+                    continue
+            if cfg.need_first_move:
+                # Image 35: a valid zone has a FIRST movement AND a second one,
+                # "and the more each of the movements is momentum, the more the
+                # market respects that zone". Only the run after the second
+                # touch was measured; the stretch BETWEEN the two touches — the
+                # first movement — was never checked, so a zone counted as
+                # valid off a first touch the market had merely drifted from.
+                seg = series[mate.index: p + 1]
+                first = (max(w.high for w in seg) - top) if role == Role.SUPPORT \
+                    else (bot - min(w.low for w in seg))
+                if first < big:
                     continue
             # two touches already define it, so it is born VALID (p35: first
             # movement + second movement). The entry is the RETURN to it.
