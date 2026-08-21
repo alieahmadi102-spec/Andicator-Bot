@@ -24,6 +24,11 @@ TIMEFRAME_MIN = 60
 RISK_PCT = 1.0              # max 1% risk per trade (book rule)
 MAGIC = 20260819
 
+# Nothing is sent to the broker while this is True. Turn it off only after you
+# have watched it print signals for a while ON A DEMO ACCOUNT and you agree
+# with them. The crypto runner defaults the same way.
+DRY_RUN = True
+
 
 def mt5_timeframe(minutes: int):
     """MT5 has no TIMEFRAME_M60 — anything from an hour up has its own name."""
@@ -55,6 +60,10 @@ def place(signal, symbol: str):
     tick = mt5.symbol_info_tick(symbol)
     price = tick.ask if signal.side == "buy" else tick.bid
     volume = lots_for_risk(symbol, abs(price - signal.sl), RISK_PCT)
+    if DRY_RUN:
+        print(f"  DRY_RUN — would {signal.side.upper()} {volume} {symbol} "
+              f"@ {price:.2f}  SL {signal.sl:.2f}  TP1 {signal.tp1:.2f}")
+        return
     req = {
         "action": mt5.TRADE_ACTION_DEAL,
         "symbol": symbol,
@@ -78,6 +87,15 @@ def main():
         raise SystemExit("MetaTrader5 package not installed (Windows only): pip install MetaTrader5")
     if not mt5.initialize():
         raise SystemExit(f"MT5 init failed: {mt5.last_error()}")
+
+    acc = mt5.account_info()
+    print(f"MT5 connected: account {acc.login} ({acc.server}), "
+          f"balance {acc.balance} {acc.currency}")
+    print(f"symbol {SYMBOL} · analysis TF {TIMEFRAME_MIN}m · risk {RISK_PCT}% "
+          f"· mode {'DRY RUN (no orders sent)' if DRY_RUN else '*** LIVE ORDERS ***'}")
+    if not DRY_RUN:
+        input("DRY_RUN is off, real orders will be sent. Press Enter to go on, "
+              "or Ctrl+C to stop: ")
 
     tf = mt5_timeframe(TIMEFRAME_MIN)
     engine = SnrzEngine(Config())
