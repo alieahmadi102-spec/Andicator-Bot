@@ -14,7 +14,7 @@
 //|   • One position at a time with SL / TP1 / TP2 / TP3 drawn       |
 //+------------------------------------------------------------------+
 #property copyright   "SNRZ (Zindan The Gold Chaser) — indicator port"
-#property version     "9.30"
+#property version     "9.40"
 #property description "SNRZ: chart zones AND analysis zones together (book p.41/p.44), one trade at a time"
 #property indicator_chart_window
 #property indicator_buffers 4
@@ -49,6 +49,11 @@ input int    InpPivotHtf     = 8;     // Pivot length — analysis zones
 input int    InpMaxZonesLtf  = 14;     // Max chart zones
 input int    InpMaxZonesHtf  = 8;     // Max analysis zones
 input double InpBigMoveATR   = 1.2;   // "Big Movement" >= ATR x
+// Image 36: "the difference from an ordinary support is only that it has a
+// First Movement and a Second Movement - and if EACH of the movements is a
+// BIG MOVEMENT, the market respects that zone MORE." The pairing path never
+// checked this, so zones were born VALID off swings the market barely reacted to.
+input bool   InpNeedBigMove  = true;  // A paired zone must have a big movement too
 input double InpBreakoutPct  = 75.0;  // Breakout rule (%) — the 75% rule
 input double InpMinZoneATR   = 0.15;  // Min zone height (ATR x)
 input double InpMaxZoneATR   = 0.40;  // Max zone height (ATR x)
@@ -609,7 +614,9 @@ void AddSwingZone(const bool htf, const double price, const bool isHigh,
    else if(!isHigh && !mateHigh) role =  1;             // S+S
    else                                                 // S+R / R+S — the
       role = (refClose > (t + b) / 2.0) ? 1 : -1;       // GAP band (p51)
-   if(!Overlaps(t, b, htf))
+   // image 36: BOTH movements must be big
+   double away = (role == 1) ? (hiRun - t) : (b - loRun);
+   if(!Overlaps(t, b, htf) && (!InpNeedBigMove || away >= atr * InpBigMoveATR))
       AddZone(t, b, role, bornH, atr, t1, t2, htf, true);
   }
 //+------------------------------------------------------------------+

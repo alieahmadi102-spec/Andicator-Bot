@@ -121,6 +121,7 @@ class Config:
     pivot_len: int = 10         # (kept for compatibility)
     max_zones: int = 6
     big_move_atr: float = 1.2
+    need_big_move: bool = True  # image 36: BOTH movements must be big
     breakout_pct: float = 75.0
     min_zone_atr: float = 0.15
     max_zone_atr: float = 0.4   # a zone 1 ATR tall is a region, not a zone —
@@ -503,6 +504,15 @@ class SnrzEngine:
                 src = "S+R" if mate.is_high else "R+S"
             if self._overlaps(top, bot, htf):
                 continue
+            # Master class image 36: "the difference from an ordinary support
+            # is only that it has a First Movement and a Second Movement — and
+            # if EACH of the movements is a BIG MOVEMENT, the market respects
+            # that zone MORE." The paired path never checked that, so a zone
+            # was born VALID off two swings the market had barely reacted to.
+            if cfg.need_big_move:
+                away = (hi_run - top) if role == Role.SUPPORT else (bot - lo_run)
+                if away < big:
+                    continue
             # two touches already define it, so it is born VALID (p35: first
             # movement + second movement). The entry is the RETURN to it.
             self._add_zone(top, bot, role, atr, idx, htf, src=src, valid=True)
