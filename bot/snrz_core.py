@@ -944,7 +944,12 @@ class SnrzEngine:
                         if lv is not None:
                             cand.append((self._rank(z) if cfg.rank_setups else 0,
                                          z.uid, "buy", z.kind,
-                                         z.state == State.INVERTED and z.touches == 2, lv))
+                                         # image 55: PO2 is the SECOND touch of
+                                         # an inversion zone. The order is armed
+                                         # while price is away, so the fill IS
+                                         # that second touch — which means the
+                                         # zone must have exactly ONE touch now.
+                                         z.state == State.INVERTED and z.touches == 1, lv))
             else:
                 if z.pend_dir == 0 and self._bull_break(z.top, c):
                     z.pend_bar, z.pend_dir = idx, 1
@@ -1003,7 +1008,12 @@ class SnrzEngine:
                         if lv is not None:
                             cand.append((self._rank(z) if cfg.rank_setups else 0,
                                          z.uid, "sell", z.kind,
-                                         z.state == State.INVERTED and z.touches == 2, lv))
+                                         # image 55: PO2 is the SECOND touch of
+                                         # an inversion zone. The order is armed
+                                         # while price is away, so the fill IS
+                                         # that second touch — which means the
+                                         # zone must have exactly ONE touch now.
+                                         z.state == State.INVERTED and z.touches == 1, lv))
             z.in_zone_prev = in_zone
 
         # image 54: when more zones qualify than there are slots, the

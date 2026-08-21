@@ -14,7 +14,7 @@
 //|   • One position at a time with SL / TP1 / TP2 / TP3 drawn       |
 //+------------------------------------------------------------------+
 #property copyright   "SNRZ (Zindan The Gold Chaser) — indicator port"
-#property version     "9.40"
+#property version     "9.50"
 #property description "SNRZ: chart zones AND analysis zones together (book p.41/p.44), one trade at a time"
 #property indicator_chart_window
 #property indicator_buffers 4
@@ -1178,7 +1178,7 @@ int OnCalculate(const int rates_total,
                      double t3 = NextZone(true, entry, 2);
                      if(t2 <= 0.0) t2 = entry + (t1 - entry) * 2.0;
                      if(t3 <= 0.0) t3 = entry + (t1 - entry) * 3.0;
-                     bool isPO2 = (g_zones[i].state == 2 && g_zones[i].touches == 2);
+                     bool isPO2 = (g_zones[i].state == 2 && g_zones[i].touches == 1); // image 55
                      if(isPO2)
                        {
                         BufPO2Buy[bar] = l - atr * 0.4;
@@ -1270,7 +1270,7 @@ int OnCalculate(const int rates_total,
                      double t3 = NextZone(false, entry, 2);
                      if(t2 <= 0.0) t2 = entry - (entry - t1) * 2.0;
                      if(t3 <= 0.0) t3 = entry - (entry - t1) * 3.0;
-                     bool isPO2 = (g_zones[i].state == 2 && g_zones[i].touches == 2);
+                     bool isPO2 = (g_zones[i].state == 2 && g_zones[i].touches == 1); // image 55
                      if(isPO2)
                        {
                         BufPO2Sell[bar] = h + atr * 0.4;

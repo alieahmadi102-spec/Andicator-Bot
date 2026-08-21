@@ -30,7 +30,7 @@
 //                  TP3 = the one beyond. 1R/2R/3R when no zone sits there.
 //  SCALP vs SWING (book): M5/M15 = SCALP · H1/H4/Daily = SWING.
 // ═══════════════════════════════════════════════════════════════════════════
-indicator("SNRZ Strategy [Zindan] v9", "SNRZ v9.4", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500)
+indicator("SNRZ Strategy [Zindan] v9", "SNRZ v9.5", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500)
 
 // ───────────────────────────── Inputs ──────────────────────────────────────
 grpZ  = "Zones (SNRZ)"
@@ -645,7 +645,7 @@ for z in zones
                 if not na(t1) and (t1 - entry) >= risk * minRR
                     t2 = nextZone(true, entry, 1)
                     t3 = nextZone(true, entry, 2)
-                    isPO2 = z.state == 2 and z.touches == 2
+                    isPO2 = z.state == 2 and z.touches == 1   // image 55: the fill IS the 2nd touch
                     po2Buy := isPO2 ? true : po2Buy
                     buySig := isPO2 ? buySig : true
                     lastSigBar := bar_index
@@ -702,7 +702,7 @@ for z in zones
                 if not na(t1) and (entry - t1) >= risk * minRR
                     t2 = nextZone(false, entry, 1)
                     t3 = nextZone(false, entry, 2)
-                    isPO2 = z.state == 2 and z.touches == 2
+                    isPO2 = z.state == 2 and z.touches == 1   // image 55: the fill IS the 2nd touch
                     po2Sell := isPO2 ? true : po2Sell
                     sellSig := isPO2 ? sellSig : true
                     lastSigBar := bar_index
@@ -860,7 +860,7 @@ if showPanel and barstate.islast
             nRun += 1
     posTxt = nOrd + nRun == 0 ? "— no setup right now —" :
              str.tostring(nOrd) + " limit waiting · " + str.tostring(nRun) + " running"
-    table.cell(info, 0, 0, "⚜  SNRZ v9.4  —  ZiNDAN", text_color = colGold, text_size = size.normal)
+    table.cell(info, 0, 0, "⚜  SNRZ v9.5  —  ZiNDAN", text_color = colGold, text_size = size.normal)
     table.cell(info, 0, 1, "The Gold Chaser", text_color = color.new(colGold, 35), text_size = size.tiny)
     table.cell(info, 0, 2, trendTxt, text_color = trendCol, text_size = size.small)
     table.cell(info, 0, 3, "Zones: " + str.tostring(liveLtf) + " @ " + timeframe.period + "  +  " + str.tostring(liveHtf) + " @ " + htfTF, text_color = color.new(color.white, 20), text_size = size.small)
