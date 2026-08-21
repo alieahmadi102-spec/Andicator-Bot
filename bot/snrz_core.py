@@ -137,9 +137,11 @@ class Config:
     need_micro_bos: bool = True # book: "a small BOS in the trade direction"
     micro_bos_len: int = 2
     break_even: bool = True     # book: risk free once the trade pays 1:1
-    min_sl_atr: float = 4.0     # a stop closer than this gets swept by noise
+    min_sl_atr: float = 2.5     # a floor against noise, NOT a way to buy a
+                                # win rate. A stop so wide it can never be hit
+                                # turns every open loser into a fake 'win'.
     one_trade: bool = True      # book: don't overtrade — one setup at a time
-    max_trade_bars: int = 120   # a setup that never resolves must not linger
+    max_trade_bars: int = 60    # a setup that never resolves must not linger
     rr_tp1: float = 1.0     # fallback TP1 = SL distance x this (book: at least 1:1)
     tp_max_r: float = 6.0   # a zone further than this many R is not a FIRST target
 
@@ -155,8 +157,8 @@ class Config:
     # p42: entry at the zone midpoint, stop just beyond the zone, TP1 at 1:1
     entry_at_zone: bool = True
     entry_edge: bool = True      # limit at the near edge of the zone, not its mid
-    sl_buffer_atr: float = 2.0   # the book puts the stop ON the liquidity,
-                                 # not a hair beyond the zone edge
+    sl_buffer_atr: float = 0.8   # the book puts the stop just beyond the zone,
+                                 # on the liquidity behind it
     # p47-50: a level broken and then respected again is a False Breakout
     # Area — a GOOD zone. Only a break that HOLDS inverts the zone.
     fba_bars: int = 3            # bars a break must hold before it inverts
@@ -165,26 +167,14 @@ class Config:
     order_expiry_bars: int = 10   # a limit order that never fills must expire —
                                   # while it rests it blocks every new signal
 
-    # ── the win-rate dial ────────────────────────────────────────────────
-    # Win rate is not a quality of the strategy, it is a CHOICE of where the
-    # stop and the first target sit. Measured on 83 days of real XAUUSD:
-    #   stop  4 ATR · TP1 1.00R -> 54% win, E -0.02R  (the default)
-    #   stop  8 ATR · TP1 0.25R -> 79% win, E +0.01R
-    #   stop 20 ATR · TP1 0.10R -> 92% win, E -0.02R  (high_win_rate)
-    #   stop 30 ATR · TP1 0.10R -> 97% win, E +0.04R
-    # Expectancy barely moves across all of it. A 92% win rate means risking
-    # about $200 to make about $20 on M15 gold: one loss erases ten wins.
-    high_win_rate: bool = True
-
-    def __post_init__(self):
-        if self.high_win_rate:
-            self.min_sl_atr = 16.0
-            self.sl_buffer_atr = 5.0
-            self.rr_tp1 = 0.10
-    # Measured, then dropped: resting the limit BEFORE price arrives (no
-    # confirmation candle) fired 6x as many signals for the same expectancy,
-    # so the book's confirmation flow is what all three implementations use.
-
+    # Book §15 (liquidity): "in gold the sell-side liquidity is usually taken
+    # first and THEN the real move — about 80% of the time". So a sell placed
+    # right after price has just swept a multi-week low is selling into the
+    # reversal. Measured on the real data: the H4 chart sold 4 bars after the
+    # 3942 bottom and the market then ran 600 points the other way.
+    sweep_guard: bool = True
+    sweep_bars: int = 40         # "a fresh extreme" = the low/high of this many bars
+    sweep_recent: int = 10       # ...and it was made within this many bars
 
 @dataclass
 class PendingOrder:
@@ -569,6 +559,19 @@ class SnrzEngine:
         tp1, tp2, tp3 = self._targets(is_buy, entry, risk)
         return entry, sl, tp1, tp2, tp3
 
+    def _fresh_extreme(self, idx: int, is_high: bool) -> bool:
+        """True when the last few bars have just taken out the extreme of the
+        whole lookback — the liquidity grab of book §15. Selling straight into
+        a fresh low (or buying a fresh high) is taking the wrong side of it."""
+        n = self.cfg.sweep_bars
+        if idx < n:
+            return False
+        window = self.candles[idx - n + 1: idx + 1]
+        recent = window[-self.cfg.sweep_recent:]
+        if is_high:
+            return max(w.high for w in recent) >= max(w.high for w in window)
+        return min(w.low for w in recent) <= min(w.low for w in window)
+
     def _nested(self, z: "Zone") -> bool:
         """p14/p35: the small zone sits INSIDE the big one — a chart-timeframe
         zone is only worth trading where the analysis timeframe already marked
@@ -764,6 +767,10 @@ class SnrzEngine:
                     ok_trend = (not cfg.trend_filter) or self.trend_up \
                         or (self.trend_unknown and not self.in_range) \
                         or (cfg.allow_counter_inv and z.state == State.INVERTED)
+                    # §15: buying right into a freshly swept HIGH is buying the
+                    # liquidity grab, the mirror of the sell-side rule
+                    if cfg.sweep_guard and self._fresh_extreme(idx, True):
+                        ok_trend = False
                     ok_conf = (not cfg.need_confirm) or bull_conf
                     reject_ok = c.close > z.top if cfg.need_reject else c.close > z.bot
                     if tradable and ok_trend and ok_conf and z.sig_touch != z.touches \
@@ -819,6 +826,11 @@ class SnrzEngine:
                     ok_trend = (not cfg.trend_filter) or self.trend_down \
                         or (self.trend_unknown and not self.in_range) \
                         or (cfg.allow_counter_inv and z.state == State.INVERTED)
+                    # §15: gold takes the sell-side liquidity FIRST and then
+                    # moves — selling just after a fresh low is selling the
+                    # reversal. This is what sold the 3942 bottom.
+                    if cfg.sweep_guard and self._fresh_extreme(idx, False):
+                        ok_trend = False
                     ok_conf = (not cfg.need_confirm) or bear_conf
                     reject_ok = c.close < z.bot if cfg.need_reject else c.close < z.top
                     if tradable and ok_trend and ok_conf and z.sig_touch != z.touches \

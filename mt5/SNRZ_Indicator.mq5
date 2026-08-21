@@ -14,7 +14,7 @@
 //|   • One position at a time with SL / TP1 / TP2 / TP3 drawn       |
 //+------------------------------------------------------------------+
 #property copyright   "SNRZ (Zindan The Gold Chaser) — indicator port"
-#property version     "7.40"
+#property version     "8.00"
 #property description "SNRZ: chart zones AND analysis zones together (book p.41/p.44), one trade at a time"
 #property indicator_chart_window
 #property indicator_buffers 4
@@ -74,24 +74,22 @@ input bool   InpBreakEven    = true;  // Move stop to entry once TP1 is reached
 input bool   InpNeedReject   = true;  // Confirmation candle must close OUTSIDE the zone
 input int    InpRangeBars    = 10;    // Range lockout (analysis-TF bars since opposite BOS)
 input bool   InpOneTrade     = true;  // One trade at a time (no overtrade)
-input int    InpMaxTradeBars = 120;   // Close an open trade after N chart bars
-input double InpMinSlATR     = 4.0;   // Minimum stop distance (ATR x) — the book puts the stop ON the liquidity
+input int    InpMaxTradeBars = 60;   // Close an open trade after N chart bars
+input double InpMinSlATR     = 2.5;   // Minimum stop distance (ATR x) — the book puts the stop ON the liquidity
 input double InpTpMaxR       = 6.0;   // Max R for TP1/TP2 (farther zone -> TP3)
 input bool   InpEntryAtZone   = true;  // Entry = LIMIT order on the zone (p41/p42)
 input bool   InpEntryEdge     = true;  // ...at the near EDGE of the zone, not its middle
-input double InpSlBufferATR   = 2.0;   // How far beyond the zone the stop sits (ATR x)
+input double InpSlBufferATR   = 0.8;   // How far beyond the zone the stop sits (ATR x)
 input int    InpOrderExpiry   = 10;    // An unfilled limit order dies after N bars
 input bool   InpRequireNested = false; // Only chart zones sitting inside an analysis zone (p14)
 input bool   InpEntriesHtfOnly= false; // Entries only from analysis-timeframe zones
-input double InpRrTp1         = 1.0;   // TP1 = this many times the stop distance
-// Win rate is not a quality of the strategy, it is a CHOICE of where the stop
-// and the first target sit. Measured on 83 days of real XAUUSD:
-//   stop  4 ATR - TP1 1.00R -> 54% win, E -0.02R   (the default)
-//   stop  8 ATR - TP1 0.25R -> 79% win, E +0.01R
-//   stop 20 ATR - TP1 0.10R -> 92% win, E -0.02R   (this switch)
-// Expectancy barely moves across all of it. 92% wins means risking about
-// $200 to make about $20 on M15 gold: one loss erases ten wins.
-input bool   InpHighWinRate   = true;  // High win-rate mode (~92%) — read the note above
+input double InpRrTp1         = 1.0;   // TP1 = this many times the stop distance (book p41: 1:1)
+// Book, liquidity section: "in gold the sell-side liquidity is usually taken
+// first and THEN the real move - about 80% of the time". A sell placed right
+// after price has just swept a multi-week low is selling the reversal itself.
+input bool   InpSweepGuard    = true;  // Do not trade against a fresh liquidity sweep
+input int    InpSweepBars     = 40;    // ..."a fresh extreme" = the low/high of N bars
+input int    InpSweepRecent   = 10;    // ...and it was made within the last N bars
 input bool   InpShowPosition = true;  // Draw Entry / SL / TP1-3 of the last setup
 
 input group "Alerts"
@@ -103,11 +101,6 @@ input color  InpColSup       = C'8,153,129';   // Support zone
 input color  InpColRes       = C'242,54,69';   // Resistance zone
 input color  InpColInv       = C'212,175,55';  // Inversion zone (Zindan gold)
 input uchar  InpFillAlpha    = 40;             // (reserved)
-
-//--- the win-rate dial, applied --------------------------------------------
-double EffMinSl()  { return InpHighWinRate ? 16.0 : InpMinSlATR;    }
-double EffSlBuf()  { return InpHighWinRate ?  5.0 : InpSlBufferATR; }
-double EffRrTp1()  { return InpHighWinRate ? 0.10 : InpRrTp1;       }
 
 //--- buffers ----------------------------------------------------------------
 double BufBuy[], BufSell[], BufPO2Buy[], BufPO2Sell[];
@@ -1002,6 +995,29 @@ int OnCalculate(const int rates_total,
       // risk-free trade keep blocking the next signal is what left charts
       // showing a position from 285 bars ago with nothing new behind it.
       bool canFire  = !(InpOneTrade && (g_ordOn || (g_posOn && !g_posBE)));
+
+      // liquidity sweep guard (book): gold takes the sell-side liquidity first
+      // and then moves, so a sell right after a fresh low is selling the
+      // reversal. On the real H4 data the old code sold 4 bars after the 3942
+      // bottom and the market ran 600 points the other way.
+      bool sweptLow = false, sweptHigh = false;
+      if(InpSweepGuard && bar >= InpSweepBars)
+        {
+         double loW = low[bar], hiW = high[bar];
+         for(int k = bar - InpSweepBars + 1; k <= bar; k++)
+           {
+            loW = MathMin(loW, low[k]);
+            hiW = MathMax(hiW, high[k]);
+           }
+         double loR = low[bar], hiR = high[bar];
+         for(int k = MathMax(0, bar - InpSweepRecent + 1); k <= bar; k++)
+           {
+            loR = MathMin(loR, low[k]);
+            hiR = MathMax(hiR, high[k]);
+           }
+         sweptLow  = (loR <= loW);
+         sweptHigh = (hiR >= hiW);
+        }
       bool sigFired = false;
 
       //--- zone engine -----------------------------------------------------
@@ -1066,8 +1082,8 @@ int OnCalculate(const int rates_total,
                                 (g_zones[i].state == 2 && g_zones[i].touches >= 1 && g_zones[i].touches <= 2)) &&
                                (!InpEntriesHtfOnly || g_zones[i].htf) &&
                                (!InpRequireNested  || ZoneNested(i));
-               bool okTrend = !InpTrendFilter || trendUp || trendUnknown ||
-                              (InpAllowCounterInv && g_zones[i].state == 2);
+               bool okTrend = (!InpTrendFilter || trendUp || trendUnknown ||
+                               (InpAllowCounterInv && g_zones[i].state == 2)) && !sweptHigh;
                bool okConf  = !InpNeedConfirm || bullConfirm;
                bool fresh   = (g_zones[i].sigTouch != g_zones[i].touches);
                bool rejectOK = InpNeedReject ? (c > g_zones[i].top) : (c > g_zones[i].bot);
@@ -1099,13 +1115,13 @@ int OnCalculate(const int rates_total,
                      double mid = (g_zones[i].top + g_zones[i].bot) / 2.0;
                      // the edge price meets first coming back DOWN to a support
                      entry = MathMin(InpEntryEdge ? g_zones[i].top : mid, c);
-                     rawSl = MathMin(g_zones[i].bot, swingLo) - zAtr * EffSlBuf();
+                     rawSl = MathMin(g_zones[i].bot, swingLo) - zAtr * InpSlBufferATR;
                     }
-                  double risk    = MathMax(MathAbs(entry - rawSl), atr * EffMinSl());
+                  double risk    = MathMax(MathAbs(entry - rawSl), atr * InpMinSlATR);
                   double t1, t2, t3;
                   BuildTargets(true, entry, risk, t1, t2, t3);
                   if(InpEntryAtZone)
-                     t1 = entry + risk * EffRrTp1();   // p41: TP1 IS the 1:1 line
+                     t1 = entry + risk * InpRrTp1;   // p41: TP1 IS the 1:1 line
                   if(InpEntryAtZone)
                     {
                      g_ordOn = true; g_ordBuy = true; g_ordPO2 = isPO2;
@@ -1180,8 +1196,8 @@ int OnCalculate(const int rates_total,
                                 (g_zones[i].state == 2 && g_zones[i].touches >= 1 && g_zones[i].touches <= 2)) &&
                                (!InpEntriesHtfOnly || g_zones[i].htf) &&
                                (!InpRequireNested  || ZoneNested(i));
-               bool okTrend = !InpTrendFilter || trendDown || trendUnknown ||
-                              (InpAllowCounterInv && g_zones[i].state == 2);
+               bool okTrend = (!InpTrendFilter || trendDown || trendUnknown ||
+                               (InpAllowCounterInv && g_zones[i].state == 2)) && !sweptLow;
                bool okConf  = !InpNeedConfirm || bearConfirm;
                bool fresh   = (g_zones[i].sigTouch != g_zones[i].touches);
                bool rejectOK = InpNeedReject ? (c < g_zones[i].bot) : (c < g_zones[i].top);
@@ -1208,13 +1224,13 @@ int OnCalculate(const int rates_total,
                     {
                      double mid = (g_zones[i].top + g_zones[i].bot) / 2.0;
                      entry = MathMax(InpEntryEdge ? g_zones[i].bot : mid, c);
-                     rawSl = MathMax(g_zones[i].top, swingHi) + zAtr * EffSlBuf();
+                     rawSl = MathMax(g_zones[i].top, swingHi) + zAtr * InpSlBufferATR;
                     }
-                  double risk    = MathMax(MathAbs(rawSl - entry), atr * EffMinSl());
+                  double risk    = MathMax(MathAbs(rawSl - entry), atr * InpMinSlATR);
                   double t1, t2, t3;
                   BuildTargets(false, entry, risk, t1, t2, t3);
                   if(InpEntryAtZone)
-                     t1 = entry - risk * EffRrTp1();   // p41: TP1 IS the 1:1 line
+                     t1 = entry - risk * InpRrTp1;   // p41: TP1 IS the 1:1 line
                   if(InpEntryAtZone)
                     {
                      g_ordOn = true; g_ordBuy = false; g_ordPO2 = isPO2;
