@@ -8,6 +8,7 @@ Requirements (Windows, or Linux+Wine):
 """
 from __future__ import annotations
 
+import math
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -44,17 +45,36 @@ def mt5_timeframe(minutes: int):
     return tf
 
 
-def lots_for_risk(symbol: str, sl_distance: float, risk_pct: float) -> float:
+def lots_for_risk(symbol: str, sl_distance: float, risk_pct: float):
+    """Returns (lots, risk_money) or (None, why) when the account is too small.
+
+    The old version quietly fell back to the broker minimum. On a $150 account
+    with an H1 gold stop of about $70, the smallest lot the broker allows
+    (0.01) risks the whole $70 — 47% of the account, when the book's rule is
+    1%. Two losses and the account is gone. Refusing the trade is the only
+    honest answer; silently taking 47% risk is not."""
     info = mt5.symbol_info(symbol)
     acc = mt5.account_info()
     risk_money = acc.balance * risk_pct / 100.0
     tick_value = info.trade_tick_value
     tick_size = info.trade_tick_size
-    if sl_distance <= 0 or tick_value <= 0:
-        return info.volume_min
+    if sl_distance <= 0 or tick_value <= 0 or tick_size <= 0:
+        return None, "cannot size the trade (broker gave no tick value)"
+
     loss_per_lot = sl_distance / tick_size * tick_value
-    lots = max(info.volume_min, round(risk_money / loss_per_lot / info.volume_step) * info.volume_step)
-    return min(lots, info.volume_max)
+    want = risk_money / loss_per_lot
+    steps = math.floor(want / info.volume_step)
+    lots = round(steps * info.volume_step, 8)
+
+    if lots < info.volume_min:
+        min_loss = info.volume_min * loss_per_lot
+        return None, (
+            f"account too small for this stop: the smallest lot the broker "
+            f"allows ({info.volume_min}) risks ${min_loss:.2f} on a ${sl_distance:.2f} "
+            f"stop, which is {100 * min_loss / acc.balance:.0f}% of your "
+            f"${acc.balance:.2f} — the {risk_pct}% rule allows ${risk_money:.2f}. "
+            f"Use a CENT account, a smaller timeframe, or more balance.")
+    return min(lots, info.volume_max), risk_money
 
 
 def place(signal, symbol: str, tf_minutes: int):
@@ -65,7 +85,10 @@ def place(signal, symbol: str, tf_minutes: int):
     The order expires the same way it does in the backtest."""
     tick = mt5.symbol_info_tick(symbol)
     market = tick.ask if signal.side == "buy" else tick.bid
-    volume = lots_for_risk(symbol, abs(signal.price - signal.sl), RISK_PCT)
+    volume, info = lots_for_risk(symbol, abs(signal.price - signal.sl), RISK_PCT)
+    if volume is None:
+        print(f"  SKIPPED — {info}")
+        return
     expiry = datetime.now(timezone.utc) + timedelta(
         minutes=tf_minutes * ORDER_EXPIRY_BARS)
 
@@ -106,6 +129,32 @@ def place(signal, symbol: str, tf_minutes: int):
     print("order_send:", res)
 
 
+def show_state(engine):
+    """What the engine is actually holding right now. Without this the bot
+    printed one line and then sat silent for an hour, which looks broken even
+    though it is working."""
+    live = [z for z in engine.zones if not z.dead]
+    print(f"\nzones live: {len(live)}  "
+          f"({sum(1 for z in live if not z.htf)} on the chart TF, "
+          f"{sum(1 for z in live if z.htf)} on the analysis TF)")
+    for z in sorted(live, key=lambda z: -z.top)[:10]:
+        tag = "analysis" if z.htf else "chart   "
+        print(f"   {tag}  {z.kind:5s}  {z.bot:9.2f} – {z.top:9.2f}   touches {z.touches}")
+    if engine.orders:
+        print(f"limit orders resting: {len(engine.orders)}")
+        for o in engine.orders:
+            print(f"   {o.side.upper():4s} {o.zone:5s} @ {o.entry:9.2f}  "
+                  f"SL {o.sl:9.2f}  TP1 {o.tp1:9.2f} (next zone)")
+    else:
+        print("limit orders resting: none — no zone currently qualifies")
+    open_trades = [t for t in engine.trades if not t.closed]
+    if open_trades:
+        print(f"trades running: {len(open_trades)}")
+        for t in open_trades:
+            print(f"   {t.side.upper():4s} {t.zone:5s} from {t.entry:9.2f}  "
+                  f"SL {t.sl:9.2f}  TP1 {t.tp1:9.2f}")
+
+
 def main():
     if mt5 is None:
         raise SystemExit("MetaTrader5 package not installed (Windows only): pip install MetaTrader5")
@@ -129,8 +178,13 @@ def main():
     for r in rates:
         engine.on_candle(Candle(int(r["time"]), r["open"], r["high"], r["low"], r["close"]))
     last_time = rates[-1]["time"]
-    print(f"warmed up with {len(rates)} candles, waiting for new bars…")
+    print(f"warmed up with {len(rates)} candles")
+    show_state(engine)
+    print(f"\nwatching for the next closed {TIMEFRAME_MIN}m bar — on this timeframe "
+          f"that is one check every {TIMEFRAME_MIN} minutes, so silence is normal.")
+    print("Ctrl+C to stop.\n")
 
+    beat = 0
     while True:
         time.sleep(5)
         bars = mt5.copy_rates_from_pos(SYMBOL, tf, 1, 1)  # last CLOSED bar
@@ -138,13 +192,28 @@ def main():
             continue
         b = bars[0]
         if b["time"] == last_time:
+            beat += 1
+            if beat % 60 == 0:            # every ~5 minutes, prove it is alive
+                nxt = datetime.fromtimestamp(last_time + TIMEFRAME_MIN * 60,
+                                             tz=timezone.utc)
+                print(f"  … alive, price {mt5.symbol_info_tick(SYMBOL).bid:.2f}, "
+                      f"next bar closes about {nxt:%H:%M} UTC")
             continue
+        beat = 0
         last_time = b["time"]
         # every new zone produces its own signal, so several may arrive on one
         # bar — each gets its own limit order at its own zone
-        for sig in engine.on_candle(Candle(int(b["time"]), b["open"], b["high"], b["low"], b["close"])):
-            print("SIGNAL:", sig)
+        sigs = engine.on_candle(Candle(int(b["time"]), b["open"], b["high"],
+                                       b["low"], b["close"]))
+        stamp = datetime.fromtimestamp(int(b["time"]), tz=timezone.utc)
+        print(f"[{stamp:%Y-%m-%d %H:%M} UTC] bar closed {b['close']:.2f}"
+              f"{'' if sigs else '  (no new setup)'}")
+        for sig in sigs:
+            print(f"  SIGNAL {sig.side.upper()} {sig.zone} @ {sig.price:.2f}  "
+                  f"SL {sig.sl:.2f}  TP1 {sig.tp1:.2f} (next zone)")
             place(sig, SYMBOL, TIMEFRAME_MIN)
+        if sigs:
+            show_state(engine)
 
 
 if __name__ == "__main__":
