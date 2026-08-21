@@ -30,7 +30,7 @@
 //                  TP3 = the one beyond. 1R/2R/3R when no zone sits there.
 //  SCALP vs SWING (book): M5/M15 = SCALP · H1/H4/Daily = SWING.
 // ═══════════════════════════════════════════════════════════════════════════
-indicator("SNRZ Strategy [Zindan] v9", "SNRZ v9.2", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500)
+indicator("SNRZ Strategy [Zindan] v9", "SNRZ v9.3", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500)
 
 // ───────────────────────────── Inputs ──────────────────────────────────────
 grpZ  = "Zones (SNRZ)"
@@ -50,6 +50,10 @@ pairZones     = input.bool(true, "Draw a zone only from TWO swings (S+S · R+R �
 pairTolATR    = input.float(0.5, "…«هم‌قیمت» یعنی فاصله کمتر از (ATR ×)",  minval = 0.05, step = 0.05, group = grpZ)
 pairMaxGap    = input.int(90,   "…و فاصله‌ی دو سوئینگ کمتر از N کندل",      minval = 5,  group = grpZ)
 pairLookback  = input.int(10,   "…جست‌وجو در N سوئینگ آخر",                minval = 2, maxval = 20, group = grpZ)
+gapZones      = input.bool(true, "زون GAP (فاصله‌ی بین یک ساپورت و یک رزیستنس)", group = grpZ, tooltip = "عکس‌های ۳۱/۳۳/۵۲: «گاپ فاصله‌ی بین یک ساپورت و یک رزیستنس است؛ وقتی این فاصله درست شد بازار با احتمال ۸۰٪ آن را پر می‌کند». برخلاف جفت‌های S+S و R+R، اینجا دو سطح در دو قیمتِ **متفاوت** هستند و زون همان باندِ بینشان است.")
+gapMinATR     = input.float(0.6, "…دو سطح حداقل این‌قدر فاصله (ATR ×)",     minval = 0.1, step = 0.1, group = grpZ)
+gapMaxATR     = input.float(2.5, "…و حداکثر این‌قدر (ATR ×)",              minval = 0.5, step = 0.5, group = grpZ)
+gapHtfOnly    = input.bool(true, "GAP فقط روی تایم تحلیل (کتاب: H1/H4/D/W)", group = grpZ)
 fbaBars       = input.int(3,    "شکست باید N کندل دوام بیاورد تا زون برگردد", minval = 1, maxval = 10, group = grpZ, tooltip = "کتاب ص۴۷: سطحی که شکسته شد و بعد دوباره به آن احترام گذاشته شد، False Breakout Area است — زون خوبی است، نه زون مرده.")
 
 grpS  = "Signals"
@@ -386,7 +390,33 @@ addSwing(bool _htf, float _price, bool _isHigh, int _bar, int _back, float _atr,
         mateHigh  := array.get(_htf ? htfSwHigh  : ltfSwHigh,  mi)
     pushSwing(_htf, _price, _isHigh, _bar)
 
-    if mi >= 0
+    // A GAP mate is the OPPOSITE kind of swing at a DIFFERENT price, so the
+    // same-price search above can never find one — it needs its own pass.
+    int gi = -1
+    if gapZones and (_htf or not gapHtfOnly)
+        gP = _htf ? htfSwPrice : ltfSwPrice
+        gH = _htf ? htfSwHigh  : ltfSwHigh
+        gB = _htf ? htfSwBar   : ltfSwBar
+        glo = _atr * gapMinATR
+        ghi = _atr * gapMaxATR
+        gn  = array.size(gP)
+        if gn > 1
+            gfirst = math.max(0, gn - pairLookback - 1)
+            for i = gn - 2 to gfirst
+                gd = math.abs(array.get(gP, i) - _price)
+                if _bar - array.get(gB, i) <= pairMaxGap and array.get(gH, i) != _isHigh and gd >= glo and gd <= ghi
+                    gi := i
+                    break
+    if gi >= 0
+        gp = array.get(_htf ? htfSwPrice : ltfSwPrice, gi)
+        gt = math.max(gp, _price)
+        gb = math.min(gp, _price)
+        // images 31/33: which side we trade the gap from depends on where
+        // price is standing relative to the band
+        grole = close > gt ? 1 : close < gb ? -1 : (close > (gt + gb) / 2 ? 1 : -1)
+        if not overlaps(gt, gb, _htf)
+            array.push(zones, newZone(gt, gb, grole, _htf, _uid, _atr, _back, true))
+    else if mi >= 0
         t = math.max(matePrice, _price)
         b = math.min(matePrice, _price)
         int role = 0
@@ -826,7 +856,7 @@ if showPanel and barstate.islast
             nRun += 1
     posTxt = nOrd + nRun == 0 ? "— no setup right now —" :
              str.tostring(nOrd) + " limit waiting · " + str.tostring(nRun) + " running"
-    table.cell(info, 0, 0, "⚜  SNRZ v9.2  —  ZiNDAN", text_color = colGold, text_size = size.normal)
+    table.cell(info, 0, 0, "⚜  SNRZ v9.3  —  ZiNDAN", text_color = colGold, text_size = size.normal)
     table.cell(info, 0, 1, "The Gold Chaser", text_color = color.new(colGold, 35), text_size = size.tiny)
     table.cell(info, 0, 2, trendTxt, text_color = trendCol, text_size = size.small)
     table.cell(info, 0, 3, "Zones: " + str.tostring(liveLtf) + " @ " + timeframe.period + "  +  " + str.tostring(liveHtf) + " @ " + htfTF, text_color = color.new(color.white, 20), text_size = size.small)

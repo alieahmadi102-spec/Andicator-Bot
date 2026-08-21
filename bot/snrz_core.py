@@ -161,6 +161,16 @@ class Config:
     # 1-hour" — TP1 from a chart zone, TP2 from an analysis one.
     tp1_chart_tf: bool = True
     tp2_analysis_tf: bool = True
+    # Images 31/33/52 — the GAP: "the space between a support and a
+    # resistance; when that space is created the market fills it back with
+    # 80% probability". Unlike the S+S / R+R pairs this is TWO levels at
+    # DIFFERENT prices and the zone is the band between them, so it needs its
+    # own height cap — the ordinary one (0.4 ATR) would never allow it.
+    # The book marks GAP on H1/H4/Daily/Weekly only.
+    gap_zones: bool = True
+    gap_min_atr: float = 0.6     # the two levels must be at least this far apart
+    gap_max_atr: float = 2.5     # ...and at most this far
+    gap_htf_only: bool = True    # the book marks GAP on H1/H4/D/W only
     max_trade_bars: int = 60    # a setup that never resolves must not linger
     rr_tp1: float = 1.0     # fallback TP1 = SL distance x this (book: at least 1:1)
     tp_max_r: float = 6.0   # a zone further than this many R is not a FIRST target
@@ -446,6 +456,20 @@ class SnrzEngine:
                     mate = prev
                     break
             swings.append(sw)
+            # A GAP mate is the OPPOSITE kind of swing at a DIFFERENT price,
+            # so the ordinary same-price mate search above can never find one.
+            if cfg.gap_zones and (htf or not cfg.gap_htf_only):
+                lo, hi = atr * cfg.gap_min_atr, atr * cfg.gap_max_atr
+                gmate = None
+                for prev in reversed(swings[-cfg.pair_lookback - 1:-1]):
+                    if p - prev.index > cfg.pair_max_gap:
+                        continue
+                    if prev.is_high != is_high and lo <= abs(prev.price - price) <= hi:
+                        gmate = prev
+                        break
+                if gmate is not None and self._gap_zone(
+                        sw, gmate, price, is_high, atr, idx, htf, series[j].close):
+                    continue
             if mate is None:
                 # p24, the FIFTH way to draw a zone: "when there is no S/R
                 # pair to draw from, draw it from the engulf" — the book never
@@ -536,6 +560,31 @@ class SnrzEngine:
 
     # ── targets (book p.44): TP1 from a CHART zone, TP2 from an ANALYSIS
     #    zone, TP3 whatever lies beyond — 1R / 2R / 3R when no zone is there ──
+    def _gap_zone(self, sw, mate, price: float, is_high: bool,
+                  atr: float, idx: int, htf: bool, close: float):
+        """Images 31/33/52 — the GAP is the band BETWEEN a support and a
+        resistance sitting at different prices, and the market fills it back
+        about 80% of the time. Up-trend GAP is R+S, down-trend is S+R."""
+        cfg = self.cfg
+        if is_high == mate.is_high:
+            return False                       # S+S or R+R, not a gap
+        top, bot = max(mate.price, price), min(mate.price, price)
+        span = top - bot
+        if not (atr * cfg.gap_min_atr <= span <= atr * cfg.gap_max_atr):
+            return False
+        # the newer level tells us which way the market last travelled: a
+        # SUPPORT made above a resistance is the up-trend R+S of image 31
+        role = Role.SUPPORT if (not is_high and price > mate.price) or \
+            (is_high and price > mate.price) else Role.RESISTANCE
+        if close < bot:
+            role = Role.RESISTANCE
+        elif close > top:
+            role = Role.SUPPORT
+        if self._overlaps(top, bot, htf):
+            return False
+        self._add_zone(top, bot, role, atr, idx, htf, src="GAP", valid=True)
+        return True
+
     def _rank(self, z: "Zone") -> int:
         """Image 54's strength order, lower = stronger."""
         inv = z.state == State.INVERTED

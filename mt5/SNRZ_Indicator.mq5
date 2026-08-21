@@ -14,7 +14,7 @@
 //|   • One position at a time with SL / TP1 / TP2 / TP3 drawn       |
 //+------------------------------------------------------------------+
 #property copyright   "SNRZ (Zindan The Gold Chaser) — indicator port"
-#property version     "9.20"
+#property version     "9.30"
 #property description "SNRZ: chart zones AND analysis zones together (book p.41/p.44), one trade at a time"
 #property indicator_chart_window
 #property indicator_buffers 4
@@ -59,6 +59,14 @@ input bool   InpPairZones     = true;  // Draw a zone only from TWO swings (p24:
 input double InpPairTolATR   = 0.50;  // ..."similar price" = closer than (ATR x)
 input int    InpPairMaxGap   = 90;    // ...and the two swings closer than N bars
 input int    InpPairLookback = 10;     // ...searching the last N swings
+// Images 31/33/52 - the GAP: "the space between a support and a resistance;
+// when that space is created the market fills it back with 80% probability".
+// Unlike the S+S / R+R pairs these are two levels at DIFFERENT prices and the
+// zone is the band between them. The book marks GAP on H1/H4/Daily/Weekly.
+input bool   InpGapZones     = true;  // GAP zones (the band between an S and an R)
+input double InpGapMinATR    = 0.6;   // ...the two levels at least this far apart (ATR x)
+input double InpGapMaxATR    = 2.5;   // ...and at most this far
+input bool   InpGapHtfOnly   = true;  // GAP only on the analysis timeframe
 input int    InpFbaBars      = 3;     // A break must hold N bars before the zone inverts (p47)
 
 input group "Signals"
@@ -539,6 +547,40 @@ void AddSwingZone(const bool htf, const double price, const bool isHigh,
       mateHigh  = htf ? g_swHtf[mi].isHigh : g_swLtf[mi].isHigh;
      }
    PushSwing(htf, price, isHigh, bar);
+
+   // A GAP mate is the OPPOSITE kind of swing at a DIFFERENT price, so the
+   // same-price search above can never find one - it needs its own pass.
+   int gi = -1;
+   if(InpGapZones && (htf || !InpGapHtfOnly))
+     {
+      double glo = atr * InpGapMinATR, ghi = atr * InpGapMaxATR;
+      int gn = htf ? ArraySize(g_swHtf) : ArraySize(g_swLtf);
+      int gfirst = MathMax(0, gn - InpPairLookback - 1);
+      for(int k = gn - 2; k >= gfirst; k--)
+        {
+         double kp = htf ? g_swHtf[k].price  : g_swLtf[k].price;
+         bool   kh = htf ? g_swHtf[k].isHigh : g_swLtf[k].isHigh;
+         int    kb = htf ? g_swHtf[k].bar    : g_swLtf[k].bar;
+         double kd = MathAbs(kp - price);
+         if(bar - kb <= InpPairMaxGap && kh != isHigh && kd >= glo && kd <= ghi)
+           {
+            gi = k;
+            break;
+           }
+        }
+     }
+   if(gi >= 0)
+     {
+      double gp = htf ? g_swHtf[gi].price : g_swLtf[gi].price;
+      double gt = MathMax(gp, price), gb = MathMin(gp, price);
+      // images 31/33: which side we trade the gap from depends on where price
+      // is standing relative to the band
+      int grole = (refClose > gt) ? 1 : (refClose < gb ? -1
+                  : (refClose > (gt + gb) / 2.0 ? 1 : -1));
+      if(!Overlaps(gt, gb, htf))
+         AddZone(gt, gb, grole, bornH, atr, t1, t2, htf, true);
+      return;
+     }
 
    if(mi < 0)
      {
