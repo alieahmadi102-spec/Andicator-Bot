@@ -65,7 +65,8 @@ class Zone:
     born_index: int = 0
     in_zone_prev: bool = False
     src: str = "pivot"          # how it was drawn: S+S, R+R, S+R, R+S, pivot
-    fba: bool = False           # broken and then respected again (p47)
+    false_breaks: int = 0       # how many times it was broken and respected again
+    fba: bool = False           # TWO of those = a False Breakout Area
     pend_bar: int = -1          # bar a still-unconfirmed break happened on
     pend_dir: int = 0           # +1 broke up · -1 broke down
 
@@ -724,13 +725,18 @@ class SnrzEngine:
                 elif z.pend_dir == -1:
                     if c.close >= z.bot:                 # came back — p47: FBA
                         z.pend_bar, z.pend_dir = -1, 0
-                        z.fba = True
+                        # 2026 master class, "FALSE BREAKOUT AREA": the area
+                        # the market has broken TWICE and then respected again.
+                        # One failed break is not an FBA — it takes two.
+                        z.false_breaks += 1
+                        z.fba = z.false_breaks >= 2
                         z.dead = False
                     elif idx - z.pend_bar >= cfg.fba_bars:
                         z.was_valid = z.state == State.VALID
                         z.role, z.state = Role.RESISTANCE, State.INVERTED
                         z.touches = z.sig_touch = 0
                         z.srr = z.fba = False
+                        z.false_breaks = 0
                         z.flips += 1
                         z.dead = z.flips >= cfg.max_flips
                         z.pend_bar, z.pend_dir = -1, 0
@@ -781,13 +787,18 @@ class SnrzEngine:
                 elif z.pend_dir == 1:
                     if c.close <= z.top:                 # came back — p47: FBA
                         z.pend_bar, z.pend_dir = -1, 0
-                        z.fba = True
+                        # 2026 master class, "FALSE BREAKOUT AREA": the area
+                        # the market has broken TWICE and then respected again.
+                        # One failed break is not an FBA — it takes two.
+                        z.false_breaks += 1
+                        z.fba = z.false_breaks >= 2
                         z.dead = False
                     elif idx - z.pend_bar >= cfg.fba_bars:
                         z.was_valid = z.state == State.VALID
                         z.role, z.state = Role.SUPPORT, State.INVERTED
                         z.touches = z.sig_touch = 0
                         z.srr = z.fba = False
+                        z.false_breaks = 0
                         z.flips += 1
                         z.dead = z.flips >= cfg.max_flips
                         z.pend_bar, z.pend_dir = -1, 0

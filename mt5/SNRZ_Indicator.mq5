@@ -124,7 +124,8 @@ struct SZone
    long     id;        // object id
    bool     inZonePrev;
    bool     paired;    // drawn from TWO swings (p24) — born valid, needs 1 touch
-   bool     fba;       // broken and then respected again (p47)
+   int      falseBreaks; // how many times broken and respected again
+   bool     fba;       // TWO of those = a False Breakout Area
    int      pendBar;   // chart bar an unconfirmed 75% break happened on
    int      pendDir;   // +1 broke up · -1 broke down · 0 nothing pending
   };
@@ -471,6 +472,7 @@ void AddZone(double top, double bot, const int role, const int bornH, const doub
    g_zones[n].id         = ++g_zoneSeq;
    g_zones[n].inZonePrev = false;
    g_zones[n].paired     = paired;
+   g_zones[n].falseBreaks = 0;
    g_zones[n].fba        = false;
    g_zones[n].pendBar    = -1;
    g_zones[n].pendDir    = 0;
@@ -1038,7 +1040,11 @@ int OnCalculate(const int rates_total,
                  {
                   g_zones[i].pendBar = -1;
                   g_zones[i].pendDir = 0;
-                  g_zones[i].fba     = true;
+                  // 2026 master class, "FALSE BREAKOUT AREA": the area the
+                  // market has broken TWICE and then respected again. One
+                  // failed break is not an FBA - it takes two.
+                  g_zones[i].falseBreaks++;
+                  g_zones[i].fba     = (g_zones[i].falseBreaks >= 2);
                   g_zones[i].dead    = false;
                  }
                else if(bar - g_zones[i].pendBar >= InpFbaBars)
@@ -1050,6 +1056,7 @@ int OnCalculate(const int rates_total,
                   g_zones[i].sigTouch = 0;
                   g_zones[i].srr      = false;
                   g_zones[i].fba      = false;
+                  g_zones[i].falseBreaks = 0;
                   g_zones[i].flips++;
                   // a level broken from both sides repeatedly is a range boundary
                   g_zones[i].dead     = (g_zones[i].flips >= InpMaxFlips);
@@ -1130,7 +1137,11 @@ int OnCalculate(const int rates_total,
                  {
                   g_zones[i].pendBar = -1;
                   g_zones[i].pendDir = 0;
-                  g_zones[i].fba     = true;
+                  // 2026 master class, "FALSE BREAKOUT AREA": the area the
+                  // market has broken TWICE and then respected again. One
+                  // failed break is not an FBA - it takes two.
+                  g_zones[i].falseBreaks++;
+                  g_zones[i].fba     = (g_zones[i].falseBreaks >= 2);
                   g_zones[i].dead    = false;
                  }
                else if(bar - g_zones[i].pendBar >= InpFbaBars)
@@ -1142,6 +1153,7 @@ int OnCalculate(const int rates_total,
                   g_zones[i].sigTouch = 0;
                   g_zones[i].srr      = false;
                   g_zones[i].fba      = false;
+                  g_zones[i].falseBreaks = 0;
                   g_zones[i].flips++;
                   g_zones[i].dead     = (g_zones[i].flips >= InpMaxFlips);
                   g_zones[i].pendBar  = -1;

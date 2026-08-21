@@ -198,7 +198,8 @@ type Zone
     bool  wasValid
     bool  dead
     bool  paired     //  drawn from TWO swings (p24) — born valid, needs 1 touch
-    bool  fba        //  broken and then respected again (p47)
+    int   falseBreaks //  how many times broken and respected again
+    bool  fba        //  TWO of those = a False Breakout Area
     int   pendBar    //  bar an unconfirmed 75% break happened on
     int   pendDir    //  +1 broke up · -1 broke down · 0 nothing pending
     int   bornBar
@@ -263,7 +264,7 @@ newZone(float _top, float _bot, int _role, bool _htf, int _uid, float _atr, int 
     bx = box.new(x1, t, bar_index + 10, b, border_color = color.new(color.gray, 60), bgcolor = colSup)
     md = line.new(x1, (t + b) / 2, bar_index + 10, (t + b) / 2, style = line.style_dashed, color = color.new(color.gray, 55))
     // a paired zone already HAS its two movements (p35), so it is born VALID
-    Zone.new(t, b, _role, _paired ? 1 : 0, 0, 0, 0, 0, _uid, _htf, false, false, false, _paired, false, -1, 0, bar_index, bx, md)
+    Zone.new(t, b, _role, _paired ? 1 : 0, 0, 0, 0, 0, _uid, _htf, false, false, false, _paired, 0, false, -1, 0, bar_index, bx, md)
 
 // Overlap is checked WITHIN a set only — a small chart zone is expected to sit
 // inside a big analysis zone. An exhausted zone reserves nothing: the book says
@@ -559,7 +560,11 @@ for z in zones
             if close >= z.bot                     // came back: p47 False Breakout
                 z.pendBar := -1
                 z.pendDir := 0
-                z.fba  := true
+                // 2026 master class, "FALSE BREAKOUT AREA": the area the
+                // market has broken TWICE and then respected again. One
+                // failed break is not an FBA — it takes two.
+                z.falseBreaks := z.falseBreaks + 1
+                z.fba  := z.falseBreaks >= 2
                 z.dead := false
             else if bar_index - z.pendBar >= fbaBars
                 z.wasValid := z.state == 1
@@ -569,6 +574,7 @@ for z in zones
                 z.sigTouch := 0
                 z.srr := false
                 z.fba := false
+                z.falseBreaks := 0
                 z.flips := z.flips + 1
                 z.dead := z.flips >= maxFlips
                 z.pendBar := -1
@@ -614,7 +620,11 @@ for z in zones
             if close <= z.top                     // came back: p47 False Breakout
                 z.pendBar := -1
                 z.pendDir := 0
-                z.fba  := true
+                // 2026 master class, "FALSE BREAKOUT AREA": the area the
+                // market has broken TWICE and then respected again. One
+                // failed break is not an FBA — it takes two.
+                z.falseBreaks := z.falseBreaks + 1
+                z.fba  := z.falseBreaks >= 2
                 z.dead := false
             else if bar_index - z.pendBar >= fbaBars
                 z.wasValid := z.state == 1
@@ -624,6 +634,7 @@ for z in zones
                 z.sigTouch := 0
                 z.srr := false
                 z.fba := false
+                z.falseBreaks := 0
                 z.flips := z.flips + 1
                 z.dead := z.flips >= maxFlips
                 z.pendBar := -1
