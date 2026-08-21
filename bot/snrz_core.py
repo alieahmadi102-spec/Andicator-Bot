@@ -64,6 +64,10 @@ class Zone:
     htf: bool = False           # analysis-timeframe zone (book: the TP2 zone)
     born_index: int = 0
     in_zone_prev: bool = False
+    src: str = "pivot"          # how it was drawn: S+S, R+R, S+R, R+S, pivot
+    fba: bool = False           # broken and then respected again (p47)
+    pend_bar: int = -1          # bar a still-unconfirmed break happened on
+    pend_dir: int = 0           # +1 broke up · -1 broke down
 
     @property
     def kind(self) -> str:
@@ -76,6 +80,15 @@ class Zone:
         if self.state == State.INVERTED:
             return "I.VS" if self.was_valid else "SBR"
         return "RSS" if self.srr else ("V.R" if self.state == State.VALID else "R")
+
+
+@dataclass
+class Swing:
+    """A confirmed swing high or low, kept so a later swing at the same price
+    can pair with it into a zone — the book's S+S / R+R / S+R / R+S."""
+    price: float
+    is_high: bool
+    index: int
 
 
 @dataclass
@@ -129,6 +142,48 @@ class Config:
     rr_tp1: float = 1.0     # fallback TP1 = SL distance x this (book: at least 1:1)
     tp_max_r: float = 6.0   # a zone further than this many R is not a FIRST target
 
+    # ── rules taken from the page-by-page read of the book ────────────────
+    # p24: a zone is a band bracketing TWO swing points at a similar price
+    #      (S+S, R+R, S+R, R+S). One pivot on its own is not a zone.
+    pair_zones: bool = True
+    pair_tol_atr: float = 0.35   # "a similar price" = within this many ATR
+    pair_max_gap: int = 60       # ...and no further apart than this many bars
+    pair_lookback: int = 6       # how many earlier swings to try to pair with
+    # p39: zones are marked on W/D/4H/1H; the low timeframes only MONITOR.
+    entries_htf_only: bool = False
+    # p42: entry at the zone midpoint, stop just beyond the zone, TP1 at 1:1
+    entry_at_zone: bool = True
+    entry_edge: bool = True      # limit at the near edge of the zone, not its mid
+    sl_buffer_atr: float = 0.15
+    # p47-50: a level broken and then respected again is a False Breakout
+    # Area — a GOOD zone. Only a break that HOLDS inverts the zone.
+    fba_bars: int = 3            # bars a break must hold before it inverts
+    # p14: the small zone must sit inside the big one
+    require_nested: bool = False
+    order_expiry_bars: int = 40   # a limit order that never fills must expire
+    # Measured, then dropped: resting the limit BEFORE price arrives (no
+    # confirmation candle) fired 6x as many signals for the same expectancy,
+    # so the book's confirmation flow is what all three implementations use.
+
+
+@dataclass
+class PendingOrder:
+    """The book places a LIMIT order at the zone (p41/p42), so the fill can
+    only happen on a bar AFTER the confirmation candle closed. Opening the
+    position at the zone price on the confirmation bar itself would be reading
+    the future: the signal is only known at that bar's close, by which time
+    price has already left the zone."""
+    bar: int
+    side: str
+    zone: str
+    po2: bool
+    uid: int
+    entry: float
+    sl: float
+    tp1: float
+    tp2: float
+    tp3: float
+
 
 @dataclass
 class Position:
@@ -170,6 +225,7 @@ class SnrzEngine:
         self.in_range = False
         # the single open setup (book: one trade at a time)
         self.position: Optional["Position"] = None
+        self.pending: Optional["PendingOrder"] = None
         self._zone_seq = 0
         # analysis-timeframe stream, aggregated from the chart candles
         self.htf_candles: List[Candle] = []
@@ -179,6 +235,9 @@ class SnrzEngine:
         # printed enough swings to have an opinion yet
         self.c_high = self.c_prev_high = None
         self.c_low = self.c_prev_low = None
+        # confirmed swing points per set, for pairing them into zones (p24)
+        self.swings_ltf: List[Swing] = []
+        self.swings_htf: List[Swing] = []
 
     # ── indicators ─────────────────────────────────────────────────────────
     def _atr(self) -> Optional[float]:
@@ -238,7 +297,7 @@ class SnrzEngine:
                    for z in self.zones)
 
     def _add_zone(self, top: float, bot: float, role: Role, atr: float,
-                  idx: int, htf: bool):
+                  idx: int, htf: bool, src: str = "pivot", valid: bool = False):
         mn, mx = atr * self.cfg.min_zone_atr, atr * self.cfg.max_zone_atr
         if top - bot < mn:
             mid = (top + bot) / 2
@@ -249,8 +308,10 @@ class SnrzEngine:
             else:
                 bot = top - mx
         self._zone_seq += 1
-        self.zones.append(Zone(top, bot, role, uid=self._zone_seq,
-                               htf=htf, born_index=idx))
+        self.zones.append(Zone(top, bot, role,
+                               state=State.VALID if valid else State.FRESH,
+                               uid=self._zone_seq, htf=htf, born_index=idx,
+                               src=src))
         cap = self.cfg.max_zones_htf if htf else self.cfg.max_zones_ltf
         while sum(1 for z in self.zones if z.htf == htf) > cap:
             same = [i for i, z in enumerate(self.zones) if z.htf == htf]
@@ -259,9 +320,15 @@ class SnrzEngine:
 
     def _pivot_zones(self, series: List[Candle], n: int, atr: float,
                      idx: int, htf: bool, track_trend: bool):
-        """One pivot pass over a candle series. Runs twice per bar: once on the
-        chart candles and once on the aggregated analysis candles, because the
-        book marks zones on both at the same time (p.41)."""
+        """One pivot pass over a candle series. Runs on the chart candles and
+        on the aggregated analysis candles, because the book marks zones on
+        both (p41).
+
+        A confirmed swing does NOT become a zone on its own. Book p24 gives
+        five ways to draw one and four of them pair TWO swing points at a
+        similar price (S+S, R+R, S+R, R+S) — the band is what the two of them
+        bracket. Marking a zone at every pivot is what filled the charts with
+        levels the market had never actually respected twice."""
         j = len(series) - 1
         p = j - n
         if p < n:
@@ -270,27 +337,80 @@ class SnrzEngine:
         pc = series[p]
         is_ph = all(w.high < pc.high for i, w in enumerate(window) if i != n)
         is_pl = all(w.low > pc.low for i, w in enumerate(window) if i != n)
-        big = atr * self.cfg.big_move_atr
-        # the movement made AFTER the pivot is the book's "Big Movement"
+        if not (is_ph or is_pl):
+            return
+
+        if track_trend:
+            if is_ph:
+                self.prev_high, self.last_high = self.last_high, pc.high
+            if is_pl:
+                self.prev_low, self.last_low = self.last_low, pc.low
+        else:
+            if is_ph:
+                self.c_prev_high, self.c_high = self.c_high, pc.high
+            if is_pl:
+                self.c_prev_low, self.c_low = self.c_low, pc.low
+
+        cfg = self.cfg
+        swings = self.swings_htf if htf else self.swings_ltf
+        big = atr * cfg.big_move_atr
         run = series[p: j + 1]
         hi_run = max(w.high for w in run)
         lo_run = min(w.low for w in run)
-        if is_ph:
-            if track_trend:
-                self.prev_high, self.last_high = self.last_high, pc.high
+
+        for is_high in (True, False):
+            if is_high and not is_ph:
+                continue
+            if not is_high and not is_pl:
+                continue
+            price = pc.high if is_high else pc.low
+            sw = Swing(price, is_high, p)
+
+            if not cfg.pair_zones:
+                # the old behaviour: one pivot, one zone
+                if is_high:
+                    top, bot = pc.high, max(pc.open, pc.close)
+                    if (top - lo_run) >= big and not self._overlaps(top, bot, htf):
+                        self._add_zone(top, bot, Role.RESISTANCE, atr, idx, htf,
+                                       src="pivot", valid=False)
+                else:
+                    top, bot = min(pc.open, pc.close), pc.low
+                    if (hi_run - bot) >= big and not self._overlaps(top, bot, htf):
+                        self._add_zone(top, bot, Role.SUPPORT, atr, idx, htf,
+                                       src="pivot", valid=False)
+                swings.append(sw)
+                continue
+
+            # pair this swing with an earlier one at a similar price
+            tol = atr * cfg.pair_tol_atr
+            mate = None
+            for prev in reversed(swings[-cfg.pair_lookback:]):
+                if p - prev.index > cfg.pair_max_gap:
+                    continue
+                if abs(prev.price - price) <= tol:
+                    mate = prev
+                    break
+            swings.append(sw)
+            if mate is None:
+                continue
+
+            top = max(mate.price, price)
+            bot = min(mate.price, price)
+            if is_high and mate.is_high:
+                role, src = Role.RESISTANCE, "R+R"
+            elif (not is_high) and (not mate.is_high):
+                role, src = Role.SUPPORT, "S+S"
             else:
-                self.c_prev_high, self.c_high = self.c_high, pc.high
-            top, bot = pc.high, max(pc.open, pc.close)
-            if (top - lo_run) >= big and not self._overlaps(top, bot, htf):
-                self._add_zone(top, bot, Role.RESISTANCE, atr, idx, htf)
-        if is_pl:
-            if track_trend:
-                self.prev_low, self.last_low = self.last_low, pc.low
-            else:
-                self.c_prev_low, self.c_low = self.c_low, pc.low
-            top, bot = min(pc.open, pc.close), pc.low
-            if (hi_run - bot) >= big and not self._overlaps(top, bot, htf):
-                self._add_zone(top, bot, Role.SUPPORT, atr, idx, htf)
+                # S+R / R+S — the GAP band between a support and a resistance
+                # (p51). Which side we trade it from depends on where price is.
+                mid = (top + bot) / 2
+                role = Role.SUPPORT if series[j].close > mid else Role.RESISTANCE
+                src = "S+R" if mate.is_high else "R+S"
+            if self._overlaps(top, bot, htf):
+                continue
+            # two touches already define it, so it is born VALID (p35: first
+            # movement + second movement). The entry is the RETURN to it.
+            self._add_zone(top, bot, role, atr, idx, htf, src=src, valid=True)
 
     def _push_htf(self, c: Candle) -> bool:
         """Aggregate chart candles into analysis candles. Returns True on the
@@ -363,20 +483,88 @@ class SnrzEngine:
                 d2 = d
             if d3 is None or d > d3:
                 d3 = d
-        d1 = risk if d1 is None else max(d1, risk)
+        # p41: "you can set the red line as the 1:1 risk-reward target" — so
+        # TP1 is 1R, not whatever zone happens to be nearest.
+        d1 = risk * self.cfg.rr_tp1 if self.cfg.entry_at_zone else \
+            (risk if d1 is None else max(d1, risk))
         d2 = max(d1 + risk, risk * 2) if (d2 is None or d2 <= d1) else d2
         d3 = max(d2 + risk, risk * 3) if (d3 is None or d3 <= d2) else d3
         if is_buy:
             return entry + d1, entry + d2, entry + d3
         return entry - d1, entry - d2, entry - d3
 
+    def _levels(self, is_buy: bool, z: "Zone", c: Candle, atr: float):
+        """Book p41/p42: the order sits at the zone, the stop just beyond it,
+        and the first target is the 1:1 line. Measuring the author's own chart
+        confirms it — zone 4706.13-4720, stop 4698.67, and the red 1:1 line at
+        4732.33 is exactly the midpoint 4715.5 plus that 16.8 of risk.
+        Entering at the confirmation candle's close instead made the stop as
+        wide as the whole zone plus the candle."""
+        cfg = self.cfg
+        if cfg.entry_at_zone:
+            mid = (z.top + z.bot) / 2
+            # book: "SL outside the zone, below/above the wick of the
+            # confirmation candle — on the liquidity". Both halves matter: a
+            # stop pinned to the zone edge alone is a hair wide and gets swept.
+            wick_lo = min(w.low for w in self.candles[-3:])
+            wick_hi = max(w.high for w in self.candles[-3:])
+            if is_buy:
+                # the edge price meets first coming back down to a support
+                entry = min(z.top if cfg.entry_edge else mid, c.close)
+                raw_sl = min(z.bot, wick_lo) - atr * cfg.sl_buffer_atr
+            else:
+                entry = max(z.bot if cfg.entry_edge else mid, c.close)
+                raw_sl = max(z.top, wick_hi) + atr * cfg.sl_buffer_atr
+        else:
+            entry = c.close
+            if is_buy:
+                raw_sl = min(z.bot, min(w.low for w in self.candles[-3:])) - atr * 0.15
+            else:
+                raw_sl = max(z.top, max(w.high for w in self.candles[-3:])) + atr * 0.15
+        risk = max(abs(entry - raw_sl), atr * cfg.min_sl_atr)
+        sl = entry - risk if is_buy else entry + risk
+        tp1, tp2, tp3 = self._targets(is_buy, entry, risk)
+        return entry, sl, tp1, tp2, tp3
+
+    def _nested(self, z: "Zone") -> bool:
+        """p14/p35: the small zone sits INSIDE the big one — a chart-timeframe
+        zone is only worth trading where the analysis timeframe already marked
+        the same area with the same role."""
+        if z.htf:
+            return True
+        return any(h.htf and not h.dead and h.role == z.role
+                   and z.bot <= h.top and z.top >= h.bot for h in self.zones)
+
+    def _fill_pending(self, c: Candle, idx: int):
+        """A resting limit order fills when price trades back to it."""
+        o = self.pending
+        if o is None or idx <= o.bar:
+            return
+        if c.low <= o.entry <= c.high:
+            self.position = Position(idx, o.side, o.zone, o.po2, o.entry, o.sl,
+                                     o.tp1, o.tp2, o.tp3, uid=o.uid)
+            self.pending = None
+            return
+        blown = (c.high >= o.sl) if o.side == "sell" else (c.low <= o.sl)
+        gone = (c.low <= o.tp1) if o.side == "sell" else (c.high >= o.tp1)
+        if blown or idx - o.bar > self.cfg.order_expiry_bars or gone:
+            self.pending = None          # invalidated, ran away, or timed out
+
     def _update_position(self, c: Candle, idx: int):
         p = self.position
         if p is None or p.closed:
             return
+        # On the bar the limit order filled, only the STOP may be judged. A buy
+        # limit fills because price traded DOWN to it, so a low beyond the stop
+        # came after the fill and is a real stop-out — but the bar's high may
+        # well have printed before the fill, and counting that as a target
+        # reached is reading the future. It is worth ~0.2R a trade.
+        entry_bar = idx == p.index
         if p.side == "buy":
             if c.low <= p.sl:
                 p.stat, p.closed = (-2 if p.be else -1), True
+            elif entry_bar:
+                pass
             elif c.high >= p.tp3:
                 p.stat, p.closed = 3, True
             elif c.high >= p.tp2 and p.stat < 2:
@@ -386,6 +574,8 @@ class SnrzEngine:
         else:
             if c.high >= p.sl:
                 p.stat, p.closed = (-2 if p.be else -1), True
+            elif entry_bar:
+                pass
             elif c.low <= p.tp3:
                 p.stat, p.closed = 3, True
             elif c.low <= p.tp2 and p.stat < 2:
@@ -452,6 +642,7 @@ class SnrzEngine:
                 self._pivot_zones(self.htf_candles, self.cfg.pivot_htf, atr_h,
                                   idx, htf=True, track_trend=True)
                 self._update_trend(self.htf_candles[-1], atr_h, idx)
+        self._fill_pending(c, idx)
         self._update_position(c, idx)
         # expire zones by age, and drop any that price has left far behind
         atr_h = self._htf_atr() or atr
@@ -476,24 +667,33 @@ class SnrzEngine:
         cfg = self.cfg
         broke_support = broke_resistance = False
         # book: don't overtrade — while a setup is running, no new signal
-        can_fire = not (cfg.one_trade and self.position is not None and self.position.open)
+        can_fire = not (cfg.one_trade and (
+            self.pending is not None
+            or (self.position is not None and self.position.open)))
 
         for z in self.zones:
             if idx <= z.born_index:
                 continue
             in_zone = c.low <= z.top and c.high >= z.bot
 
+
             if z.role == Role.SUPPORT:
-                if self._bear_break(z.bot, c):
-                    z.was_valid = z.state == State.VALID
-                    z.role, z.state = Role.RESISTANCE, State.INVERTED
-                    z.touches = z.sig_touch = 0
-                    z.srr = False
-                    z.flips += 1
-                    # a level broken from both sides repeatedly is a range
-                    # boundary, not a zone — the book calls sideway dangerous
-                    z.dead = z.flips >= cfg.max_flips
-                    broke_support = True
+                if z.pend_dir == 0 and self._bear_break(z.bot, c):
+                    z.pend_bar, z.pend_dir = idx, -1     # wait: does it hold?
+                elif z.pend_dir == -1:
+                    if c.close >= z.bot:                 # came back — p47: FBA
+                        z.pend_bar, z.pend_dir = -1, 0
+                        z.fba = True
+                        z.dead = False
+                    elif idx - z.pend_bar >= cfg.fba_bars:
+                        z.was_valid = z.state == State.VALID
+                        z.role, z.state = Role.RESISTANCE, State.INVERTED
+                        z.touches = z.sig_touch = 0
+                        z.srr = z.fba = False
+                        z.flips += 1
+                        z.dead = z.flips >= cfg.max_flips
+                        z.pend_bar, z.pend_dir = -1, 0
+                        broke_support = True
                 elif in_zone and c.close >= z.bot and not z.dead:
                     if not z.in_zone_prev:
                         z.touches += 1
@@ -502,10 +702,17 @@ class SnrzEngine:
                         if (z.state != State.INVERTED and z.touches > cfg.max_touches) or \
                            (z.state == State.INVERTED and z.touches > 2):
                             z.dead = True                  # 3-touch rule
-                    tradable = (not z.dead) and (
-                        (z.state == State.VALID and z.touches >= 2) or
+                    # a paired zone already has its two touches by
+                    # construction (p24/p35), so the RETURN to it is the entry
+                    need = 1 if z.src != "pivot" else 2
+                    tradable = (not z.dead) and z.pend_dir == 0 and (
+                        (z.state == State.VALID and z.touches >= need) or
                         (z.srr and z.touches >= 1) or
                         (z.state == State.INVERTED and 1 <= z.touches <= 2))
+                    if cfg.entries_htf_only and not z.htf:
+                        tradable = False        # p39: entries only from W/D/4H/1H
+                    if cfg.require_nested and not self._nested(z):
+                        tradable = False        # p14/p35: small zone inside big
                     ok_trend = (not cfg.trend_filter) or self.trend_up \
                         or (self.trend_unknown and not self.in_range) \
                         or (cfg.allow_counter_inv and z.state == State.INVERTED)
@@ -514,25 +721,33 @@ class SnrzEngine:
                     if tradable and ok_trend and ok_conf and z.sig_touch != z.touches \
                             and reject_ok and bos_buy_ok and can_fire and not out:
                         z.sig_touch = z.touches            # one signal per touch
-                        swing_lo = min(w.low for w in self.candles[-3:])
-                        raw_sl = min(z.bot, swing_lo) - atr * 0.15
-                        risk = max(c.close - raw_sl, atr * cfg.min_sl_atr)
-                        tp1, tp2, tp3 = self._targets(True, c.close, risk)
+                        entry, sl, tp1, tp2, tp3 = self._levels(True, z, c, atr)
                         po2 = z.state == State.INVERTED and z.touches == 2
                         out.append(Signal(idx, "buy", "PO2" if po2 else "rejection",
-                                          z.kind, c.close, c.close - risk, tp1, tp2, tp3))
-                        self.position = Position(idx, "buy", z.kind, po2,
-                                                 c.close, c.close - risk,
-                                                 tp1, tp2, tp3, uid=z.uid)
+                                          z.kind, entry, sl, tp1, tp2, tp3))
+                        if cfg.entry_at_zone:
+                            self.pending = PendingOrder(idx, "buy", z.kind, po2,
+                                                        z.uid, entry, sl, tp1, tp2, tp3)
+                        else:
+                            self.position = Position(idx, "buy", z.kind, po2,
+                                                     entry, sl, tp1, tp2, tp3, uid=z.uid)
             else:
-                if self._bull_break(z.top, c):
-                    z.was_valid = z.state == State.VALID
-                    z.role, z.state = Role.SUPPORT, State.INVERTED
-                    z.touches = z.sig_touch = 0
-                    z.srr = False
-                    z.flips += 1
-                    z.dead = z.flips >= cfg.max_flips
-                    broke_resistance = True
+                if z.pend_dir == 0 and self._bull_break(z.top, c):
+                    z.pend_bar, z.pend_dir = idx, 1
+                elif z.pend_dir == 1:
+                    if c.close <= z.top:                 # came back — p47: FBA
+                        z.pend_bar, z.pend_dir = -1, 0
+                        z.fba = True
+                        z.dead = False
+                    elif idx - z.pend_bar >= cfg.fba_bars:
+                        z.was_valid = z.state == State.VALID
+                        z.role, z.state = Role.SUPPORT, State.INVERTED
+                        z.touches = z.sig_touch = 0
+                        z.srr = z.fba = False
+                        z.flips += 1
+                        z.dead = z.flips >= cfg.max_flips
+                        z.pend_bar, z.pend_dir = -1, 0
+                        broke_resistance = True
                 elif in_zone and c.close <= z.top and not z.dead:
                     if not z.in_zone_prev:
                         z.touches += 1
@@ -541,10 +756,17 @@ class SnrzEngine:
                         if (z.state != State.INVERTED and z.touches > cfg.max_touches) or \
                            (z.state == State.INVERTED and z.touches > 2):
                             z.dead = True
-                    tradable = (not z.dead) and (
-                        (z.state == State.VALID and z.touches >= 2) or
+                    # a paired zone already has its two touches by
+                    # construction (p24/p35), so the RETURN to it is the entry
+                    need = 1 if z.src != "pivot" else 2
+                    tradable = (not z.dead) and z.pend_dir == 0 and (
+                        (z.state == State.VALID and z.touches >= need) or
                         (z.srr and z.touches >= 1) or
                         (z.state == State.INVERTED and 1 <= z.touches <= 2))
+                    if cfg.entries_htf_only and not z.htf:
+                        tradable = False        # p39: entries only from W/D/4H/1H
+                    if cfg.require_nested and not self._nested(z):
+                        tradable = False        # p14/p35: small zone inside big
                     ok_trend = (not cfg.trend_filter) or self.trend_down \
                         or (self.trend_unknown and not self.in_range) \
                         or (cfg.allow_counter_inv and z.state == State.INVERTED)
@@ -553,16 +775,16 @@ class SnrzEngine:
                     if tradable and ok_trend and ok_conf and z.sig_touch != z.touches \
                             and reject_ok and bos_sell_ok and can_fire and not out:
                         z.sig_touch = z.touches
-                        swing_hi = max(w.high for w in self.candles[-3:])
-                        raw_sl = max(z.top, swing_hi) + atr * 0.15
-                        risk = max(raw_sl - c.close, atr * cfg.min_sl_atr)
-                        tp1, tp2, tp3 = self._targets(False, c.close, risk)
+                        entry, sl, tp1, tp2, tp3 = self._levels(False, z, c, atr)
                         po2 = z.state == State.INVERTED and z.touches == 2
                         out.append(Signal(idx, "sell", "PO2" if po2 else "rejection",
-                                          z.kind, c.close, c.close + risk, tp1, tp2, tp3))
-                        self.position = Position(idx, "sell", z.kind, po2,
-                                                 c.close, c.close + risk,
-                                                 tp1, tp2, tp3, uid=z.uid)
+                                          z.kind, entry, sl, tp1, tp2, tp3))
+                        if cfg.entry_at_zone:
+                            self.pending = PendingOrder(idx, "sell", z.kind, po2,
+                                                        z.uid, entry, sl, tp1, tp2, tp3)
+                        else:
+                            self.position = Position(idx, "sell", z.kind, po2,
+                                                     entry, sl, tp1, tp2, tp3, uid=z.uid)
             z.in_zone_prev = in_zone
 
         # SRR / RSS qualification (book): a Support whose move broke >=2

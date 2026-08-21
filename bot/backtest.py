@@ -36,8 +36,10 @@ class Report:
 
     @property
     def win_rate(self) -> float:
-        """A setup that reached at least TP1 paid for itself."""
-        wins = self.tp1 + self.tp2 + self.tp3
+        """A setup that reached at least TP1 paid for itself — including the
+        ones that came back to the break-even stop afterwards, since half the
+        position was already booked at 1R by then."""
+        wins = self.tp1 + self.tp2 + self.tp3 + self.breakeven
         return 100.0 * wins / self.resolved if self.resolved else 0.0
 
     @property
@@ -88,10 +90,37 @@ def run(candles: Iterable[Candle], cfg: Config) -> Report:
 
 
 def read_csv(path: str) -> List[Candle]:
-    with open(path) as f:
+    """Reads both TradingView exports (a header row with named columns) and
+    MetaTrader 5 exports (UTF-16, no header, date[ time],O,H,L,C,vol,spread)."""
+    raw = open(path, "rb").read()
+    for enc in ("utf-16", "utf-8-sig", "utf-8"):
+        try:
+            text = raw.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        raise SystemExit(f"cannot decode {path}")
+    lines = [ln for ln in text.replace("\r", "").split("\n") if ln.strip()]
+
+    first = lines[0].lower()
+    if "open" in first and "high" in first:                    # TradingView
+        rows = csv.DictReader(lines)
         return [Candle(int(float(r["time"])), float(r["open"]), float(r["high"]),
-                       float(r["low"]), float(r["close"]))
-                for r in csv.DictReader(f)]
+                       float(r["low"]), float(r["close"])) for r in rows]
+
+    out: List[Candle] = []                                     # MetaTrader 5
+    for i, ln in enumerate(lines):
+        f = ln.split(",")
+        if len(f) < 5:
+            continue
+        try:
+            out.append(Candle(i, float(f[1]), float(f[2]), float(f[3]), float(f[4])))
+        except ValueError:
+            continue                                           # skip a header
+    if not out:
+        raise SystemExit(f"no candles parsed from {path}")
+    return out
 
 
 def synthetic(seed: int, n: int = 3000) -> List[Candle]:

@@ -9,6 +9,7 @@ Requirements (Windows, or Linux+Wine):
 from __future__ import annotations
 
 import time
+from datetime import datetime, timedelta, timezone
 
 try:
     import MetaTrader5 as mt5
@@ -23,6 +24,7 @@ SYMBOL = "XAUUSD"
 TIMEFRAME_MIN = 60
 RISK_PCT = 1.0              # max 1% risk per trade (book rule)
 MAGIC = 20260819
+ORDER_EXPIRY_BARS = 40      # same as Config.order_expiry_bars in snrz_core
 
 # Nothing is sent to the broker while this is True. Turn it off only after you
 # have watched it print signals for a while ON A DEMO ACCOUNT and you agree
@@ -55,29 +57,51 @@ def lots_for_risk(symbol: str, sl_distance: float, risk_pct: float) -> float:
     return min(lots, info.volume_max)
 
 
-def place(signal, symbol: str):
-    side = mt5.ORDER_TYPE_BUY if signal.side == "buy" else mt5.ORDER_TYPE_SELL
+def place(signal, symbol: str, tf_minutes: int):
+    """Book p41/p42: the entry is a LIMIT order resting AT the zone, not a
+    market order. signal.price is that zone price — the engine and the
+    backtester both assume the fill happens there, so sending a market order
+    here would make the live bot trade something the numbers never measured.
+    The order expires the same way it does in the backtest."""
     tick = mt5.symbol_info_tick(symbol)
-    price = tick.ask if signal.side == "buy" else tick.bid
-    volume = lots_for_risk(symbol, abs(price - signal.sl), RISK_PCT)
+    market = tick.ask if signal.side == "buy" else tick.bid
+    volume = lots_for_risk(symbol, abs(signal.price - signal.sl), RISK_PCT)
+    expiry = datetime.now(timezone.utc) + timedelta(
+        minutes=tf_minutes * ORDER_EXPIRY_BARS)
+
+    if signal.side == "buy":
+        # price is already at or below the zone -> the limit would fill instantly
+        kind = mt5.ORDER_TYPE_BUY_LIMIT if market > signal.price else mt5.ORDER_TYPE_BUY
+    else:
+        kind = mt5.ORDER_TYPE_SELL_LIMIT if market < signal.price else mt5.ORDER_TYPE_SELL
+    pending = kind in (mt5.ORDER_TYPE_BUY_LIMIT, mt5.ORDER_TYPE_SELL_LIMIT)
+
     if DRY_RUN:
-        print(f"  DRY_RUN — would {signal.side.upper()} {volume} {symbol} "
-              f"@ {price:.2f}  SL {signal.sl:.2f}  TP1 {signal.tp1:.2f}")
+        print(f"  DRY_RUN — would place {signal.side.upper()}"
+              f"{' LIMIT' if pending else ' (market, price already there)'} "
+              f"{volume} {symbol} @ {signal.price:.2f}  SL {signal.sl:.2f}  "
+              f"TP1 {signal.tp1:.2f}"
+              + (f"  expires {expiry:%Y-%m-%d %H:%M} UTC" if pending else ""))
         return
+
     req = {
-        "action": mt5.TRADE_ACTION_DEAL,
+        "action": mt5.TRADE_ACTION_PENDING if pending else mt5.TRADE_ACTION_DEAL,
         "symbol": symbol,
         "volume": volume,
-        "type": side,
-        "price": price,
+        "type": kind,
+        "price": signal.price if pending else market,
         "sl": signal.sl,
         "tp": signal.tp1,
-        "deviation": 20,
         "magic": MAGIC,
         "comment": f"SNRZ {signal.kind} {signal.zone}",
-        "type_time": mt5.ORDER_TIME_GTC,
-        "type_filling": mt5.ORDER_FILLING_IOC,
     }
+    if pending:
+        req["type_time"] = mt5.ORDER_TIME_SPECIFIED
+        req["expiration"] = expiry
+    else:
+        req["deviation"] = 20
+        req["type_time"] = mt5.ORDER_TIME_GTC
+        req["type_filling"] = mt5.ORDER_FILLING_IOC
     res = mt5.order_send(req)
     print("order_send:", res)
 
@@ -118,7 +142,7 @@ def main():
         last_time = b["time"]
         for sig in engine.on_candle(Candle(int(b["time"]), b["open"], b["high"], b["low"], b["close"])):
             print("SIGNAL:", sig)
-            place(sig, SYMBOL)
+            place(sig, SYMBOL, TIMEFRAME_MIN)
 
 
 if __name__ == "__main__":

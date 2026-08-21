@@ -14,7 +14,7 @@
 //|   • One position at a time with SL / TP1 / TP2 / TP3 drawn       |
 //+------------------------------------------------------------------+
 #property copyright   "SNRZ (Zindan The Gold Chaser) — indicator port"
-#property version     "6.00"
+#property version     "7.00"
 #property description "SNRZ: chart zones AND analysis zones together (book p.41/p.44), one trade at a time"
 #property indicator_chart_window
 #property indicator_buffers 4
@@ -55,6 +55,11 @@ input double InpMaxZoneATR   = 1.00;  // Max zone height (ATR x)
 input int    InpLifeLtf      = 250;   // Chart zone lifetime (chart bars)
 input int    InpLifeHtf      = 60;    // Analysis zone lifetime (analysis bars)
 input double InpMaxZoneDistATR = 6.0; // Drop zones further than (ATR x)
+input bool   InpPairZones     = true;  // Draw a zone only from TWO swings (p24: S+S/R+R/S+R/R+S)
+input double InpPairTolATR   = 0.35;  // ..."similar price" = closer than (ATR x)
+input int    InpPairMaxGap   = 60;    // ...and the two swings closer than N bars
+input int    InpPairLookback = 6;     // ...searching the last N swings
+input int    InpFbaBars      = 3;     // A break must hold N bars before the zone inverts (p47)
 
 input group "Signals"
 input bool   InpTrendFilter  = true;  // Trade only with structure trend
@@ -72,6 +77,12 @@ input bool   InpOneTrade     = true;  // One trade at a time (no overtrade)
 input int    InpMaxTradeBars = 300;   // Close an open trade after N chart bars
 input double InpMinSlATR     = 0.5;   // Minimum stop distance (analysis ATR x)
 input double InpTpMaxR       = 6.0;   // Max R for TP1/TP2 (farther zone -> TP3)
+input bool   InpEntryAtZone   = true;  // Entry = LIMIT order on the zone (p41/p42)
+input bool   InpEntryEdge     = true;  // ...at the near EDGE of the zone, not its middle
+input double InpSlBufferATR   = 0.15;  // How far beyond the zone the stop sits (ATR x)
+input int    InpOrderExpiry   = 40;    // An unfilled limit order dies after N bars
+input bool   InpRequireNested = false; // Only chart zones sitting inside an analysis zone (p14)
+input bool   InpEntriesHtfOnly= false; // Entries only from analysis-timeframe zones
 input bool   InpShowPosition = true;  // Draw Entry / SL / TP1-3 of the last setup
 
 input group "Alerts"
@@ -108,6 +119,10 @@ struct SZone
    datetime activeFrom;// no touches counted before this time
    long     id;        // object id
    bool     inZonePrev;
+   bool     paired;    // drawn from TWO swings (p24) — born valid, needs 1 touch
+   bool     fba;       // broken and then respected again (p47)
+   int      pendBar;   // chart bar an unconfirmed 75% break happened on
+   int      pendDir;   // +1 broke up · -1 broke down · 0 nothing pending
   };
 SZone  g_zones[];
 long   g_zoneSeq = 0;
@@ -129,6 +144,17 @@ double g_cHigh = 0, g_cPrevHigh = 0, g_cLow = 0, g_cPrevLow = 0;
 bool     g_posOn = false, g_posBuy = false, g_posPO2 = false, g_posSwing = false;
 double   g_posEntry = 0, g_posSL = 0, g_posTP1 = 0, g_posTP2 = 0, g_posTP3 = 0;
 int      g_posStat = 0;                   // 0 running · 1/2/3 TP · -1 stop · -2 BE
+
+//--- resting LIMIT order (book p41/p42) --------------------------------------
+// The entry is an order sitting AT the zone. It is armed when the confirmation
+// candle closes and can only fill on a LATER bar — filling it on the
+// confirmation bar itself would be reading the future, since the signal is not
+// known until that bar has closed and by then price has already left the zone.
+bool     g_ordOn = false, g_ordBuy = false, g_ordPO2 = false;
+double   g_ordEntry = 0, g_ordSL = 0, g_ordTP1 = 0, g_ordTP2 = 0, g_ordTP3 = 0;
+int      g_ordBar = 0;
+long     g_ordUid = -1;
+string   g_ordZone = "";
 bool     g_posBE   = false;               // stop already moved to entry
 long     g_posUid  = -1;                  // which zone produced this setup
 int      g_posBar  = 0;
@@ -210,6 +236,8 @@ string ZoneText(const SZone &z)
       base = (z.state == 2 ? (z.wasValid ? "I.VR" : "RBS") : (z.srr ? "SRR" : (z.state == 1 ? "V.S" : "S")));
    else
       base = (z.state == 2 ? (z.wasValid ? "I.VS" : "SBR") : (z.srr ? "RSS" : (z.state == 1 ? "V.R" : "R")));
+   if(z.fba)
+      base += " FBA";
    if(z.dead)
       base += " x";
    else if(z.touches > 0)
@@ -283,8 +311,59 @@ bool Overlaps(const double top, const double bot, const bool htf)
 //+------------------------------------------------------------------+
 //| Add zone (with SNRZ min/max height clamps)                        |
 //+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
+//| Swing memory — book p24: four of the five ways to draw a zone     |
+//| pair TWO swing points at a similar price (S+S, R+R, S+R, R+S).    |
+//| The band the two of them bracket IS the zone. One lone pivot is   |
+//| not a zone, and marking one at every pivot is what filled charts  |
+//| with levels the market had never respected twice.                 |
+//+------------------------------------------------------------------+
+struct SSwing
+  {
+   double price;
+   bool   isHigh;
+   int    bar;        // chart bar (or analysis bar for the HTF set)
+  };
+SSwing g_swLtf[], g_swHtf[];
+
+void PushSwing(const bool htf, const double price, const bool isHigh, const int bar)
+  {
+   int n;
+   if(htf)
+     {
+      n = ArraySize(g_swHtf);
+      ArrayResize(g_swHtf, n + 1);
+      g_swHtf[n].price = price; g_swHtf[n].isHigh = isHigh; g_swHtf[n].bar = bar;
+      if(ArraySize(g_swHtf) > 40) ArrayRemove(g_swHtf, 0, 1);
+     }
+   else
+     {
+      n = ArraySize(g_swLtf);
+      ArrayResize(g_swLtf, n + 1);
+      g_swLtf[n].price = price; g_swLtf[n].isHigh = isHigh; g_swLtf[n].bar = bar;
+      if(ArraySize(g_swLtf) > 40) ArrayRemove(g_swLtf, 0, 1);
+     }
+  }
+
+// index of the newest earlier swing at a similar price, or -1
+int FindMate(const bool htf, const double price, const int bar, const double atr)
+  {
+   double tol = atr * InpPairTolATR;
+   int n = htf ? ArraySize(g_swHtf) : ArraySize(g_swLtf);
+   int first = MathMax(0, n - InpPairLookback);
+   for(int i = n - 1; i >= first; i--)
+     {
+      int    sb = htf ? g_swHtf[i].bar   : g_swLtf[i].bar;
+      double sp = htf ? g_swHtf[i].price : g_swLtf[i].price;
+      if(bar - sb <= InpPairMaxGap && MathAbs(sp - price) <= tol)
+         return i;
+     }
+   return -1;
+  }
+
 void AddZone(double top, double bot, const int role, const int bornH, const double atr,
-             const datetime t1, const datetime t2, const bool htf)
+
+             const datetime t1, const datetime t2, const bool htf, const bool paired)
   {
    double h  = top - bot;
    double mn = atr * InpMinZoneATR;
@@ -305,7 +384,8 @@ void AddZone(double top, double bot, const int role, const int bornH, const doub
    g_zones[n].top        = top;
    g_zones[n].bot        = bot;
    g_zones[n].role       = role;
-   g_zones[n].state      = 0;
+   // p24/p35: a paired zone was drawn FROM its two movements, so it is VALID
+   g_zones[n].state      = paired ? 1 : 0;
    g_zones[n].touches    = 0;
    g_zones[n].oppBreaks  = 0;
    g_zones[n].srr        = false;
@@ -319,6 +399,10 @@ void AddZone(double top, double bot, const int role, const int bornH, const doub
    g_zones[n].activeFrom = t2;
    g_zones[n].id         = ++g_zoneSeq;
    g_zones[n].inZonePrev = false;
+   g_zones[n].paired     = paired;
+   g_zones[n].fba        = false;
+   g_zones[n].pendBar    = -1;
+   g_zones[n].pendDir    = 0;
    DrawZone(g_zones[n], t1, t2);
 
    int cap = htf ? InpMaxZonesHtf : InpMaxZonesLtf;
@@ -348,6 +432,66 @@ void AddZone(double top, double bot, const int role, const int bornH, const doub
          break;
       RemoveZoneAt(victim);
      }
+  }
+//+------------------------------------------------------------------+
+//| One confirmed swing -> at most one zone, drawn with its mate      |
+//+------------------------------------------------------------------+
+void AddSwingZone(const bool htf, const double price, const bool isHigh,
+                  const int bar, const int bornH, const double atr,
+                  const double bodyHi, const double bodyLo,
+                  const double hiRun, const double loRun,
+                  const double refClose, const datetime t1, const datetime t2)
+  {
+   if(InpPairZones)
+     {
+      int mi = FindMate(htf, price, bar, atr);
+      double matePrice = 0.0;
+      bool   mateHigh  = false;
+      if(mi >= 0)
+        {
+         matePrice = htf ? g_swHtf[mi].price  : g_swLtf[mi].price;
+         mateHigh  = htf ? g_swHtf[mi].isHigh : g_swLtf[mi].isHigh;
+        }
+      PushSwing(htf, price, isHigh, bar);
+      if(mi < 0)
+         return;
+      double t = MathMax(matePrice, price);
+      double b = MathMin(matePrice, price);
+      int role;
+      if(isHigh && mateHigh)        role = -1;             // R+R
+      else if(!isHigh && !mateHigh) role =  1;             // S+S
+      else                                                 // S+R / R+S — the
+         role = (refClose > (t + b) / 2.0) ? 1 : -1;       // GAP band (p51)
+      if(!Overlaps(t, b, htf))
+         AddZone(t, b, role, bornH, atr, t1, t2, htf, true);
+      return;
+     }
+
+   PushSwing(htf, price, isHigh, bar);
+   double bigMove = atr * InpBigMoveATR;
+   if(isHigh)
+     {
+      if((price - loRun) >= bigMove && !Overlaps(price, bodyHi, htf))
+         AddZone(price, bodyHi, -1, bornH, atr, t1, t2, htf, false);
+     }
+   else
+     {
+      if((hiRun - price) >= bigMove && !Overlaps(bodyLo, price, htf))
+         AddZone(bodyLo, price, 1, bornH, atr, t1, t2, htf, false);
+     }
+  }
+//+------------------------------------------------------------------+
+//| p14: the small zone sits INSIDE the big one                       |
+//+------------------------------------------------------------------+
+bool ZoneNested(const int idx)
+  {
+   if(g_zones[idx].htf)
+      return true;
+   for(int i = 0; i < ArraySize(g_zones); i++)
+      if(g_zones[i].htf && !g_zones[i].dead && g_zones[i].role == g_zones[idx].role &&
+         g_zones[idx].bot <= g_zones[i].top && g_zones[idx].top >= g_zones[i].bot)
+         return true;
+   return false;
   }
 //+------------------------------------------------------------------+
 //| 75% breakout rule                                                 |
@@ -542,20 +686,14 @@ void ProcessHtfBar(const int j, const MqlRates &htf[], const double &atrH[], con
         }
       double bigMove = atr * InpBigMoveATR;
 
+      double bodyHiH = MathMax(htf[p].open, htf[p].close);
+      double bodyLoH = MathMin(htf[p].open, htf[p].close);
       if(isPL)
-        {
-         double zTop = MathMin(htf[p].open, htf[p].close);
-         double zBot = htf[p].low;
-         if((hiRun - zBot) >= bigMove && !Overlaps(zTop, zBot, true))
-            AddZone(zTop, zBot, 1, j, atr, htf[p].time, htf[j].time, true);
-        }
+         AddSwingZone(true, htf[p].low, false, p, j, atr, bodyHiH, bodyLoH,
+                      hiRun, loRun, htf[j].close, htf[p].time, htf[j].time);
       if(isPH)
-        {
-         double zTop = htf[p].high;
-         double zBot = MathMax(htf[p].open, htf[p].close);
-         if((zTop - loRun) >= bigMove && !Overlaps(zTop, zBot, true))
-            AddZone(zTop, zBot, -1, j, atr, htf[p].time, htf[j].time, true);
-        }
+         AddSwingZone(true, htf[p].high, true, p, j, atr, bodyHiH, bodyLoH,
+                      hiRun, loRun, htf[j].close, htf[p].time, htf[j].time);
      }
 
    // Book: a close beyond the last confirmed swing IS the Break of Structure,
@@ -633,6 +771,7 @@ int OnCalculate(const int rates_total,
       g_bosUpPrev = g_bosDnPrev = false;
       g_cHigh = g_cPrevHigh = g_cLow = g_cPrevLow = 0;
       g_posOn = false; g_posTime = 0; g_posStat = 0;
+      g_ordOn = false;
       g_posBE = false; g_posUid = -1;
      }
 
@@ -695,20 +834,19 @@ int OnCalculate(const int rates_total,
             hiRunC = MathMax(hiRunC, high[k]);
             loRunC = MathMin(loRunC, low[k]);
            }
-         double bigC = atr * InpBigMoveATR;
+         double bodyHiC = MathMax(open[pc], close[pc]);
+         double bodyLoC = MathMin(open[pc], close[pc]);
          if(isPH)
            {
             g_cPrevHigh = g_cHigh;  g_cHigh = high[pc];
-            double zTop = high[pc], zBot = MathMax(open[pc], close[pc]);
-            if((zTop - loRunC) >= bigC && !Overlaps(zTop, zBot, false))
-               AddZone(zTop, zBot, -1, bar, atr, time[pc], time[bar], false);
+            AddSwingZone(false, high[pc], true, pc, bar, atr, bodyHiC, bodyLoC,
+                         hiRunC, loRunC, close[bar], time[pc], time[bar]);
            }
          if(isPL)
            {
             g_cPrevLow = g_cLow;    g_cLow = low[pc];
-            double zTop = MathMin(open[pc], close[pc]), zBot = low[pc];
-            if((hiRunC - zBot) >= bigC && !Overlaps(zTop, zBot, false))
-               AddZone(zTop, zBot, 1, bar, atr, time[pc], time[bar], false);
+            AddSwingZone(false, low[pc], false, pc, bar, atr, bodyHiC, bodyLoC,
+                         hiRunC, loRunC, close[bar], time[pc], time[bar]);
            }
         }
 
@@ -759,11 +897,42 @@ int OnCalculate(const int rates_total,
       bool brokeResistanceNow = false;
 
       //--- resolve the open position ---------------------------------------
+      if(g_ordOn && bar > g_ordBar)
+        {
+         if(l <= g_ordEntry && h >= g_ordEntry)
+           {
+            g_posOn  = true;   g_posBuy = g_ordBuy;  g_posPO2 = g_ordPO2;
+            g_posEntry = g_ordEntry; g_posSL = g_ordSL;
+            g_posTP1 = g_ordTP1; g_posTP2 = g_ordTP2; g_posTP3 = g_ordTP3;
+            // book: Scalper works M5/M15 · Swing works H1/H4/Daily — the
+            // timeframe you TRADE on decides it, nothing else
+            g_posSwing = (PeriodSeconds(_Period) >= 3600);
+            g_posBar = bar;  g_posTime = time[bar];
+            g_posZone = g_ordZone; g_posStat = 0;
+            g_posBE = false; g_posUid = g_ordUid;
+            g_ordOn = false;
+           }
+         else
+           {
+            bool blown = g_ordBuy ? (l <= g_ordSL)  : (h >= g_ordSL);
+            bool gone  = g_ordBuy ? (h >= g_ordTP1) : (l <= g_ordTP1);
+            if(blown || gone || bar - g_ordBar > InpOrderExpiry)
+               g_ordOn = false;      // invalidated, ran away, or timed out
+           }
+        }
+
       if(g_posOn)
         {
+         // On the bar the order filled, only the STOP may be judged. A buy
+         // limit fills because price traded DOWN to it, so a low beyond the
+         // stop came after the fill and is a real stop-out — but the bar's
+         // high may well have printed before the fill, and counting that as a
+         // target reached would be reading the future.
+         bool entryBar = (bar == g_posBar);
          if(g_posBuy)
            {
             if(l <= g_posSL)              { g_posStat = g_posBE ? -2 : -1; g_posOn = false; }
+            else if(entryBar)             { }
             else if(h >= g_posTP3)        { g_posStat =  3; g_posOn = false; }
             else if(h >= g_posTP2 && g_posStat < 2) g_posStat = 2;
             else if(h >= g_posTP1 && g_posStat < 1) g_posStat = 1;
@@ -771,6 +940,7 @@ int OnCalculate(const int rates_total,
          else
            {
             if(h >= g_posSL)              { g_posStat = g_posBE ? -2 : -1; g_posOn = false; }
+            else if(entryBar)             { }
             else if(l <= g_posTP3)        { g_posStat =  3; g_posOn = false; }
             else if(l <= g_posTP2 && g_posStat < 2) g_posStat = 2;
             else if(l <= g_posTP1 && g_posStat < 1) g_posStat = 1;
@@ -807,7 +977,7 @@ int OnCalculate(const int rates_total,
         }
 
       // book: don't overtrade — manage one setup at a time
-      bool canFire  = !(InpOneTrade && g_posOn);
+      bool canFire  = !(InpOneTrade && (g_posOn || g_ordOn));
       bool sigFired = false;
 
       //--- zone engine -----------------------------------------------------
@@ -819,19 +989,37 @@ int OnCalculate(const int rates_total,
 
          if(g_zones[i].role == 1)   // SUPPORT
            {
-            if(BearBreak75(g_zones[i].bot, o, h, l, c))
+            if(g_zones[i].pendDir == 0 && BearBreak75(g_zones[i].bot, o, h, l, c))
               {
-               g_zones[i].wasValid = (g_zones[i].state == 1);
-               g_zones[i].role  = -1;
-               g_zones[i].state = 2;
-               g_zones[i].touches  = 0;
-               g_zones[i].sigTouch = 0;
-               g_zones[i].srr      = false;
-               g_zones[i].flips++;
-               // a level broken from both sides repeatedly is a range boundary
-               g_zones[i].dead     = (g_zones[i].flips >= InpMaxFlips);
-               brokeSupportNow     = true;
-               Notify((g_zones[i].wasValid ? "I.VS" : "SBR") + " — Support broken (75% rule), zone inverted to SELL", live);
+               g_zones[i].pendBar = bar;      // wait — does the break HOLD?
+               g_zones[i].pendDir = -1;
+              }
+            else if(g_zones[i].pendDir == -1)
+              {
+               if(c >= g_zones[i].bot)        // came back: p47 False Breakout Area
+                 {
+                  g_zones[i].pendBar = -1;
+                  g_zones[i].pendDir = 0;
+                  g_zones[i].fba     = true;
+                  g_zones[i].dead    = false;
+                 }
+               else if(bar - g_zones[i].pendBar >= InpFbaBars)
+                 {
+                  g_zones[i].wasValid = (g_zones[i].state == 1);
+                  g_zones[i].role  = -1;
+                  g_zones[i].state = 2;
+                  g_zones[i].touches  = 0;
+                  g_zones[i].sigTouch = 0;
+                  g_zones[i].srr      = false;
+                  g_zones[i].fba      = false;
+                  g_zones[i].flips++;
+                  // a level broken from both sides repeatedly is a range boundary
+                  g_zones[i].dead     = (g_zones[i].flips >= InpMaxFlips);
+                  g_zones[i].pendBar  = -1;
+                  g_zones[i].pendDir  = 0;
+                  brokeSupportNow     = true;
+                  Notify((g_zones[i].wasValid ? "I.VS" : "SBR") + " — Support broken (75% rule), zone inverted to SELL", live);
+                 }
               }
             else if(inZone && c >= g_zones[i].bot && !g_zones[i].dead)
               {
@@ -845,10 +1033,15 @@ int OnCalculate(const int rates_total,
                      g_zones[i].dead = true; // 3-touch rule: zone exhausted
                  }
                // tradable only: VALID (touch>=2), SRR, or INVERSION (touch 1-2)
-               bool tradable = !g_zones[i].dead &&
-                               ((g_zones[i].state == 1 && g_zones[i].touches >= 2) ||
+               // p24/p35: a paired zone was drawn FROM two touches, so the
+               // RETURN to it is already the entry — it does not need a third.
+               int needT = g_zones[i].paired ? 1 : 2;
+               bool tradable = !g_zones[i].dead && g_zones[i].pendDir == 0 &&
+                               ((g_zones[i].state == 1 && g_zones[i].touches >= needT) ||
                                 (g_zones[i].srr && g_zones[i].touches >= 1) ||
-                                (g_zones[i].state == 2 && g_zones[i].touches >= 1 && g_zones[i].touches <= 2));
+                                (g_zones[i].state == 2 && g_zones[i].touches >= 1 && g_zones[i].touches <= 2)) &&
+                               (!InpEntriesHtfOnly || g_zones[i].htf) &&
+                               (!InpRequireNested  || ZoneNested(i));
                bool okTrend = !InpTrendFilter || trendUp || trendUnknown ||
                               (InpAllowCounterInv && g_zones[i].state == 2);
                bool okConf  = !InpNeedConfirm || bullConfirm;
@@ -869,37 +1062,79 @@ int OnCalculate(const int rates_total,
                      BufBuy[bar] = l - atr * 0.3;
                      Notify("BUY — rejection at " + ZoneText(g_zones[i]), live);
                     }
-                  // open the position
+                  // p41/p42: the order sits AT the zone, the stop just
+                  // beyond it, and TP1 is the 1:1 line. On the author's own
+                  // chart — zone 4706.13-4720, stop 4698.67 — the red 1:1 line
+                  // at 4732.33 is exactly the zone plus that 16.8 of risk.
                   double swingLo = MathMin(MathMin(low[bar], low[bar - 1]), low[bar - 2]);
                   double zAtr    = g_zones[i].htf ? atrA : atr;
+                  double entry   = c;
                   double rawSl   = MathMin(g_zones[i].bot, swingLo) - zAtr * 0.15;
-                  double risk    = MathMax(MathAbs(c - rawSl), atr * InpMinSlATR);
+                  if(InpEntryAtZone)
+                    {
+                     double mid = (g_zones[i].top + g_zones[i].bot) / 2.0;
+                     // the edge price meets first coming back DOWN to a support
+                     entry = MathMin(InpEntryEdge ? g_zones[i].top : mid, c);
+                     rawSl = MathMin(g_zones[i].bot, swingLo) - zAtr * InpSlBufferATR;
+                    }
+                  double risk    = MathMax(MathAbs(entry - rawSl), atr * InpMinSlATR);
                   double t1, t2, t3;
-                  BuildTargets(true, c, risk, t1, t2, t3);
-                  g_posOn = true; g_posBuy = true; g_posPO2 = isPO2;
-                  g_posEntry = c; g_posSL = c - risk;
-                  g_posTP1 = t1; g_posTP2 = t2; g_posTP3 = t3;
-                  g_posSwing = (PeriodSeconds(_Period) >= 3600);
-                  g_posBar = bar; g_posTime = time[bar];
-                  g_posZone = ZoneText(g_zones[i]); g_posStat = 0;
-                  g_posBE = false; g_posUid = g_zones[i].id;
+                  BuildTargets(true, entry, risk, t1, t2, t3);
+                  if(InpEntryAtZone)
+                     t1 = entry + risk;        // p41: TP1 IS the 1:1 line
+                  if(InpEntryAtZone)
+                    {
+                     g_ordOn = true; g_ordBuy = true; g_ordPO2 = isPO2;
+                     g_ordEntry = entry; g_ordSL = entry - risk;
+                     g_ordTP1 = t1; g_ordTP2 = t2; g_ordTP3 = t3;
+                     g_ordBar = bar; g_ordZone = ZoneText(g_zones[i]);
+                     g_ordUid = g_zones[i].id;
+                    }
+                  else
+                    {
+                     g_posOn = true; g_posBuy = true; g_posPO2 = isPO2;
+                     g_posEntry = entry; g_posSL = entry - risk;
+                     g_posTP1 = t1; g_posTP2 = t2; g_posTP3 = t3;
+                     g_posSwing = (PeriodSeconds(_Period) >= 3600);
+                     g_posBar = bar; g_posTime = time[bar];
+                     g_posZone = ZoneText(g_zones[i]); g_posStat = 0;
+                     g_posBE = false; g_posUid = g_zones[i].id;
+                    }
                  }
               }
            }
          else                        // RESISTANCE
            {
-            if(BullBreak75(g_zones[i].top, o, h, l, c))
+            if(g_zones[i].pendDir == 0 && BullBreak75(g_zones[i].top, o, h, l, c))
               {
-               g_zones[i].wasValid = (g_zones[i].state == 1);
-               g_zones[i].role  = 1;
-               g_zones[i].state = 2;
-               g_zones[i].touches  = 0;
-               g_zones[i].sigTouch = 0;
-               g_zones[i].srr      = false;
-               g_zones[i].flips++;
-               g_zones[i].dead     = (g_zones[i].flips >= InpMaxFlips);
-               brokeResistanceNow  = true;
-               Notify((g_zones[i].wasValid ? "I.VR" : "RBS") + " — Resistance broken (75% rule), zone inverted to BUY", live);
+               g_zones[i].pendBar = bar;
+               g_zones[i].pendDir = 1;
+              }
+            else if(g_zones[i].pendDir == 1)
+              {
+               if(c <= g_zones[i].top)        // came back: p47 False Breakout Area
+                 {
+                  g_zones[i].pendBar = -1;
+                  g_zones[i].pendDir = 0;
+                  g_zones[i].fba     = true;
+                  g_zones[i].dead    = false;
+                 }
+               else if(bar - g_zones[i].pendBar >= InpFbaBars)
+                 {
+                  g_zones[i].wasValid = (g_zones[i].state == 1);
+                  g_zones[i].role  = 1;
+                  g_zones[i].state = 2;
+                  g_zones[i].touches  = 0;
+                  g_zones[i].sigTouch = 0;
+                  g_zones[i].srr      = false;
+                  g_zones[i].fba      = false;
+                  g_zones[i].flips++;
+                  g_zones[i].dead     = (g_zones[i].flips >= InpMaxFlips);
+                  g_zones[i].pendBar  = -1;
+                  g_zones[i].pendDir  = 0;
+                  brokeResistanceNow  = true;
+                  Notify((g_zones[i].wasValid ? "I.VR" : "RBS") + " — Resistance broken (75% rule), zone inverted to BUY", live);
+                 }
               }
             else if(inZone && c <= g_zones[i].top && !g_zones[i].dead)
               {
@@ -912,10 +1147,15 @@ int OnCalculate(const int rates_total,
                      (g_zones[i].state == 2 && g_zones[i].touches > 2))
                      g_zones[i].dead = true;
                  }
-               bool tradable = !g_zones[i].dead &&
-                               ((g_zones[i].state == 1 && g_zones[i].touches >= 2) ||
+               // p24/p35: a paired zone was drawn FROM two touches, so the
+               // RETURN to it is already the entry — it does not need a third.
+               int needT = g_zones[i].paired ? 1 : 2;
+               bool tradable = !g_zones[i].dead && g_zones[i].pendDir == 0 &&
+                               ((g_zones[i].state == 1 && g_zones[i].touches >= needT) ||
                                 (g_zones[i].srr && g_zones[i].touches >= 1) ||
-                                (g_zones[i].state == 2 && g_zones[i].touches >= 1 && g_zones[i].touches <= 2));
+                                (g_zones[i].state == 2 && g_zones[i].touches >= 1 && g_zones[i].touches <= 2)) &&
+                               (!InpEntriesHtfOnly || g_zones[i].htf) &&
+                               (!InpRequireNested  || ZoneNested(i));
                bool okTrend = !InpTrendFilter || trendDown || trendUnknown ||
                               (InpAllowCounterInv && g_zones[i].state == 2);
                bool okConf  = !InpNeedConfirm || bearConfirm;
@@ -938,17 +1178,37 @@ int OnCalculate(const int rates_total,
                     }
                   double swingHi = MathMax(MathMax(high[bar], high[bar - 1]), high[bar - 2]);
                   double zAtr    = g_zones[i].htf ? atrA : atr;
+                  double entry   = c;
                   double rawSl   = MathMax(g_zones[i].top, swingHi) + zAtr * 0.15;
-                  double risk    = MathMax(MathAbs(rawSl - c), atr * InpMinSlATR);
+                  if(InpEntryAtZone)
+                    {
+                     double mid = (g_zones[i].top + g_zones[i].bot) / 2.0;
+                     entry = MathMax(InpEntryEdge ? g_zones[i].bot : mid, c);
+                     rawSl = MathMax(g_zones[i].top, swingHi) + zAtr * InpSlBufferATR;
+                    }
+                  double risk    = MathMax(MathAbs(rawSl - entry), atr * InpMinSlATR);
                   double t1, t2, t3;
-                  BuildTargets(false, c, risk, t1, t2, t3);
-                  g_posOn = true; g_posBuy = false; g_posPO2 = isPO2;
-                  g_posEntry = c; g_posSL = c + risk;
-                  g_posTP1 = t1; g_posTP2 = t2; g_posTP3 = t3;
-                  g_posSwing = (PeriodSeconds(_Period) >= 3600);
-                  g_posBar = bar; g_posTime = time[bar];
-                  g_posZone = ZoneText(g_zones[i]); g_posStat = 0;
-                  g_posBE = false; g_posUid = g_zones[i].id;
+                  BuildTargets(false, entry, risk, t1, t2, t3);
+                  if(InpEntryAtZone)
+                     t1 = entry - risk;        // p41: TP1 IS the 1:1 line
+                  if(InpEntryAtZone)
+                    {
+                     g_ordOn = true; g_ordBuy = false; g_ordPO2 = isPO2;
+                     g_ordEntry = entry; g_ordSL = entry + risk;
+                     g_ordTP1 = t1; g_ordTP2 = t2; g_ordTP3 = t3;
+                     g_ordBar = bar; g_ordZone = ZoneText(g_zones[i]);
+                     g_ordUid = g_zones[i].id;
+                    }
+                  else
+                    {
+                     g_posOn = true; g_posBuy = false; g_posPO2 = isPO2;
+                     g_posEntry = entry; g_posSL = entry + risk;
+                     g_posTP1 = t1; g_posTP2 = t2; g_posTP3 = t3;
+                     g_posSwing = (PeriodSeconds(_Period) >= 3600);
+                     g_posBar = bar; g_posTime = time[bar];
+                     g_posZone = ZoneText(g_zones[i]); g_posStat = 0;
+                     g_posBE = false; g_posUid = g_zones[i].id;
+                    }
                  }
               }
            }

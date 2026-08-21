@@ -50,9 +50,11 @@ def main():
             if DRY_RUN:
                 continue
             amount = risk_amount(ex, sig)
-            side = "buy" if sig.side == "buy" else "sell"
-            order = ex.create_order(SYMBOL, "market", side, amount)
-            print("order:", order["id"])
+            # کتاب ص۴۱/۴۲: ورود یک اردر LIMIT روی خود زون است، نه مارکت.
+            # sig.price همان قیمت زون است — اگر مارکت بزنیم، ربات چیزی را
+            # معامله می‌کند که بک‌تست هیچ‌وقت اندازه نگرفته.
+            order = ex.create_order(SYMBOL, "limit", sig.side, amount, sig.price)
+            print("limit order:", order["id"], "@", sig.price)
             # SL/TP: بسته به صرافی از stop-market / OCO استفاده کن
 
 
