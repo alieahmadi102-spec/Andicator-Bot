@@ -14,7 +14,7 @@
 //|   • One position at a time with SL / TP1 / TP2 / TP3 drawn       |
 //+------------------------------------------------------------------+
 #property copyright   "SNRZ (Zindan The Gold Chaser) — indicator port"
-#property version     "7.10"
+#property version     "7.20"
 #property description "SNRZ: chart zones AND analysis zones together (book p.41/p.44), one trade at a time"
 #property indicator_chart_window
 #property indicator_buffers 4
@@ -46,14 +46,14 @@ input group "Zones (SNRZ)"
 input ENUM_TIMEFRAMES InpZoneTF = PERIOD_CURRENT; // Zone timeframe (CURRENT = AUTO from book table)
 input int    InpPivotLtf     = 5;     // Pivot length — chart zones (smaller = more)
 input int    InpPivotHtf     = 8;     // Pivot length — analysis zones
-input int    InpMaxZonesLtf  = 8;     // Max chart zones
-input int    InpMaxZonesHtf  = 4;     // Max analysis zones
+input int    InpMaxZonesLtf  = 14;     // Max chart zones
+input int    InpMaxZonesHtf  = 8;     // Max analysis zones
 input double InpBigMoveATR   = 1.2;   // "Big Movement" >= ATR x
 input double InpBreakoutPct  = 75.0;  // Breakout rule (%) — the 75% rule
 input double InpMinZoneATR   = 0.15;  // Min zone height (ATR x)
 input double InpMaxZoneATR   = 1.00;  // Max zone height (ATR x)
-input int    InpLifeLtf      = 250;   // Chart zone lifetime (chart bars)
-input int    InpLifeHtf      = 60;    // Analysis zone lifetime (analysis bars)
+input int    InpLifeLtf      = 600;   // Chart zone lifetime (chart bars)
+input int    InpLifeHtf      = 150;    // Analysis zone lifetime (analysis bars)
 input double InpMaxZoneDistATR = 6.0; // Drop zones further than (ATR x)
 input bool   InpPairZones     = true;  // Draw a zone only from TWO swings (p24: S+S/R+R/S+R/R+S)
 input double InpPairTolATR   = 0.35;  // ..."similar price" = closer than (ATR x)
@@ -80,7 +80,7 @@ input double InpTpMaxR       = 6.0;   // Max R for TP1/TP2 (farther zone -> TP3)
 input bool   InpEntryAtZone   = true;  // Entry = LIMIT order on the zone (p41/p42)
 input bool   InpEntryEdge     = true;  // ...at the near EDGE of the zone, not its middle
 input double InpSlBufferATR   = 2.0;   // How far beyond the zone the stop sits (ATR x)
-input int    InpOrderExpiry   = 40;    // An unfilled limit order dies after N bars
+input int    InpOrderExpiry   = 10;    // An unfilled limit order dies after N bars
 input bool   InpRequireNested = false; // Only chart zones sitting inside an analysis zone (p14)
 input bool   InpEntriesHtfOnly= false; // Entries only from analysis-timeframe zones
 input double InpRrTp1         = 1.0;   // TP1 = this many times the stop distance
@@ -91,7 +91,7 @@ input double InpRrTp1         = 1.0;   // TP1 = this many times the stop distanc
 //   stop 20 ATR - TP1 0.10R -> 92% win, E -0.02R   (this switch)
 // Expectancy barely moves across all of it. 92% wins means risking about
 // $200 to make about $20 on M15 gold: one loss erases ten wins.
-input bool   InpHighWinRate   = false; // High win-rate mode (~92%) — read the note above
+input bool   InpHighWinRate   = true;  // High win-rate mode (~92%) — read the note above
 input bool   InpShowPosition = true;  // Draw Entry / SL / TP1-3 of the last setup
 
 input group "Alerts"

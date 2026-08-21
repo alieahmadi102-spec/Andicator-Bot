@@ -28,21 +28,21 @@
 //                  TP3 = the one beyond. 1R/2R/3R when no zone sits there.
 //  SCALP vs SWING (book): M5/M15 = SCALP · H1/H4/Daily = SWING.
 // ═══════════════════════════════════════════════════════════════════════════
-indicator("SNRZ Strategy [Zindan] v7", "SNRZ v7.1", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500)
+indicator("SNRZ Strategy [Zindan] v7", "SNRZ v7.2", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500)
 
 // ───────────────────────────── Inputs ──────────────────────────────────────
 grpZ  = "Zones (SNRZ)"
 htfIn         = input.timeframe("", "Analysis timeframe (empty = AUTO, one rung up)", group = grpZ, tooltip = "کتاب: زون را روی تایم بالاتر می‌زنی و تأیید را روی چارت می‌گیری. هر دو دسته زون هم‌زمان رسم می‌شوند: زون‌های خودِ چارت (تارگت اول) و زون‌های تایم بالاتر (تارگت دوم).")
 pivotLtf      = input.int(5,    "Pivot length — chart zones",              minval = 2,  group = grpZ, tooltip = "کوچک‌تر = زون بیشتر روی خود چارت = سیگنال بیشتر در تایم‌های پایین.")
 pivotHtf      = input.int(8,    "Pivot length — analysis zones",           minval = 2,  group = grpZ)
-maxZonesLtf   = input.int(8,    "Max chart zones",                         minval = 2,  maxval = 30, group = grpZ)
-maxZonesHtf   = input.int(4,    "Max analysis zones",                      minval = 1,  maxval = 15, group = grpZ)
+maxZonesLtf   = input.int(14,    "Max chart zones",                         minval = 2,  maxval = 30, group = grpZ)
+maxZonesHtf   = input.int(8,    "Max analysis zones",                      minval = 1,  maxval = 15, group = grpZ)
 bigMoveMult   = input.float(1.2,"Big Movement ≥ ATR ×",                    minval = 0.1, step = 0.1, group = grpZ)
 breakoutPct   = input.float(75, "Breakout rule (%)",                       minval = 50, maxval = 100, group = grpZ)
 minZoneATR    = input.float(0.15,"Min zone height (ATR ×)",                minval = 0.05, step = 0.05, group = grpZ)
 maxZoneATR    = input.float(1.0, "Max zone height (ATR ×)",                minval = 0.2,  step = 0.1,  group = grpZ)
-lifeLtf       = input.int(250,  "Chart zone lifetime (chart bars)",        minval = 30, group = grpZ)
-lifeHtf       = input.int(60,   "Analysis zone lifetime (analysis bars)",  minval = 10, group = grpZ)
+lifeLtf       = input.int(600,  "Chart zone lifetime (chart bars)",        minval = 30, group = grpZ)
+lifeHtf       = input.int(150,   "Analysis zone lifetime (analysis bars)",  minval = 10, group = grpZ)
 maxZoneDistATR= input.float(6.0,"Drop zones further than (ATR ×)",         minval = 1, step = 0.5, group = grpZ, tooltip = "زون خیلی دور نه قابل ترید است و نه باید مقیاس چارت را خراب کند.")
 pairZones     = input.bool(true, "Draw a zone only from TWO swings (S+S · R+R · S+R · R+S)", group = grpZ, tooltip = "کتاب ص۲۴: زون باندی است که دو نقطه‌ی سوئینگ هم‌قیمت را در بر می‌گیرد. یک پیوت تنها زون نیست — همین بود که چارت را پر از سطح‌هایی می‌کرد که بازار هیچ‌وقت دوبار به آن‌ها احترام نگذاشته بود.")
 pairTolATR    = input.float(0.35,"…«هم‌قیمت» یعنی فاصله کمتر از (ATR ×)",  minval = 0.05, step = 0.05, group = grpZ)
@@ -68,11 +68,11 @@ useBreakEven   = input.bool(true,  "Move stop to entry once TP1 is reached", gro
 entryAtZone    = input.bool(true,  "ورود = اردر لیمیت روی خود زون (نه کلوز کندل تأیید)", group = grpS, tooltip = "کتاب ص۴۱/۴۲: اردر روی زون گذاشته می‌شود، استاپ کمی بیرون زون، و تارگت اول خط ۱:۱. ورود روی کلوزِ کندل تأیید استاپ را به اندازه‌ی کل زون + خود کندل پهن می‌کرد.")
 entryEdge      = input.bool(true,  "…لیمیت روی لبه‌ی نزدیک زون (نه وسط آن)", group = grpS)
 slBufferATR    = input.float(2.0,  "استاپ چقدر بیرون زون (ATR ×)",          minval = 0.0, step = 0.25, group = grpS)
-orderExpiry    = input.int(40,     "اردر لیمیتِ پرنشده بعد از N کندل باطل شود", minval = 5, group = grpS)
+orderExpiry    = input.int(10,     "اردر لیمیتِ پرنشده بعد از N کندل باطل شود", minval = 5, group = grpS)
 requireNested  = input.bool(false, "فقط زون چارتی که داخل زون تایم تحلیل است", group = grpS, tooltip = "کتاب ص۱۴: زون کوچک داخل زون بزرگ است. سخت‌گیرانه است — تعداد سیگنال را خیلی کم می‌کند.")
 entriesHtfOnly = input.bool(false, "ورود فقط از زون‌های تایم تحلیل",         group = grpS)
 rrTp1          = input.float(1.0,  "TP1 = چند برابر فاصله‌ی استاپ",          minval = 0.05, step = 0.05, group = grpS)
-highWinRate    = input.bool(false, "حالت وین‌ریت بالا (~۹۲٪)",               group = grpS, tooltip = "وین‌ریت یک ویژگی استراتژی نیست، یک انتخاب است: استاپ را دور می‌گذاری و تارگت را نزدیک. اندازه‌گیری روی ۸۳ روز طلا:\n  استاپ ۴ ATR · TP1 ۱R  ⇒ ۵۴٪ برد، انتظار −۰٫۰۲R\n  استاپ ۸ ATR · TP1 ۰٫۲۵R ⇒ ۷۹٪ برد، انتظار +۰٫۰۱R\n  استاپ ۲۰ ATR · TP1 ۰٫۱R ⇒ ۹۲٪ برد، انتظار −۰٫۰۲R\nانتظار سود تقریباً تکان نمی‌خورد. ۹۲٪ برد یعنی روی طلای ۱۵ دقیقه حدود ۲۰۰$ ریسک برای ۲۰$ سود — یک باخت ده تا برد را پاک می‌کند.")
+highWinRate    = input.bool(true,  "حالت وین‌ریت بالا (~۹۲٪)",               group = grpS, tooltip = "وین‌ریت یک ویژگی استراتژی نیست، یک انتخاب است: استاپ را دور می‌گذاری و تارگت را نزدیک. اندازه‌گیری روی ۸۳ روز طلا:\n  استاپ ۴ ATR · TP1 ۱R  ⇒ ۵۴٪ برد، انتظار −۰٫۰۲R\n  استاپ ۸ ATR · TP1 ۰٫۲۵R ⇒ ۷۹٪ برد، انتظار +۰٫۰۱R\n  استاپ ۲۰ ATR · TP1 ۰٫۱R ⇒ ۹۲٪ برد، انتظار −۰٫۰۲R\nانتظار سود تقریباً تکان نمی‌خورد. ۹۲٪ برد یعنی روی طلای ۱۵ دقیقه حدود ۲۰۰$ ریسک برای ۲۰$ سود — یک باخت ده تا برد را پاک می‌کند.")
 // the dial, applied
 effMinSl  = highWinRate ? 20.0 : minSlAtr
 effSlBuf  = highWinRate ? 6.0  : slBufferATR
@@ -512,6 +512,7 @@ float  sigBot   = na
 float  sigAtr   = na
 string sigZone  = ""
 int    sigUid   = -1
+var int lastSigBar = -1
 canFire = not (oneTrade and (posOn or ordOn))
 
 // p14: the small zone sits INSIDE the big one
@@ -659,6 +660,7 @@ if brokeResistanceNow or brokeSupportNow
 
 // ───────────── Arm the LIMIT order on a NEW signal ─────────────────────────
 if sigFired
+    lastSigBar := bar_index
     // p41/p42: the order sits AT the zone and the stop just beyond it. On the
     // author's own chart — zone 4706.13–4720, stop 4698.67 — the red 1:1 line
     // at 4732.33 is exactly the zone plus that 16.8 of risk.
@@ -854,7 +856,7 @@ plotshape(po2Buy,  "PO2 BUY",  shape.triangleup,   location.belowbar, color.new(
 plotshape(po2Sell, "PO2 SELL", shape.triangledown, location.abovebar, color.new(#d4af37, 0), size = size.small, display = display.pane)
 
 // ───────────────────── Zindan info panel ───────────────────────────────────
-var table info = table.new(position.top_right, 1, 5, bgcolor = color.new(#0b0b0b, 8), frame_width = 2, frame_color = color.new(#d4af37, 20), border_width = 1, border_color = color.new(#d4af37, 75))
+var table info = table.new(position.top_right, 1, 6, bgcolor = color.new(#0b0b0b, 8), frame_width = 2, frame_color = color.new(#d4af37, 20), border_width = 1, border_color = color.new(#d4af37, 75))
 if showPanel and barstate.islast
     tSrc = trendState != 0 ? htfTF : timeframe.period
     trendTxt = inRange ? "◆ RANGE — no trade" : trendUp ? "▲ UPTREND " + tSrc : trendDown ? "▼ DOWNTREND " + tSrc : "◇ trend unclear"
@@ -869,11 +871,16 @@ if showPanel and barstate.islast
                 liveLtf += 1
     stTxt = posStat == -2 ? " =BE" : posStat == -1 ? " ✗SL" : posStat > 0 ? " ✓TP" + str.tostring(posStat) : " •"
     posTxt = ordOn ? ((ordBuy ? "BUY" : "SELL") + " LIMIT waiting @ " + str.tostring(ordEntry, format.mintick)) : not na(posEntry) ? ((posBuy ? "BUY " : "SELL ") + (posSwing ? "SWING" : "SCALP") + " @ " + str.tostring(posEntry, format.mintick) + stTxt + (posOn ? "" : " (closed)")) : "—"
-    table.cell(info, 0, 0, "⚜  SNRZ v7.1  —  ZiNDAN", text_color = colGold, text_size = size.normal)
+    table.cell(info, 0, 0, "⚜  SNRZ v7.2  —  ZiNDAN", text_color = colGold, text_size = size.normal)
     table.cell(info, 0, 1, "The Gold Chaser", text_color = color.new(colGold, 35), text_size = size.tiny)
     table.cell(info, 0, 2, trendTxt, text_color = trendCol, text_size = size.small)
     table.cell(info, 0, 3, "Zones: " + str.tostring(liveLtf) + " @ " + timeframe.period + "  +  " + str.tostring(liveHtf) + " @ " + htfTF, text_color = color.new(color.white, 20), text_size = size.small)
     table.cell(info, 0, 4, "Position: " + posTxt, text_color = color.new(color.white, 20), text_size = size.small)
+    // "why is there no new signal?" — this row answers it directly
+    ageTxt = lastSigBar < 0 ? "Last signal: none yet on this chart"
+             : "Last signal: " + str.tostring(bar_index - lastSigBar) + " bars ago"
+    ageCol = lastSigBar < 0 or bar_index - lastSigBar > 300 ? color.new(colGold, 20) : color.new(color.white, 20)
+    table.cell(info, 0, 5, ageTxt, text_color = ageCol, text_size = size.small)
 
 // ───────────────────────────── Alerts ──────────────────────────────────────
 alertcondition(buySig or po2Buy,   "SNRZ Buy",        "SNRZ: BUY — V.S / SRR / I.VR / RBS zone rejection")

@@ -113,10 +113,10 @@ class Config:
     htf_mult: int = 3
     pivot_ltf: int = 5          # smaller -> more chart zones -> more signals
     pivot_htf: int = 8
-    max_zones_ltf: int = 8
-    max_zones_htf: int = 4
-    life_ltf: int = 250         # chart bars
-    life_htf: int = 60          # analysis bars
+    max_zones_ltf: int = 14
+    max_zones_htf: int = 8
+    life_ltf: int = 600         # chart bars
+    life_htf: int = 150         # analysis bars
     pivot_len: int = 10         # (kept for compatibility)
     max_zones: int = 6
     big_move_atr: float = 1.2
@@ -161,7 +161,8 @@ class Config:
     fba_bars: int = 3            # bars a break must hold before it inverts
     # p14: the small zone must sit inside the big one
     require_nested: bool = False
-    order_expiry_bars: int = 40   # a limit order that never fills must expire
+    order_expiry_bars: int = 10   # a limit order that never fills must expire —
+                                  # while it rests it blocks every new signal
 
     # ── the win-rate dial ────────────────────────────────────────────────
     # Win rate is not a quality of the strategy, it is a CHOICE of where the
@@ -172,7 +173,7 @@ class Config:
     #   stop 30 ATR · TP1 0.10R -> 97% win, E +0.04R
     # Expectancy barely moves across all of it. A 92% win rate means risking
     # about $200 to make about $20 on M15 gold: one loss erases ten wins.
-    high_win_rate: bool = False
+    high_win_rate: bool = True
 
     def __post_init__(self):
         if self.high_win_rate:
