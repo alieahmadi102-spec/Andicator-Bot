@@ -143,6 +143,12 @@ class Config:
                                 # turns every open loser into a fake 'win'.
     max_open: int = 3           # how many zones may carry a live order/trade
     min_rr: float = 1.0         # the next zone must be at least this many R away
+    # Master class image 54 — the setups ranked by strength, "the market
+    # respects these more and it is better to use them":
+    #   1 Trend · 2 PO2 · 3 PO2 inversion · 4 V.S/V.R Inversion · 5 GAP
+    #   6 V.S/V.R Fresh · 7 SBR/RBS
+    # With only max_open slots, the strongest candidates must get them.
+    rank_setups: bool = True
     max_trade_bars: int = 60    # a setup that never resolves must not linger
     rr_tp1: float = 1.0     # fallback TP1 = SL distance x this (book: at least 1:1)
     tp_max_r: float = 6.0   # a zone further than this many R is not a FIRST target
@@ -176,6 +182,21 @@ class Config:
     sweep_guard: bool = True
     sweep_bars: int = 40         # "a fresh extreme" = the low/high of this many bars
     sweep_recent: int = 10       # ...and it was made within this many bars
+    # Master class images 16/17 — "Pump Base Pump" and "Dump Base Dump":
+    # a strong impulse, then a sideways BASE, then the SAME move again. The
+    # base is a continuation zone, and it is the only entry the strategy has
+    # in a runaway trend — measured on H4, price never even touched a support
+    # zone on 63 of the 67 bars where the trend was formally up.
+    # Measured: drawing the base as a zone and resting a limit on it makes
+    # results WORSE (median -0.07R -> -0.13R). The pattern is real and it is
+    # in the book, but a continuation base is entered on the CONTINUATION, not
+    # by waiting for price to come back into it — which is what a limit order
+    # does. Off by default until it is traded the right way.
+    base_zones: bool = False
+    base_impulse_atr: float = 2.5   # the impulse must cover this many ATR
+    base_impulse_bars: int = 6      # ...within this many bars
+    base_min_bars: int = 4          # the base must last at least this long
+    base_max_atr: float = 1.2       # ...and stay inside this many ATR
 
 @dataclass
 class PendingOrder:
@@ -348,6 +369,8 @@ class SnrzEngine:
         similar price (S+S, R+R, S+R, R+S) — the band is what the two of them
         bracket. Marking a zone at every pivot is what filled the charts with
         levels the market had never actually respected twice."""
+        if self.cfg.base_zones:
+            self._base_zone(series, atr, idx, htf)
         j = len(series) - 1
         p = j - n
         if p < n:
@@ -500,6 +523,58 @@ class SnrzEngine:
 
     # ── targets (book p.44): TP1 from a CHART zone, TP2 from an ANALYSIS
     #    zone, TP3 whatever lies beyond — 1R / 2R / 3R when no zone is there ──
+    def _rank(self, z: "Zone") -> int:
+        """Image 54's strength order, lower = stronger."""
+        inv = z.state == State.INVERTED
+        if inv and z.touches == 1 and z.was_valid:
+            return 3                                   # PO2 inversion
+        if inv and z.touches == 1:
+            return 2                                   # PO2 (2nd touch coming)
+        if inv:
+            return 4                                   # V.S / V.R inversion
+        if z.src in ("S+R", "R+S", "PBP", "DBD"):
+            return 5                                   # GAP / base
+        if z.state == State.VALID:
+            return 6                                   # V.S / V.R fresh
+        return 7                                       # SBR / RBS
+
+    def _base_zone(self, series: List[Candle], atr: float, idx: int, htf: bool):
+        """Master class images 16/17 — Pump Base Pump / Dump Base Dump.
+
+        A strong impulse, then a tight sideways BASE, then the same move
+        continues. The base is the continuation zone: a buy zone after a pump,
+        a sell zone after a dump. Without it the strategy has nothing to trade
+        in a trend, because price never returns to the zones it left behind.
+        """
+        cfg = self.cfg
+        n = cfg.base_min_bars
+        j = len(series) - 1
+        if j < cfg.base_impulse_bars + n + 1:
+            return
+        base = series[j - n + 1: j + 1]
+        top = max(w.high for w in base)
+        bot = min(w.low for w in base)
+        if top - bot > atr * cfg.base_max_atr:
+            return                                   # not a base, still moving
+
+        # the impulse that led into it
+        imp = series[j - n - cfg.base_impulse_bars + 1: j - n + 1]
+        if not imp:
+            return
+        rise = top - min(w.low for w in imp)
+        fall = max(w.high for w in imp) - bot
+        need = atr * cfg.base_impulse_atr
+        if rise >= need and rise >= fall:
+            role, src = Role.SUPPORT, "PBP"          # pump · base · pump
+        elif fall >= need:
+            role, src = Role.RESISTANCE, "DBD"       # dump · base · dump
+        else:
+            return
+        if self._overlaps(top, bot, htf):
+            return
+        # the base already IS the two movements, so it is born valid
+        self._add_zone(top, bot, role, atr, idx, htf, src=src, valid=True)
+
     def _fresh_extreme(self, idx: int, is_high: bool) -> bool:
         """True when the last few bars have just taken out the extreme of the
         whole lookback — the liquidity grab of the book's liquidity section.
@@ -712,6 +787,7 @@ class SnrzEngine:
         # limit is one live order per zone and a cap on how many run at once.
         live = len(self.orders) + sum(1 for t in self.trades if not t.closed)
         can_fire = live < cfg.max_open
+        cand: list = []          # (rank, uid, side, kind, po2, levels)
 
         for z in self.zones:
             if idx <= z.born_index:
@@ -774,13 +850,9 @@ class SnrzEngine:
                             and c.close > z.top:      # price is ABOVE the zone
                         lv = self._levels(True, z, c, atr)
                         if lv is not None:
-                            entry, sl, tp1, tp2, tp3 = lv
-                            po2 = z.state == State.INVERTED and z.touches == 2
-                            out.append(Signal(idx, "buy", "PO2" if po2 else "limit",
-                                              z.kind, entry, sl, tp1, tp2, tp3))
-                            self.orders.append(PendingOrder(
-                                idx, "buy", z.kind, po2, z.uid,
-                                entry, sl, tp1, tp2, tp3))
+                            cand.append((self._rank(z) if cfg.rank_setups else 0,
+                                         z.uid, "buy", z.kind,
+                                         z.state == State.INVERTED and z.touches == 2, lv))
             else:
                 if z.pend_dir == 0 and self._bull_break(z.top, c):
                     z.pend_bar, z.pend_dir = idx, 1
@@ -837,14 +909,20 @@ class SnrzEngine:
                             and c.close < z.bot:      # price is BELOW the zone
                         lv = self._levels(False, z, c, atr)
                         if lv is not None:
-                            entry, sl, tp1, tp2, tp3 = lv
-                            po2 = z.state == State.INVERTED and z.touches == 2
-                            out.append(Signal(idx, "sell", "PO2" if po2 else "limit",
-                                              z.kind, entry, sl, tp1, tp2, tp3))
-                            self.orders.append(PendingOrder(
-                                idx, "sell", z.kind, po2, z.uid,
-                                entry, sl, tp1, tp2, tp3))
+                            cand.append((self._rank(z) if cfg.rank_setups else 0,
+                                         z.uid, "sell", z.kind,
+                                         z.state == State.INVERTED and z.touches == 2, lv))
             z.in_zone_prev = in_zone
+
+        # image 54: when more zones qualify than there are slots, the
+        # STRONGEST setups take them — not whichever was created first
+        cand.sort(key=lambda t: t[0])
+        for rank, uid, side, kind, po2, lv in cand[:max(0, cfg.max_open - live)]:
+            entry, sl, tp1, tp2, tp3 = lv
+            out.append(Signal(idx, side, "PO2" if po2 else "limit",
+                              kind, entry, sl, tp1, tp2, tp3))
+            self.orders.append(PendingOrder(idx, side, kind, po2, uid,
+                                            entry, sl, tp1, tp2, tp3))
 
         # SRR / RSS qualification (book): a Support whose move broke >=2
         # Resistances becomes SRR (buy); a Resistance whose move broke >=2
