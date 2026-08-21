@@ -14,7 +14,7 @@
 //|   • One position at a time with SL / TP1 / TP2 / TP3 drawn       |
 //+------------------------------------------------------------------+
 #property copyright   "SNRZ (Zindan The Gold Chaser) — indicator port"
-#property version     "9.00"
+#property version     "9.10"
 #property description "SNRZ: chart zones AND analysis zones together (book p.41/p.44), one trade at a time"
 #property indicator_chart_window
 #property indicator_buffers 4
@@ -182,6 +182,14 @@ int LiveCount()
    return n;
   }
 
+// Master class image 44 names exactly which zones may BE a target:
+// "V.S, V.R, PO2 Fresh, PO2 Inversion, False breakout area". A plain untested
+// S/R, an SBR/RBS or an SRR/RSS is a place to enter FROM, not to aim AT.
+bool CanBeTarget(const int i)
+  {
+   return (g_zones[i].state == 1 || g_zones[i].state == 2 || g_zones[i].fba);
+  }
+
 // the Nth opposite-role zone level ahead of the entry (rank 0 = nearest)
 double NextZone(const bool isBuy, const double entry, const int rank)
   {
@@ -194,7 +202,7 @@ double NextZone(const bool isBuy, const double entry, const int rank)
       cur = 0.0;
       for(int i = 0; i < ArraySize(g_zones); i++)
         {
-         if(g_zones[i].dead)
+         if(g_zones[i].dead || !CanBeTarget(i))
             continue;
          double lvl = isBuy ? g_zones[i].bot : g_zones[i].top;
          bool ahead = isBuy ? (g_zones[i].role == -1 && lvl > entry)

@@ -30,7 +30,7 @@
 //                  TP3 = the one beyond. 1R/2R/3R when no zone sits there.
 //  SCALP vs SWING (book): M5/M15 = SCALP · H1/H4/Daily = SWING.
 // ═══════════════════════════════════════════════════════════════════════════
-indicator("SNRZ Strategy [Zindan] v9", "SNRZ v9.0", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500)
+indicator("SNRZ Strategy [Zindan] v9", "SNRZ v9.1", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500)
 
 // ───────────────────────────── Inputs ──────────────────────────────────────
 grpZ  = "Zones (SNRZ)"
@@ -487,6 +487,12 @@ liveCount() =>
             n += 1
     n
 
+// Master class image 44 names exactly which zones may BE a target:
+// "V.S, V.R, PO2 Fresh, PO2 Inversion, False breakout area". A plain untested
+// S/R, an SBR/RBS or an SRR/RSS is a place to enter FROM, not to aim AT.
+canBeTarget(Zone z) =>
+    z.state == 1 or z.state == 2 or z.fba
+
 // the opposite-role zone levels lying ahead of the entry, nearest first
 nextZone(bool _isBuy, float _entry, int _rank) =>
     float best = na
@@ -494,7 +500,7 @@ nextZone(bool _isBuy, float _entry, int _rank) =>
     for r = 0 to _rank
         float cur = na
         for z in zones
-            if z.dead
+            if z.dead or not canBeTarget(z)
                 continue
             lvl = _isBuy ? z.bot : z.top
             ahead = _isBuy ? (z.role == -1 and lvl > _entry) : (z.role == 1 and lvl < _entry)
@@ -816,7 +822,7 @@ if showPanel and barstate.islast
             nRun += 1
     posTxt = nOrd + nRun == 0 ? "— no setup right now —" :
              str.tostring(nOrd) + " limit waiting · " + str.tostring(nRun) + " running"
-    table.cell(info, 0, 0, "⚜  SNRZ v9.0  —  ZiNDAN", text_color = colGold, text_size = size.normal)
+    table.cell(info, 0, 0, "⚜  SNRZ v9.1  —  ZiNDAN", text_color = colGold, text_size = size.normal)
     table.cell(info, 0, 1, "The Gold Chaser", text_color = color.new(colGold, 35), text_size = size.tiny)
     table.cell(info, 0, 2, trendTxt, text_color = trendCol, text_size = size.small)
     table.cell(info, 0, 3, "Zones: " + str.tostring(liveLtf) + " @ " + timeframe.period + "  +  " + str.tostring(liveHtf) + " @ " + htfTF, text_color = color.new(color.white, 20), text_size = size.small)

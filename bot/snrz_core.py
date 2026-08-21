@@ -149,6 +149,11 @@ class Config:
     #   6 V.S/V.R Fresh · 7 SBR/RBS
     # With only max_open slots, the strongest candidates must get them.
     rank_setups: bool = True
+    # Image 44: only V.S / V.R / PO2 fresh / PO2 inversion / FBA may BE a
+    # target, and "the first target is on the 5-minute, the second on the
+    # 1-hour" — TP1 from a chart zone, TP2 from an analysis one.
+    tp1_chart_tf: bool = True
+    tp2_analysis_tf: bool = True
     max_trade_bars: int = 60    # a setup that never resolves must not linger
     rr_tp1: float = 1.0     # fallback TP1 = SL distance x this (book: at least 1:1)
     tp_max_r: float = 6.0   # a zone further than this many R is not a FIRST target
@@ -596,21 +601,29 @@ class SnrzEngine:
         return any(h.htf and not h.dead and h.role == z.role
                    and z.bot <= h.top and z.top >= h.bot for h in self.zones)
 
-    def _zones_ahead(self, is_buy: bool, entry: float) -> List[float]:
+    def _can_be_target(self, z: "Zone") -> bool:
+        """Master class image 44 names exactly which zones may BE a target:
+        "V.S, V.R, PO2 Fresh, PO2 Inversion, False breakout area".
+        A plain untested S/R, an SBR/RBS or an SRR/RSS is a place to enter
+        FROM, not a level to aim AT."""
+        return (z.state == State.VALID or z.state == State.INVERTED or z.fba)
+
+    def _zones_ahead(self, is_buy: bool, entry: float) -> List[tuple]:
         """The opposite-role zones lying ahead of the entry, nearest first.
 
-        This is the whole target rule: a BUY aims at the next SELL zone above
-        it, that zone's own order aims at the one above THAT, and so on up the
-        chart. No 1R guesswork — the chart supplies the targets."""
+        Image 44: "the order we make from a BUY zone goes to a SELL zone — the
+        opposite", and "the first target is on the 5-minute timeframe, the
+        second on the 1-hour" — so TP1 prefers a CHART-timeframe zone and TP2
+        an ANALYSIS-timeframe one. Returns (level, is_htf) pairs."""
         out = []
         for z in self.zones:
-            if z.dead:
+            if z.dead or not self._can_be_target(z):
                 continue
             if is_buy and z.role == Role.RESISTANCE and z.bot > entry:
-                out.append(z.bot)
+                out.append((z.bot, z.htf))
             elif (not is_buy) and z.role == Role.SUPPORT and z.top < entry:
-                out.append(z.top)
-        out.sort(reverse=not is_buy)
+                out.append((z.top, z.htf))
+        out.sort(key=lambda t: t[0], reverse=not is_buy)
         return out
 
     def _levels(self, is_buy: bool, z: "Zone", c: Candle, atr: float):
@@ -633,12 +646,19 @@ class SnrzEngine:
 
         ahead = self._zones_ahead(is_buy, entry)
         # the first target must be worth the risk, or the setup is not one
-        ahead = [t for t in ahead if abs(t - entry) >= risk * cfg.min_rr]
+        ahead = [t for t in ahead if abs(t[0] - entry) >= risk * cfg.min_rr]
         if not ahead:
             return None
-        tp1 = ahead[0]
-        tp2 = ahead[1] if len(ahead) > 1 else (entry + (tp1 - entry) * 2)
-        tp3 = ahead[2] if len(ahead) > 2 else (entry + (tp1 - entry) * 3)
+        # image 44: TP1 from the chart timeframe, TP2 from the analysis one
+        chart = [t for t in ahead if not t[1]]
+        tp1 = (chart[0][0] if (chart and cfg.tp1_chart_tf) else ahead[0][0])
+        rest = [t[0] for t in ahead if (t[0] > tp1 if is_buy else t[0] < tp1)]
+        htf = [t[0] for t in ahead
+               if t[1] and (t[0] > tp1 if is_buy else t[0] < tp1)]
+        tp2 = (htf[0] if (htf and cfg.tp2_analysis_tf)
+               else (rest[0] if rest else entry + (tp1 - entry) * 2))
+        beyond = [x for x in rest if (x > tp2 if is_buy else x < tp2)]
+        tp3 = beyond[0] if beyond else entry + (tp1 - entry) * 3
         return entry, sl, tp1, tp2, tp3
 
     def _has_order_or_trade(self, uid: int) -> bool:
