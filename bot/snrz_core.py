@@ -138,7 +138,7 @@ class Config:
     break_even: bool = True     # book: risk free once the trade pays 1:1
     min_sl_atr: float = 4.0     # a stop closer than this gets swept by noise
     one_trade: bool = True      # book: don't overtrade — one setup at a time
-    max_trade_bars: int = 300   # a setup that never resolves must not block forever
+    max_trade_bars: int = 120   # a setup that never resolves must not linger
     rr_tp1: float = 1.0     # fallback TP1 = SL distance x this (book: at least 1:1)
     tp_max_r: float = 6.0   # a zone further than this many R is not a FIRST target
 
@@ -177,8 +177,8 @@ class Config:
 
     def __post_init__(self):
         if self.high_win_rate:
-            self.min_sl_atr = 20.0
-            self.sl_buffer_atr = 6.0
+            self.min_sl_atr = 16.0
+            self.sl_buffer_atr = 5.0
             self.rr_tp1 = 0.10
     # Measured, then dropped: resting the limit BEFORE price arrives (no
     # confirmation candle) fired 6x as many signals for the same expectancy,
@@ -525,6 +525,12 @@ class SnrzEngine:
             (risk if d1 is None else max(d1, risk))
         d2 = max(d1 + risk, risk * 2) if (d2 is None or d2 <= d1) else d2
         d3 = max(d2 + risk, risk * 3) if (d3 is None or d3 <= d2) else d3
+        # a zone can sit absurdly far away — on a 5m scalp that produced a TP2
+        # 275 points from entry, which is not a target, it is a wish
+        d2 = min(d2, cap)
+        d3 = min(d3, cap * 1.5)
+        d2 = max(d2, d1 * 1.5)
+        d3 = max(d3, d2 * 1.5)
         if is_buy:
             return entry + d1, entry + d2, entry + d3
         return entry - d1, entry - d2, entry - d3
@@ -704,9 +710,13 @@ class SnrzEngine:
         cfg = self.cfg
         broke_support = broke_resistance = False
         # book: don't overtrade — while a setup is running, no new signal
-        can_fire = not (cfg.one_trade and (
-            self.pending is not None
-            or (self.position is not None and self.position.open)))
+        # book p41: at TP1 you take the money off and the stop goes to entry —
+        # the setup is FINISHED, it is only riding a free runner. Letting a
+        # risk-free trade keep blocking the next signal is what left charts
+        # showing a position from 285 bars ago with nothing new behind it.
+        blocking_pos = self.position is not None and self.position.open \
+            and not self.position.be
+        can_fire = not (cfg.one_trade and (self.pending is not None or blocking_pos))
 
         for z in self.zones:
             if idx <= z.born_index:

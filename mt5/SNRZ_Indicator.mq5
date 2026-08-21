@@ -14,7 +14,7 @@
 //|   • One position at a time with SL / TP1 / TP2 / TP3 drawn       |
 //+------------------------------------------------------------------+
 #property copyright   "SNRZ (Zindan The Gold Chaser) — indicator port"
-#property version     "7.20"
+#property version     "7.30"
 #property description "SNRZ: chart zones AND analysis zones together (book p.41/p.44), one trade at a time"
 #property indicator_chart_window
 #property indicator_buffers 4
@@ -74,7 +74,7 @@ input bool   InpBreakEven    = true;  // Move stop to entry once TP1 is reached
 input bool   InpNeedReject   = true;  // Confirmation candle must close OUTSIDE the zone
 input int    InpRangeBars    = 10;    // Range lockout (analysis-TF bars since opposite BOS)
 input bool   InpOneTrade     = true;  // One trade at a time (no overtrade)
-input int    InpMaxTradeBars = 300;   // Close an open trade after N chart bars
+input int    InpMaxTradeBars = 120;   // Close an open trade after N chart bars
 input double InpMinSlATR     = 4.0;   // Minimum stop distance (ATR x) — the book puts the stop ON the liquidity
 input double InpTpMaxR       = 6.0;   // Max R for TP1/TP2 (farther zone -> TP3)
 input bool   InpEntryAtZone   = true;  // Entry = LIMIT order on the zone (p41/p42)
@@ -105,8 +105,8 @@ input color  InpColInv       = C'212,175,55';  // Inversion zone (Zindan gold)
 input uchar  InpFillAlpha    = 40;             // (reserved)
 
 //--- the win-rate dial, applied --------------------------------------------
-double EffMinSl()  { return InpHighWinRate ? 20.0 : InpMinSlATR;    }
-double EffSlBuf()  { return InpHighWinRate ?  6.0 : InpSlBufferATR; }
+double EffMinSl()  { return InpHighWinRate ? 16.0 : InpMinSlATR;    }
+double EffSlBuf()  { return InpHighWinRate ?  5.0 : InpSlBufferATR; }
 double EffRrTp1()  { return InpHighWinRate ? 0.10 : InpRrTp1;       }
 
 //--- buffers ----------------------------------------------------------------
@@ -666,6 +666,10 @@ void BuildTargets(const bool isBuy, const double entry, const double risk,
    d1 = (d1 < 0) ? risk : MathMax(d1, risk);
    d2 = (d2 < 0 || d2 <= d1) ? MathMax(d1 + risk, risk * 2.0) : d2;
    d3 = (d3 < 0 || d3 <= d2) ? MathMax(d2 + risk, risk * 3.0) : d3;
+   // a zone can sit absurdly far away — on a 5m scalp that produced a TP2
+   // 275 points from entry, which is not a target, it is a wish
+   d2 = MathMax(MathMin(d2, cap),       d1 * 1.5);
+   d3 = MathMax(MathMin(d3, cap * 1.5), d2 * 1.5);
    t1 = isBuy ? entry + d1 : entry - d1;
    t2 = isBuy ? entry + d2 : entry - d2;
    t3 = isBuy ? entry + d3 : entry - d3;
@@ -993,7 +997,11 @@ int OnCalculate(const int rates_total,
         }
 
       // book: don't overtrade — manage one setup at a time
-      bool canFire  = !(InpOneTrade && (g_posOn || g_ordOn));
+      // book p41: at TP1 you take the money off and the stop goes to entry —
+      // the setup is FINISHED, it is only riding a free runner. Letting a
+      // risk-free trade keep blocking the next signal is what left charts
+      // showing a position from 285 bars ago with nothing new behind it.
+      bool canFire  = !(InpOneTrade && (g_ordOn || (g_posOn && !g_posBE)));
       bool sigFired = false;
 
       //--- zone engine -----------------------------------------------------

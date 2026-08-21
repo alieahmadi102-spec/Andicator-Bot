@@ -28,7 +28,7 @@
 //                  TP3 = the one beyond. 1R/2R/3R when no zone sits there.
 //  SCALP vs SWING (book): M5/M15 = SCALP · H1/H4/Daily = SWING.
 // ═══════════════════════════════════════════════════════════════════════════
-indicator("SNRZ Strategy [Zindan] v7", "SNRZ v7.2", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500)
+indicator("SNRZ Strategy [Zindan] v7", "SNRZ v7.3", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500)
 
 // ───────────────────────────── Inputs ──────────────────────────────────────
 grpZ  = "Zones (SNRZ)"
@@ -61,7 +61,7 @@ needMicroBos   = input.bool(true,  "Confirmation must break the last bars' struc
 microBosLen    = input.int(2,      "…over the last N bars (higher = stricter)", minval = 1, maxval = 10, group = grpS)
 rangeBars      = input.int(10,     "Range lockout (analysis bars since opposite BOS)", minval = 2, group = grpS, tooltip = "کتاب: بازار Sideway خطرناک است — No Setup, No Trade.")
 oneTrade       = input.bool(true,  "One trade at a time (no overtrade)",    group = grpS)
-maxTradeBars   = input.int(300,    "Close an open trade after N chart bars", minval = 20, group = grpS)
+maxTradeBars   = input.int(120,    "Close an open trade after N chart bars", minval = 20, group = grpS)
 minSlAtr       = input.float(4.0,  "Minimum stop distance (ATR ×)",         minval = 0.1, step = 0.5, group = grpS, tooltip = "کتاب: استاپ روی لیکوییدیتی است، نه یک تار مو بیرونِ لبه‌ی زون. اندازه‌گیری روی ۸۳ روز طلا: با استاپ ۰٫۵ ATR وین‌ریت ۳۷٪، با ۴ ATR وین‌ریت ۵۴٪.")
 tpMaxR         = input.float(6.0,  "Max R for TP1 (farther zone → TP2/TP3)", minval = 1, step = 0.5, group = grpS)
 useBreakEven   = input.bool(true,  "Move stop to entry once TP1 is reached", group = grpS, tooltip = "کتاب ص۴۱: «روی ۵ دقیقه بریک‌ایون می‌کنیم و پول را از حساب برمی‌داریم».")
@@ -74,8 +74,8 @@ entriesHtfOnly = input.bool(false, "ورود فقط از زون‌های تای�
 rrTp1          = input.float(1.0,  "TP1 = چند برابر فاصله‌ی استاپ",          minval = 0.05, step = 0.05, group = grpS)
 highWinRate    = input.bool(true,  "حالت وین‌ریت بالا (~۹۲٪)",               group = grpS, tooltip = "وین‌ریت یک ویژگی استراتژی نیست، یک انتخاب است: استاپ را دور می‌گذاری و تارگت را نزدیک. اندازه‌گیری روی ۸۳ روز طلا:\n  استاپ ۴ ATR · TP1 ۱R  ⇒ ۵۴٪ برد، انتظار −۰٫۰۲R\n  استاپ ۸ ATR · TP1 ۰٫۲۵R ⇒ ۷۹٪ برد، انتظار +۰٫۰۱R\n  استاپ ۲۰ ATR · TP1 ۰٫۱R ⇒ ۹۲٪ برد، انتظار −۰٫۰۲R\nانتظار سود تقریباً تکان نمی‌خورد. ۹۲٪ برد یعنی روی طلای ۱۵ دقیقه حدود ۲۰۰$ ریسک برای ۲۰$ سود — یک باخت ده تا برد را پاک می‌کند.")
 // the dial, applied
-effMinSl  = highWinRate ? 20.0 : minSlAtr
-effSlBuf  = highWinRate ? 6.0  : slBufferATR
+effMinSl  = highWinRate ? 16.0 : minSlAtr
+effSlBuf  = highWinRate ? 5.0  : slBufferATR
 effRrTp1  = highWinRate ? 0.10 : rrTp1
 
 grpD  = "Display"
@@ -83,7 +83,7 @@ showLtf        = input.bool(true,  "Show chart-timeframe zones",           group
 showHtf        = input.bool(true,  "Show analysis-timeframe zones",        group = grpD)
 showFresh      = input.bool(true,  "Show fresh (not yet valid) zones",     group = grpD)
 showPosition   = input.bool(true,  "Show the last setup (Entry/SL/TP1-3)", group = grpD)
-posDrawBars    = input.int(500,    "…only if it opened within N bars",     minval = 50, group = grpD, tooltip = "معامله‌ی خیلی قدیمی نباید روی چارت بماند و مقیاس را بکشد.")
+posDrawBars    = input.int(100,    "…only if it opened within N bars",     minval = 20, group = grpD, tooltip = "معامله‌ی خیلی قدیمی نباید روی چارت بماند و مقیاس را بکشد.")
 showPanel      = input.bool(true,  "Show SNRZ info panel",                 group = grpD)
 
 grpV  = "Style"
@@ -513,7 +513,11 @@ float  sigAtr   = na
 string sigZone  = ""
 int    sigUid   = -1
 var int lastSigBar = -1
-canFire = not (oneTrade and (posOn or ordOn))
+// book p41: at TP1 you take the money off and the stop goes to entry — the
+// setup is FINISHED, it is only riding a free runner. Letting a risk-free
+// trade keep blocking the next signal is what left charts showing a position
+// from 285 bars ago with nothing new behind it.
+canFire = not (oneTrade and (ordOn or (posOn and not posBE)))
 
 // p14: the small zone sits INSIDE the big one
 nested(Zone z) =>
@@ -706,6 +710,10 @@ if sigFired
     d1 := entryAtZone ? risk * effRrTp1 : na(d1) ? risk : math.max(d1, risk)
     d2 := (na(d2) or d2 <= d1) ? math.max(d1 + risk, risk * 2) : d2
     d3 := (na(d3) or d3 <= d2) ? math.max(d2 + risk, risk * 3) : d3
+    // a zone can sit absurdly far away — on a 5m scalp that produced a TP2
+    // 275 points from entry, which is not a target, it is a wish
+    d2 := math.max(math.min(d2, tpCap), d1 * 1.5)
+    d3 := math.max(math.min(d3, tpCap * 1.5), d2 * 1.5)
     t1 = sigIsBuy ? entry + d1 : entry - d1
     t2 = sigIsBuy ? entry + d2 : entry - d2
     t3 = sigIsBuy ? entry + d3 : entry - d3
@@ -871,7 +879,7 @@ if showPanel and barstate.islast
                 liveLtf += 1
     stTxt = posStat == -2 ? " =BE" : posStat == -1 ? " ✗SL" : posStat > 0 ? " ✓TP" + str.tostring(posStat) : " •"
     posTxt = ordOn ? ((ordBuy ? "BUY" : "SELL") + " LIMIT waiting @ " + str.tostring(ordEntry, format.mintick)) : not na(posEntry) ? ((posBuy ? "BUY " : "SELL ") + (posSwing ? "SWING" : "SCALP") + " @ " + str.tostring(posEntry, format.mintick) + stTxt + (posOn ? "" : " (closed)")) : "—"
-    table.cell(info, 0, 0, "⚜  SNRZ v7.2  —  ZiNDAN", text_color = colGold, text_size = size.normal)
+    table.cell(info, 0, 0, "⚜  SNRZ v7.3  —  ZiNDAN", text_color = colGold, text_size = size.normal)
     table.cell(info, 0, 1, "The Gold Chaser", text_color = color.new(colGold, 35), text_size = size.tiny)
     table.cell(info, 0, 2, trendTxt, text_color = trendCol, text_size = size.small)
     table.cell(info, 0, 3, "Zones: " + str.tostring(liveLtf) + " @ " + timeframe.period + "  +  " + str.tostring(liveHtf) + " @ " + htfTF, text_color = color.new(color.white, 20), text_size = size.small)
