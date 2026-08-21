@@ -14,7 +14,7 @@
 //|   • One position at a time with SL / TP1 / TP2 / TP3 drawn       |
 //+------------------------------------------------------------------+
 #property copyright   "SNRZ (Zindan The Gold Chaser) — indicator port"
-#property version     "7.00"
+#property version     "7.10"
 #property description "SNRZ: chart zones AND analysis zones together (book p.41/p.44), one trade at a time"
 #property indicator_chart_window
 #property indicator_buffers 4
@@ -75,14 +75,23 @@ input bool   InpNeedReject   = true;  // Confirmation candle must close OUTSIDE 
 input int    InpRangeBars    = 10;    // Range lockout (analysis-TF bars since opposite BOS)
 input bool   InpOneTrade     = true;  // One trade at a time (no overtrade)
 input int    InpMaxTradeBars = 300;   // Close an open trade after N chart bars
-input double InpMinSlATR     = 0.5;   // Minimum stop distance (analysis ATR x)
+input double InpMinSlATR     = 4.0;   // Minimum stop distance (ATR x) — the book puts the stop ON the liquidity
 input double InpTpMaxR       = 6.0;   // Max R for TP1/TP2 (farther zone -> TP3)
 input bool   InpEntryAtZone   = true;  // Entry = LIMIT order on the zone (p41/p42)
 input bool   InpEntryEdge     = true;  // ...at the near EDGE of the zone, not its middle
-input double InpSlBufferATR   = 0.15;  // How far beyond the zone the stop sits (ATR x)
+input double InpSlBufferATR   = 2.0;   // How far beyond the zone the stop sits (ATR x)
 input int    InpOrderExpiry   = 40;    // An unfilled limit order dies after N bars
 input bool   InpRequireNested = false; // Only chart zones sitting inside an analysis zone (p14)
 input bool   InpEntriesHtfOnly= false; // Entries only from analysis-timeframe zones
+input double InpRrTp1         = 1.0;   // TP1 = this many times the stop distance
+// Win rate is not a quality of the strategy, it is a CHOICE of where the stop
+// and the first target sit. Measured on 83 days of real XAUUSD:
+//   stop  4 ATR - TP1 1.00R -> 54% win, E -0.02R   (the default)
+//   stop  8 ATR - TP1 0.25R -> 79% win, E +0.01R
+//   stop 20 ATR - TP1 0.10R -> 92% win, E -0.02R   (this switch)
+// Expectancy barely moves across all of it. 92% wins means risking about
+// $200 to make about $20 on M15 gold: one loss erases ten wins.
+input bool   InpHighWinRate   = false; // High win-rate mode (~92%) — read the note above
 input bool   InpShowPosition = true;  // Draw Entry / SL / TP1-3 of the last setup
 
 input group "Alerts"
@@ -94,6 +103,11 @@ input color  InpColSup       = C'8,153,129';   // Support zone
 input color  InpColRes       = C'242,54,69';   // Resistance zone
 input color  InpColInv       = C'212,175,55';  // Inversion zone (Zindan gold)
 input uchar  InpFillAlpha    = 40;             // (reserved)
+
+//--- the win-rate dial, applied --------------------------------------------
+double EffMinSl()  { return InpHighWinRate ? 20.0 : InpMinSlATR;    }
+double EffSlBuf()  { return InpHighWinRate ?  6.0 : InpSlBufferATR; }
+double EffRrTp1()  { return InpHighWinRate ? 0.10 : InpRrTp1;       }
 
 //--- buffers ----------------------------------------------------------------
 double BufBuy[], BufSell[], BufPO2Buy[], BufPO2Sell[];
@@ -442,43 +456,45 @@ void AddSwingZone(const bool htf, const double price, const bool isHigh,
                   const double hiRun, const double loRun,
                   const double refClose, const datetime t1, const datetime t2)
   {
-   if(InpPairZones)
+   int mi = InpPairZones ? FindMate(htf, price, bar, atr) : -1;
+   double matePrice = 0.0;
+   bool   mateHigh  = false;
+   if(mi >= 0)
      {
-      int mi = FindMate(htf, price, bar, atr);
-      double matePrice = 0.0;
-      bool   mateHigh  = false;
-      if(mi >= 0)
+      matePrice = htf ? g_swHtf[mi].price  : g_swLtf[mi].price;
+      mateHigh  = htf ? g_swHtf[mi].isHigh : g_swLtf[mi].isHigh;
+     }
+   PushSwing(htf, price, isHigh, bar);
+
+   if(mi < 0)
+     {
+      // p24, the FIFTH way to draw a zone: "when there is no S/R pair to draw
+      // from, draw it from the engulf". The book never says "then draw
+      // nothing" — and without this the panel read Zones: 0. An unpaired zone
+      // is born FRESH, so it still needs its two touches before it trades.
+      double bigM = atr * InpBigMoveATR;
+      if(isHigh)
         {
-         matePrice = htf ? g_swHtf[mi].price  : g_swLtf[mi].price;
-         mateHigh  = htf ? g_swHtf[mi].isHigh : g_swLtf[mi].isHigh;
+         if((price - loRun) >= bigM && !Overlaps(price, bodyHi, htf))
+            AddZone(price, bodyHi, -1, bornH, atr, t1, t2, htf, false);
         }
-      PushSwing(htf, price, isHigh, bar);
-      if(mi < 0)
-         return;
-      double t = MathMax(matePrice, price);
-      double b = MathMin(matePrice, price);
-      int role;
-      if(isHigh && mateHigh)        role = -1;             // R+R
-      else if(!isHigh && !mateHigh) role =  1;             // S+S
-      else                                                 // S+R / R+S — the
-         role = (refClose > (t + b) / 2.0) ? 1 : -1;       // GAP band (p51)
-      if(!Overlaps(t, b, htf))
-         AddZone(t, b, role, bornH, atr, t1, t2, htf, true);
+      else
+        {
+         if((hiRun - price) >= bigM && !Overlaps(bodyLo, price, htf))
+            AddZone(bodyLo, price, 1, bornH, atr, t1, t2, htf, false);
+        }
       return;
      }
 
-   PushSwing(htf, price, isHigh, bar);
-   double bigMove = atr * InpBigMoveATR;
-   if(isHigh)
-     {
-      if((price - loRun) >= bigMove && !Overlaps(price, bodyHi, htf))
-         AddZone(price, bodyHi, -1, bornH, atr, t1, t2, htf, false);
-     }
-   else
-     {
-      if((hiRun - price) >= bigMove && !Overlaps(bodyLo, price, htf))
-         AddZone(bodyLo, price, 1, bornH, atr, t1, t2, htf, false);
-     }
+   double t = MathMax(matePrice, price);
+   double b = MathMin(matePrice, price);
+   int role;
+   if(isHigh && mateHigh)        role = -1;             // R+R
+   else if(!isHigh && !mateHigh) role =  1;             // S+S
+   else                                                 // S+R / R+S — the
+      role = (refClose > (t + b) / 2.0) ? 1 : -1;       // GAP band (p51)
+   if(!Overlaps(t, b, htf))
+      AddZone(t, b, role, bornH, atr, t1, t2, htf, true);
   }
 //+------------------------------------------------------------------+
 //| p14: the small zone sits INSIDE the big one                       |
@@ -1075,13 +1091,13 @@ int OnCalculate(const int rates_total,
                      double mid = (g_zones[i].top + g_zones[i].bot) / 2.0;
                      // the edge price meets first coming back DOWN to a support
                      entry = MathMin(InpEntryEdge ? g_zones[i].top : mid, c);
-                     rawSl = MathMin(g_zones[i].bot, swingLo) - zAtr * InpSlBufferATR;
+                     rawSl = MathMin(g_zones[i].bot, swingLo) - zAtr * EffSlBuf();
                     }
-                  double risk    = MathMax(MathAbs(entry - rawSl), atr * InpMinSlATR);
+                  double risk    = MathMax(MathAbs(entry - rawSl), atr * EffMinSl());
                   double t1, t2, t3;
                   BuildTargets(true, entry, risk, t1, t2, t3);
                   if(InpEntryAtZone)
-                     t1 = entry + risk;        // p41: TP1 IS the 1:1 line
+                     t1 = entry + risk * EffRrTp1();   // p41: TP1 IS the 1:1 line
                   if(InpEntryAtZone)
                     {
                      g_ordOn = true; g_ordBuy = true; g_ordPO2 = isPO2;
@@ -1184,13 +1200,13 @@ int OnCalculate(const int rates_total,
                     {
                      double mid = (g_zones[i].top + g_zones[i].bot) / 2.0;
                      entry = MathMax(InpEntryEdge ? g_zones[i].bot : mid, c);
-                     rawSl = MathMax(g_zones[i].top, swingHi) + zAtr * InpSlBufferATR;
+                     rawSl = MathMax(g_zones[i].top, swingHi) + zAtr * EffSlBuf();
                     }
-                  double risk    = MathMax(MathAbs(rawSl - entry), atr * InpMinSlATR);
+                  double risk    = MathMax(MathAbs(rawSl - entry), atr * EffMinSl());
                   double t1, t2, t3;
                   BuildTargets(false, entry, risk, t1, t2, t3);
                   if(InpEntryAtZone)
-                     t1 = entry - risk;        // p41: TP1 IS the 1:1 line
+                     t1 = entry - risk * EffRrTp1();   // p41: TP1 IS the 1:1 line
                   if(InpEntryAtZone)
                     {
                      g_ordOn = true; g_ordBuy = false; g_ordPO2 = isPO2;

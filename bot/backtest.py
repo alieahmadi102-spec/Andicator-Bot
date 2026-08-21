@@ -29,6 +29,7 @@ class Report:
     stopped: int = 0
     breakeven: int = 0
     open_at_end: int = 0
+    r_total: float = 0.0               # realized R, from each trade's own levels
 
     @property
     def resolved(self) -> int:
@@ -46,22 +47,39 @@ class Report:
     def expectancy_r(self) -> float:
         """Average R under the book's own exit plan: bank half at TP1, a
         quarter at TP2, a quarter at TP3, and move the stop to entry once TP1
-        has paid. Scoring a TP1-then-break-even trade as 0R would understate
-        it — half the position was already booked at 1R."""
-        if not self.resolved:
-            return 0.0
-        total = (self.tp1 * 0.5            # half at 1R, rest ran back to entry
-                 + self.tp2 * 1.0          # 0.5*1R + 0.25*2R
-                 + self.tp3 * 1.75         # 0.5*1R + 0.25*2R + 0.25*3R
-                 + self.breakeven * 0.5    # reached TP1, then came back
-                 - self.stopped)
-        return total / self.resolved
+        has paid. Every trade is scored from ITS OWN entry/SL/TP prices, so
+        changing where TP1 sits changes the payout honestly — a nominal
+        "+0.5R for reaching TP1" would silently keep crediting 1R even after
+        TP1 was moved to a quarter of that."""
+        return self.r_total / self.resolved if self.resolved else 0.0
 
     def line(self, label: str) -> str:
         return (f"{label:<28} signals={self.signals:<4} "
                 f"TP1={self.tp1:<3} TP2={self.tp2:<3} TP3={self.tp3:<3} "
                 f"BE={self.breakeven:<3} SL={self.stopped:<3} "
                 f"win={self.win_rate:5.1f}%  E={self.expectancy_r:+.2f}R")
+
+
+def realized_r(p) -> float:
+    """What one finished setup actually paid, in units of its own initial
+    risk: half the position off at TP1, a quarter at TP2, a quarter at TP3,
+    stop to entry once TP1 has paid."""
+    risk = p.risk0            # break-even overwrites p.sl, so never derive it
+    if risk <= 0:
+        return 0.0
+    sign = 1.0 if p.side == "buy" else -1.0
+    r1 = sign * (p.tp1 - p.entry) / risk
+    r2 = sign * (p.tp2 - p.entry) / risk
+    r3 = sign * (p.tp3 - p.entry) / risk
+    if p.stat == 3:
+        return 0.5 * r1 + 0.25 * r2 + 0.25 * r3
+    if p.stat == 2:
+        return 0.5 * r1 + 0.25 * r2          # rest closed at entry
+    if p.stat == 1 or p.stat == -2:
+        return 0.5 * r1                      # TP1 paid, the rest came back
+    if p.stat == -1:
+        return -1.0
+    return 0.0
 
 
 def run(candles: Iterable[Candle], cfg: Config) -> Report:
@@ -74,6 +92,7 @@ def run(candles: Iterable[Candle], cfg: Config) -> Report:
         if p is None or not p.closed or p.index in counted:
             continue
         counted.add(p.index)
+        rep.r_total += realized_r(p)
         if p.stat == 3:
             rep.tp3 += 1
         elif p.stat == 2:
@@ -151,6 +170,7 @@ def total(reports: List[Report]) -> Report:
         t.stopped += r.stopped
         t.breakeven += r.breakeven
         t.open_at_end += r.open_at_end
+        t.r_total += r.r_total
     return t
 
 

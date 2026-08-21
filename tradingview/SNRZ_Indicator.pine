@@ -28,7 +28,7 @@
 //                  TP3 = the one beyond. 1R/2R/3R when no zone sits there.
 //  SCALP vs SWING (book): M5/M15 = SCALP · H1/H4/Daily = SWING.
 // ═══════════════════════════════════════════════════════════════════════════
-indicator("SNRZ Strategy [Zindan] v7", "SNRZ v7.0", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500)
+indicator("SNRZ Strategy [Zindan] v7", "SNRZ v7.1", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500)
 
 // ───────────────────────────── Inputs ──────────────────────────────────────
 grpZ  = "Zones (SNRZ)"
@@ -62,15 +62,21 @@ microBosLen    = input.int(2,      "…over the last N bars (higher = stricter)"
 rangeBars      = input.int(10,     "Range lockout (analysis bars since opposite BOS)", minval = 2, group = grpS, tooltip = "کتاب: بازار Sideway خطرناک است — No Setup, No Trade.")
 oneTrade       = input.bool(true,  "One trade at a time (no overtrade)",    group = grpS)
 maxTradeBars   = input.int(300,    "Close an open trade after N chart bars", minval = 20, group = grpS)
-minSlAtr       = input.float(0.5,  "Minimum stop distance (ATR ×)",         minval = 0.1, step = 0.1, group = grpS)
+minSlAtr       = input.float(4.0,  "Minimum stop distance (ATR ×)",         minval = 0.1, step = 0.5, group = grpS, tooltip = "کتاب: استاپ روی لیکوییدیتی است، نه یک تار مو بیرونِ لبه‌ی زون. اندازه‌گیری روی ۸۳ روز طلا: با استاپ ۰٫۵ ATR وین‌ریت ۳۷٪، با ۴ ATR وین‌ریت ۵۴٪.")
 tpMaxR         = input.float(6.0,  "Max R for TP1 (farther zone → TP2/TP3)", minval = 1, step = 0.5, group = grpS)
 useBreakEven   = input.bool(true,  "Move stop to entry once TP1 is reached", group = grpS, tooltip = "کتاب ص۴۱: «روی ۵ دقیقه بریک‌ایون می‌کنیم و پول را از حساب برمی‌داریم».")
 entryAtZone    = input.bool(true,  "ورود = اردر لیمیت روی خود زون (نه کلوز کندل تأیید)", group = grpS, tooltip = "کتاب ص۴۱/۴۲: اردر روی زون گذاشته می‌شود، استاپ کمی بیرون زون، و تارگت اول خط ۱:۱. ورود روی کلوزِ کندل تأیید استاپ را به اندازه‌ی کل زون + خود کندل پهن می‌کرد.")
 entryEdge      = input.bool(true,  "…لیمیت روی لبه‌ی نزدیک زون (نه وسط آن)", group = grpS)
-slBufferATR    = input.float(0.15, "استاپ چقدر بیرون زون (ATR ×)",          minval = 0.0, step = 0.05, group = grpS)
+slBufferATR    = input.float(2.0,  "استاپ چقدر بیرون زون (ATR ×)",          minval = 0.0, step = 0.25, group = grpS)
 orderExpiry    = input.int(40,     "اردر لیمیتِ پرنشده بعد از N کندل باطل شود", minval = 5, group = grpS)
 requireNested  = input.bool(false, "فقط زون چارتی که داخل زون تایم تحلیل است", group = grpS, tooltip = "کتاب ص۱۴: زون کوچک داخل زون بزرگ است. سخت‌گیرانه است — تعداد سیگنال را خیلی کم می‌کند.")
 entriesHtfOnly = input.bool(false, "ورود فقط از زون‌های تایم تحلیل",         group = grpS)
+rrTp1          = input.float(1.0,  "TP1 = چند برابر فاصله‌ی استاپ",          minval = 0.05, step = 0.05, group = grpS)
+highWinRate    = input.bool(false, "حالت وین‌ریت بالا (~۹۲٪)",               group = grpS, tooltip = "وین‌ریت یک ویژگی استراتژی نیست، یک انتخاب است: استاپ را دور می‌گذاری و تارگت را نزدیک. اندازه‌گیری روی ۸۳ روز طلا:\n  استاپ ۴ ATR · TP1 ۱R  ⇒ ۵۴٪ برد، انتظار −۰٫۰۲R\n  استاپ ۸ ATR · TP1 ۰٫۲۵R ⇒ ۷۹٪ برد، انتظار +۰٫۰۱R\n  استاپ ۲۰ ATR · TP1 ۰٫۱R ⇒ ۹۲٪ برد، انتظار −۰٫۰۲R\nانتظار سود تقریباً تکان نمی‌خورد. ۹۲٪ برد یعنی روی طلای ۱۵ دقیقه حدود ۲۰۰$ ریسک برای ۲۰$ سود — یک باخت ده تا برد را پاک می‌کند.")
+// the dial, applied
+effMinSl  = highWinRate ? 20.0 : minSlAtr
+effSlBuf  = highWinRate ? 6.0  : slBufferATR
+effRrTp1  = highWinRate ? 0.10 : rrTp1
 
 grpD  = "Display"
 showLtf        = input.bool(true,  "Show chart-timeframe zones",           group = grpD)
@@ -332,6 +338,13 @@ var ltfSwBar   = array.new<int>()
 var htfSwPrice = array.new<float>()
 var htfSwHigh  = array.new<bool>()
 var htfSwBar   = array.new<int>()
+// The analysis swings must measure their gap in ANALYSIS bars. Passing
+// bar_index here compared a 4H swing distance against a 60-CHART-bar limit,
+// so on a 1H chart two 4H swings 20 bars apart looked 80 apart and almost
+// never paired — which is why the panel kept reading "0 @ 240".
+var int htfBarNo = 0
+if newPHh or newPLh
+    htfBarNo += 1
 
 // returns the index of the newest earlier swing at a similar price, or -1
 findMate(bool _htf, float _price, int _bar, float _atr) =>
@@ -362,33 +375,38 @@ pushSwing(bool _htf, float _price, bool _isHigh, int _bar) =>
 
 // one swing -> at most one zone, drawn with its mate when pairing is on
 addSwing(bool _htf, float _price, bool _isHigh, int _bar, int _back, float _atr, float _bodyHi, float _bodyLo, float _hiRun, float _loRun, int _uid) =>
-    if pairZones
-        mi = findMate(_htf, _price, _bar, _atr)
-        // an if-block, NOT a ternary: Pine evaluates both sides of `?:`, so an
-        // array.get() there throws on an empty array even in the branch that
-        // is not taken.
-        float matePrice = na
-        bool  mateHigh  = false
-        if mi >= 0
-            matePrice := array.get(_htf ? htfSwPrice : ltfSwPrice, mi)
-            mateHigh  := array.get(_htf ? htfSwHigh  : ltfSwHigh,  mi)
-        pushSwing(_htf, _price, _isHigh, _bar)
-        if mi >= 0
-            t = math.max(matePrice, _price)
-            b = math.min(matePrice, _price)
-            int role = 0
-            if _isHigh and mateHigh
-                role := -1                       // R+R
-            else if not _isHigh and not mateHigh
-                role := 1                        // S+S
-            else
-                // S+R / R+S — the GAP band (p51). Which side we trade it from
-                // depends on where price is standing now.
-                role := close > (t + b) / 2 ? 1 : -1
-            if not overlaps(t, b, _htf)
-                array.push(zones, newZone(t, b, role, _htf, _uid, _atr, _back, true))
+    mate = findMate(_htf, _price, _bar, _atr)
+    mi   = pairZones ? mate : -1
+    // an if-block, NOT a ternary: Pine evaluates both sides of `?:`, so an
+    // array.get() there throws on an empty array even in the branch that is
+    // not taken.
+    float matePrice = na
+    bool  mateHigh  = false
+    if mi >= 0
+        matePrice := array.get(_htf ? htfSwPrice : ltfSwPrice, mi)
+        mateHigh  := array.get(_htf ? htfSwHigh  : ltfSwHigh,  mi)
+    pushSwing(_htf, _price, _isHigh, _bar)
+
+    if mi >= 0
+        t = math.max(matePrice, _price)
+        b = math.min(matePrice, _price)
+        int role = 0
+        if _isHigh and mateHigh
+            role := -1                       // R+R
+        else if not _isHigh and not mateHigh
+            role := 1                        // S+S
+        else
+            // S+R / R+S — the GAP band (p51). Which side we trade it from
+            // depends on where price is standing now.
+            role := close > (t + b) / 2 ? 1 : -1
+        if not overlaps(t, b, _htf)
+            array.push(zones, newZone(t, b, role, _htf, _uid, _atr, _back, true))
     else
-        pushSwing(_htf, _price, _isHigh, _bar)
+        // p24, the FIFTH way to draw a zone: "when there is no S/R pair to
+        // draw from, draw it from the engulf". The book never says "then draw
+        // nothing" — and without this the chart ran at 2 live zones instead of
+        // 8 and the panel read Zones: 0. An unpaired zone is born FRESH, so it
+        // still needs its two touches before it may be traded.
         if _isHigh
             if (_price - _loRun) >= _atr * bigMoveMult and not overlaps(_price, _bodyHi, _htf)
                 array.push(zones, newZone(_price, _bodyHi, -1, _htf, _uid, _atr, _back, false))
@@ -406,9 +424,9 @@ if not na(phL)
 // analysis timeframe: the few big zones that set the trend and TP2
 htfBack = math.min(200, int(math.round(pivotHtf * tfRatio)))
 if newPLh and not na(atrH)
-    addSwing(true, plH, false, bar_index - htfBack, htfBack, atrA, bodyHiH, bodyLoH, hiRunH, loRunH, bar_index * 4 + 2)
+    addSwing(true, plH, false, htfBarNo, htfBack, atrA, bodyHiH, bodyLoH, hiRunH, loRunH, bar_index * 4 + 2)
 if newPHh and not na(atrH)
-    addSwing(true, phH, true,  bar_index - htfBack, htfBack, atrA, bodyHiH, bodyLoH, hiRunH, loRunH, bar_index * 4 + 3)
+    addSwing(true, phH, true,  htfBarNo, htfBack, atrA, bodyHiH, bodyLoH, hiRunH, loRunH, bar_index * 4 + 3)
 
 // ───────────────── Confirmation candles (always on the chart) ──────────────
 bullEngulf = close > open and close[1] < open[1] and close >= open[1]
@@ -654,11 +672,11 @@ if sigFired
         if sigIsBuy
             // the edge price meets first coming back DOWN to a support
             entry := math.min(entryEdge ? sigTop : mid, close)
-            rawSl := math.min(sigBot, swingLo3) - sigAtr * slBufferATR
+            rawSl := math.min(sigBot, swingLo3) - sigAtr * effSlBuf
         else
             entry := math.max(entryEdge ? sigBot : mid, close)
-            rawSl := math.max(sigTop, swingHi3) + sigAtr * slBufferATR
-    risk  = math.max(math.abs(entry - rawSl), atr * minSlAtr)
+            rawSl := math.max(sigTop, swingHi3) + sigAtr * effSlBuf
+    risk  = math.max(math.abs(entry - rawSl), atr * effMinSl)
     slLvl = sigIsBuy ? entry - risk : entry + risk
     tpCap = risk * tpMaxR
     // book p.44: TP1 from a CHART-timeframe opposite zone, TP2 from the
@@ -683,7 +701,7 @@ if sigFired
     // p41: "you can set the red line as the 1:1 risk-reward target" — with the
     // order sitting on the zone, TP1 IS the 1:1 line, not whichever zone is
     // nearest by chance.
-    d1 := entryAtZone ? risk : na(d1) ? risk : math.max(d1, risk)
+    d1 := entryAtZone ? risk * effRrTp1 : na(d1) ? risk : math.max(d1, risk)
     d2 := (na(d2) or d2 <= d1) ? math.max(d1 + risk, risk * 2) : d2
     d3 := (na(d3) or d3 <= d2) ? math.max(d2 + risk, risk * 3) : d3
     t1 = sigIsBuy ? entry + d1 : entry - d1
@@ -851,7 +869,7 @@ if showPanel and barstate.islast
                 liveLtf += 1
     stTxt = posStat == -2 ? " =BE" : posStat == -1 ? " ✗SL" : posStat > 0 ? " ✓TP" + str.tostring(posStat) : " •"
     posTxt = ordOn ? ((ordBuy ? "BUY" : "SELL") + " LIMIT waiting @ " + str.tostring(ordEntry, format.mintick)) : not na(posEntry) ? ((posBuy ? "BUY " : "SELL ") + (posSwing ? "SWING" : "SCALP") + " @ " + str.tostring(posEntry, format.mintick) + stTxt + (posOn ? "" : " (closed)")) : "—"
-    table.cell(info, 0, 0, "⚜  SNRZ v7.0  —  ZiNDAN", text_color = colGold, text_size = size.normal)
+    table.cell(info, 0, 0, "⚜  SNRZ v7.1  —  ZiNDAN", text_color = colGold, text_size = size.normal)
     table.cell(info, 0, 1, "The Gold Chaser", text_color = color.new(colGold, 35), text_size = size.tiny)
     table.cell(info, 0, 2, trendTxt, text_color = trendCol, text_size = size.small)
     table.cell(info, 0, 3, "Zones: " + str.tostring(liveLtf) + " @ " + timeframe.period + "  +  " + str.tostring(liveHtf) + " @ " + htfTF, text_color = color.new(color.white, 20), text_size = size.small)

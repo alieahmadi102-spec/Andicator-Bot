@@ -136,7 +136,7 @@ class Config:
     need_micro_bos: bool = True # book: "a small BOS in the trade direction"
     micro_bos_len: int = 2
     break_even: bool = True     # book: risk free once the trade pays 1:1
-    min_sl_atr: float = 0.5     # a stop closer than this gets swept by noise
+    min_sl_atr: float = 4.0     # a stop closer than this gets swept by noise
     one_trade: bool = True      # book: don't overtrade — one setup at a time
     max_trade_bars: int = 300   # a setup that never resolves must not block forever
     rr_tp1: float = 1.0     # fallback TP1 = SL distance x this (book: at least 1:1)
@@ -154,13 +154,31 @@ class Config:
     # p42: entry at the zone midpoint, stop just beyond the zone, TP1 at 1:1
     entry_at_zone: bool = True
     entry_edge: bool = True      # limit at the near edge of the zone, not its mid
-    sl_buffer_atr: float = 0.15
+    sl_buffer_atr: float = 2.0   # the book puts the stop ON the liquidity,
+                                 # not a hair beyond the zone edge
     # p47-50: a level broken and then respected again is a False Breakout
     # Area — a GOOD zone. Only a break that HOLDS inverts the zone.
     fba_bars: int = 3            # bars a break must hold before it inverts
     # p14: the small zone must sit inside the big one
     require_nested: bool = False
     order_expiry_bars: int = 40   # a limit order that never fills must expire
+
+    # ── the win-rate dial ────────────────────────────────────────────────
+    # Win rate is not a quality of the strategy, it is a CHOICE of where the
+    # stop and the first target sit. Measured on 83 days of real XAUUSD:
+    #   stop  4 ATR · TP1 1.00R -> 54% win, E -0.02R  (the default)
+    #   stop  8 ATR · TP1 0.25R -> 79% win, E +0.01R
+    #   stop 20 ATR · TP1 0.10R -> 92% win, E -0.02R  (high_win_rate)
+    #   stop 30 ATR · TP1 0.10R -> 97% win, E +0.04R
+    # Expectancy barely moves across all of it. A 92% win rate means risking
+    # about $200 to make about $20 on M15 gold: one loss erases ten wins.
+    high_win_rate: bool = False
+
+    def __post_init__(self):
+        if self.high_win_rate:
+            self.min_sl_atr = 20.0
+            self.sl_buffer_atr = 6.0
+            self.rr_tp1 = 0.10
     # Measured, then dropped: resting the limit BEFORE price arrives (no
     # confirmation candle) fired 6x as many signals for the same expectancy,
     # so the book's confirmation flow is what all three implementations use.
@@ -197,6 +215,7 @@ class Position:
     tp1: float
     tp2: float
     tp3: float
+    risk0: float = 0.0     # the ORIGINAL stop distance — break-even overwrites sl
     stat: int = 0          # 0 running · 1/2/3 TP reached · -1 stopped · -2 BE
     closed: bool = False
     be: bool = False       # stop already moved to entry
@@ -392,6 +411,22 @@ class SnrzEngine:
                     break
             swings.append(sw)
             if mate is None:
+                # p24, the FIFTH way to draw a zone: "when there is no S/R
+                # pair to draw from, draw it from the engulf" — the book never
+                # says "then draw nothing". Without this fallback the chart
+                # ran at 2 live zones instead of 8 and the panel read Zones: 0.
+                # An unpaired zone is born FRESH, so it still needs its two
+                # touches before it may be traded.
+                if is_high:
+                    top, bot = pc.high, max(pc.open, pc.close)
+                    if (top - lo_run) >= big and not self._overlaps(top, bot, htf):
+                        self._add_zone(top, bot, Role.RESISTANCE, atr, idx, htf,
+                                       src="pivot", valid=False)
+                else:
+                    top, bot = min(pc.open, pc.close), pc.low
+                    if (hi_run - bot) >= big and not self._overlaps(top, bot, htf):
+                        self._add_zone(top, bot, Role.SUPPORT, atr, idx, htf,
+                                       src="pivot", valid=False)
                 continue
 
             top = max(mate.price, price)
@@ -542,7 +577,8 @@ class SnrzEngine:
             return
         if c.low <= o.entry <= c.high:
             self.position = Position(idx, o.side, o.zone, o.po2, o.entry, o.sl,
-                                     o.tp1, o.tp2, o.tp3, uid=o.uid)
+                                     o.tp1, o.tp2, o.tp3,
+                                     risk0=abs(o.entry - o.sl), uid=o.uid)
             self.pending = None
             return
         blown = (c.high >= o.sl) if o.side == "sell" else (c.low <= o.sl)
@@ -730,7 +766,8 @@ class SnrzEngine:
                                                         z.uid, entry, sl, tp1, tp2, tp3)
                         else:
                             self.position = Position(idx, "buy", z.kind, po2,
-                                                     entry, sl, tp1, tp2, tp3, uid=z.uid)
+                                                     entry, sl, tp1, tp2, tp3,
+                                                     risk0=abs(entry - sl), uid=z.uid)
             else:
                 if z.pend_dir == 0 and self._bull_break(z.top, c):
                     z.pend_bar, z.pend_dir = idx, 1
@@ -784,7 +821,8 @@ class SnrzEngine:
                                                         z.uid, entry, sl, tp1, tp2, tp3)
                         else:
                             self.position = Position(idx, "sell", z.kind, po2,
-                                                     entry, sl, tp1, tp2, tp3, uid=z.uid)
+                                                     entry, sl, tp1, tp2, tp3,
+                                                     risk0=abs(entry - sl), uid=z.uid)
             z.in_zone_prev = in_zone
 
         # SRR / RSS qualification (book): a Support whose move broke >=2
