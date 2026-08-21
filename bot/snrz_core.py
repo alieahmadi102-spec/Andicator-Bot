@@ -122,7 +122,8 @@ class Config:
     big_move_atr: float = 1.2
     breakout_pct: float = 75.0
     min_zone_atr: float = 0.15
-    max_zone_atr: float = 1.0
+    max_zone_atr: float = 0.4   # a zone 1 ATR tall is a region, not a zone —
+                                # on H4 that drew 287-dollar bands across the chart
     atr_len: int = 14
     trend_filter: bool = True
     allow_counter_inv: bool = False  # "Trend is King" — inversion zones obey it too
@@ -146,9 +147,9 @@ class Config:
     # p24: a zone is a band bracketing TWO swing points at a similar price
     #      (S+S, R+R, S+R, R+S). One pivot on its own is not a zone.
     pair_zones: bool = True
-    pair_tol_atr: float = 0.35   # "a similar price" = within this many ATR
-    pair_max_gap: int = 60       # ...and no further apart than this many bars
-    pair_lookback: int = 6       # how many earlier swings to try to pair with
+    pair_tol_atr: float = 0.5    # "a similar price" = within this many ATR
+    pair_max_gap: int = 90       # ...and no further apart than this many bars
+    pair_lookback: int = 10      # how many earlier swings to try to pair with
     # p39: zones are marked on W/D/4H/1H; the low timeframes only MONITOR.
     entries_htf_only: bool = False
     # p42: entry at the zone midpoint, stop just beyond the zone, TP1 at 1:1

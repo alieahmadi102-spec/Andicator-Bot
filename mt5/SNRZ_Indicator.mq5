@@ -14,7 +14,7 @@
 //|   • One position at a time with SL / TP1 / TP2 / TP3 drawn       |
 //+------------------------------------------------------------------+
 #property copyright   "SNRZ (Zindan The Gold Chaser) — indicator port"
-#property version     "7.30"
+#property version     "7.40"
 #property description "SNRZ: chart zones AND analysis zones together (book p.41/p.44), one trade at a time"
 #property indicator_chart_window
 #property indicator_buffers 4
@@ -51,14 +51,14 @@ input int    InpMaxZonesHtf  = 8;     // Max analysis zones
 input double InpBigMoveATR   = 1.2;   // "Big Movement" >= ATR x
 input double InpBreakoutPct  = 75.0;  // Breakout rule (%) — the 75% rule
 input double InpMinZoneATR   = 0.15;  // Min zone height (ATR x)
-input double InpMaxZoneATR   = 1.00;  // Max zone height (ATR x)
+input double InpMaxZoneATR   = 0.40;  // Max zone height (ATR x)
 input int    InpLifeLtf      = 600;   // Chart zone lifetime (chart bars)
 input int    InpLifeHtf      = 150;    // Analysis zone lifetime (analysis bars)
 input double InpMaxZoneDistATR = 6.0; // Drop zones further than (ATR x)
 input bool   InpPairZones     = true;  // Draw a zone only from TWO swings (p24: S+S/R+R/S+R/R+S)
-input double InpPairTolATR   = 0.35;  // ..."similar price" = closer than (ATR x)
-input int    InpPairMaxGap   = 60;    // ...and the two swings closer than N bars
-input int    InpPairLookback = 6;     // ...searching the last N swings
+input double InpPairTolATR   = 0.50;  // ..."similar price" = closer than (ATR x)
+input int    InpPairMaxGap   = 90;    // ...and the two swings closer than N bars
+input int    InpPairLookback = 10;     // ...searching the last N swings
 input int    InpFbaBars      = 3;     // A break must hold N bars before the zone inverts (p47)
 
 input group "Signals"
