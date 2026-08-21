@@ -85,26 +85,26 @@ def realized_r(p) -> float:
 def run(candles: Iterable[Candle], cfg: Config) -> Report:
     eng = SnrzEngine(cfg)
     rep = Report()
-    counted: set[int] = set()          # positions already tallied, by open index
+    counted: set[int] = set()          # trades already tallied, by (uid, bar)
     for c in candles:
         rep.signals += len(eng.on_candle(c))
-        p = eng.position
-        if p is None or not p.closed or p.index in counted:
-            continue
-        counted.add(p.index)
-        rep.r_total += realized_r(p)
-        if p.stat == 3:
-            rep.tp3 += 1
-        elif p.stat == 2:
-            rep.tp2 += 1
-        elif p.stat == 1:
-            rep.tp1 += 1
-        elif p.stat == -2:
-            rep.breakeven += 1
-        elif p.stat == -1:
-            rep.stopped += 1
-    if eng.position is not None and not eng.position.closed:
-        rep.open_at_end += 1
+        for p in eng.trades:
+            key = (p.uid, p.index)
+            if not p.closed or key in counted:
+                continue
+            counted.add(key)
+            rep.r_total += realized_r(p)
+            if p.stat == 3:
+                rep.tp3 += 1
+            elif p.stat == 2:
+                rep.tp2 += 1
+            elif p.stat == 1:
+                rep.tp1 += 1
+            elif p.stat == -2:
+                rep.breakeven += 1
+            elif p.stat == -1:
+                rep.stopped += 1
+    rep.open_at_end = sum(1 for t in eng.trades if not t.closed)
     return rep
 
 

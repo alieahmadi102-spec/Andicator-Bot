@@ -1,28 +1,26 @@
 //@version=6
-// build: v8.0 — the fake win-rate mode is GONE.
+// build: v9.0 — ONE ORDER PER ZONE, and the target is the NEXT ZONE.
 //
-// v7.2-v7.4 shipped a "high win-rate (~92%)" switch. It was not a strategy,
-// it was a measurement artifact: it widened the stop until the stop could not
-// be reached. Proof from the user's own charts and data:
-//   * on a 1H chart it produced stops up to $1827
-//   * the Daily chart held a BUY entered at 5119 while price was 4597 — $522
-//     underwater, 119 bars old, still counted as "not a loss"
-// A trade that cannot lose on paper is not a 95% win rate. Removed.
+// This is the structure the book actually draws: zones stacked up the chart,
+// a limit order sitting on each one, and each order aiming at the zone above
+// (or below) it. Every earlier build ran a SINGLE trade at a time with a 1R
+// target, so most zones never got an order at all and the target had nothing
+// to do with the chart in front of you.
 //
-// Back to what the book actually says: the stop sits just beyond the zone, on
-// the liquidity behind it, and TP1 is the 1:1 line (p41/p42).
+// What changed:
+//   * every zone that becomes tradable gets its OWN resting limit order, the
+//     moment it becomes tradable — not after waiting for a rejection candle
+//   * SL sits just beyond the zone (p41/p42), on the liquidity behind it
+//   * TP1 = the next opposite zone · TP2 = the one after · TP3 = the one after
+//     that. If there is no zone ahead worth at least minRR, NO ORDER is placed
+//     — the book's own "No Setup, No Trade" instead of inventing a 1R target
+//   * up to maxOpen zones can carry a live order or trade at once
 //
-// NEW, and it is a captain rule that was never implemented — the liquidity
-// section: "in gold the sell-side liquidity is usually taken first and THEN
-// the real move, about 80% of the time". The old code sold 4 bars after the
-// 3942 bottom on H4 and the market ran 600 points the other way. A sell right
-// after a fresh low sweep (or a buy after a fresh high) is now blocked.
-//
-// Honest result on 83 days of real XAUUSD, spread not included:
-//   M1 45% win / -0.19R - M5 46% / -0.16R - M15 36% / -0.34R
-//   M30 44% / -0.24R - H1 46% / -0.05R - H4 50% / +0.26R
-// It loses. Every stop width from 0.8 to 6 ATR lands between -0.15 and -0.19R,
-// so this is the strategy as implemented, not a setting left untuned.
+// Measured on 83 days of real XAUUSD, honest fills (a limit can only fill on
+// a bar AFTER it was placed, and on the fill bar only the stop is judged):
+//   M1 -0.18R - M5 -0.09R - M15 -0.13R - M30 -0.06R - H1 +0.13R - H4 -0.02R
+// Median -0.07R, against -0.18R for the single-trade model. Better, and still
+// not profitable. Do not trade it with real money until YOU have watched it.
 // ═══════════════════════════════════════════════════════════════════════════
 //  SNRZ Strategy Indicator — "Zindan The Gold Chaser" Masterclass (2026 book)
 //
@@ -32,7 +30,7 @@
 //                  TP3 = the one beyond. 1R/2R/3R when no zone sits there.
 //  SCALP vs SWING (book): M5/M15 = SCALP · H1/H4/Daily = SWING.
 // ═══════════════════════════════════════════════════════════════════════════
-indicator("SNRZ Strategy [Zindan] v8", "SNRZ v8.0", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500)
+indicator("SNRZ Strategy [Zindan] v9", "SNRZ v9.0", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500)
 
 // ───────────────────────────── Inputs ──────────────────────────────────────
 grpZ  = "Zones (SNRZ)"
@@ -60,13 +58,11 @@ allowCounterInv = input.bool(false, "Allow counter-trend entries on inversion zo
 maxTouches     = input.int(3,      "Max touches on a VALID zone (3-touch rule)", minval = 2, maxval = 4, group = grpS)
 maxFlips       = input.int(2,      "Max role flips before a zone is finished", minval = 1, maxval = 4, group = grpS, tooltip = "سطحی که پشت‌سرهم از هر دو طرف شکسته می‌شود مرز رِنج است نه زون.")
 killOnStop     = input.bool(true,  "A zone that got stopped out is finished",  group = grpS)
-needReject     = input.bool(true,  "Confirmation candle must close OUTSIDE the zone", group = grpS)
-needMicroBos   = input.bool(true,  "Confirmation must break the last bars' structure", group = grpS, tooltip = "کتاب، لیست تأییدها: «شکست ساختار کوچک (BOS) در جهت ترید».")
-microBosLen    = input.int(2,      "…over the last N bars (higher = stricter)", minval = 1, maxval = 10, group = grpS)
 rangeBars      = input.int(10,     "Range lockout (analysis bars since opposite BOS)", minval = 2, group = grpS, tooltip = "کتاب: بازار Sideway خطرناک است — No Setup, No Trade.")
-oneTrade       = input.bool(true,  "One trade at a time (no overtrade)",    group = grpS)
+maxOpen        = input.int(3,     "چند زون هم‌زمان اردر زنده داشته باشند", minval = 1, maxval = 20, group = grpS, tooltip = "هر زون اردر خودش را دارد. این فقط سقفِ تعداد اردرِ هم‌زمان است.")
+minRR          = input.float(1.0, "زون بعدی حداقل چند برابر استاپ دور باشد", minval = 0.2, step = 0.1, group = grpS, tooltip = "اگر زون بعدی نزدیک‌تر از این باشد، ستاپ ارزش ریسک را ندارد و اردری گذاشته نمی‌شود. کتاب: No Setup, No Trade.")
 maxTradeBars   = input.int(60,     "Close an open trade after N chart bars", minval = 20, group = grpS)
-minSlAtr       = input.float(2.5,  "Minimum stop distance (ATR ×)",         minval = 0.1, step = 0.5, group = grpS, tooltip = "کتاب: استاپ روی لیکوییدیتی است، نه یک تار مو بیرونِ لبه‌ی زون. ولی خیلی پهن هم نکن — نسخه‌ی قبلی این را ۱۶ ATR گذاشته بود و روی ۱ ساعته استاپ ۱۸۲۷ دلاری می‌ساخت که هیچ‌وقت نمی‌خورَد؛ آن وین‌ریت ۹۵٪ واقعی نبود.")
+minSlAtr       = input.float(2.5,   "Minimum stop distance (ATR ×)",         minval = 0.1, step = 0.5, group = grpS, tooltip = "کتاب: استاپ روی لیکوییدیتی است، نه یک تار مو بیرونِ لبه‌ی زون. ولی خیلی پهن هم نکن — نسخه‌ی قبلی این را ۱۶ ATR گذاشته بود و روی ۱ ساعته استاپ ۱۸۲۷ دلاری می‌ساخت که هیچ‌وقت نمی‌خورَد؛ آن وین‌ریت ۹۵٪ واقعی نبود.")
 tpMaxR         = input.float(6.0,  "Max R for TP1 (farther zone → TP2/TP3)", minval = 1, step = 0.5, group = grpS)
 useBreakEven   = input.bool(true,  "Move stop to entry once TP1 is reached", group = grpS, tooltip = "کتاب ص۴۱: «روی ۵ دقیقه بریک‌ایون می‌کنیم و پول را از حساب برمی‌داریم».")
 entryAtZone    = input.bool(true,  "ورود = اردر لیمیت روی خود زون (نه کلوز کندل تأیید)", group = grpS, tooltip = "کتاب ص۴۱/۴۲: اردر روی زون گذاشته می‌شود، استاپ کمی بیرون زون، و تارگت اول خط ۱:۱. ورود روی کلوزِ کندل تأیید استاپ را به اندازه‌ی کل زون + خود کندل پهن می‌کرد.")
@@ -84,8 +80,7 @@ grpD  = "Display"
 showLtf        = input.bool(true,  "Show chart-timeframe zones",           group = grpD)
 showHtf        = input.bool(true,  "Show analysis-timeframe zones",        group = grpD)
 showFresh      = input.bool(true,  "Show fresh (not yet valid) zones",     group = grpD)
-showPosition   = input.bool(true,  "Show the last setup (Entry/SL/TP1-3)", group = grpD)
-posDrawBars    = input.int(100,    "…only if it opened within N bars",     minval = 20, group = grpD, tooltip = "معامله‌ی خیلی قدیمی نباید روی چارت بماند و مقیاس را بکشد.")
+showPosition   = input.bool(true,  "Show every live order and trade (Entry/SL/TP1-3)", group = grpD)
 showPanel      = input.bool(true,  "Show SNRZ info panel",                 group = grpD)
 
 grpV  = "Style"
@@ -430,19 +425,10 @@ if newPLh and not na(atrH)
 if newPHh and not na(atrH)
     addSwing(true, phH, true,  htfBarNo, htfBack, atrA, bodyHiH, bodyLoH, hiRunH, loRunH, bar_index * 4 + 3)
 
-// ───────────────── Confirmation candles (always on the chart) ──────────────
-bullEngulf = close > open and close[1] < open[1] and close >= open[1]
-bearEngulf = close < open and close[1] > open[1] and close <= open[1]
-range_  = high - low
-bullPin = range_ > 0 and (math.min(open, close) - low) >= 0.6 * range_ and close >= open
-bearPin = range_ > 0 and (high - math.max(open, close)) >= 0.6 * range_ and close <= open
-bullConfirm = bullEngulf or bullPin
-bearConfirm = bearEngulf or bearPin
-// book, confirmation list: "a small Break of Structure in the trade direction"
-microHi = ta.highest(close, microBosLen)[1]
-microLo = ta.lowest(close,  microBosLen)[1]
-bosBuyOK  = not needMicroBos or close > microHi
-bosSellOK = not needMicroBos or close < microLo
+// The limit-order model needs no confirmation candle: the book puts the order
+// ON the zone before price arrives, and the fill IS the entry. The old
+// engulf/pin/micro-BOS gates only applied to the "wait for a rejection then
+// enter" flow, which this no longer uses.
 
 // ───────────── 75% breakout rule (body + directional shadow only) ──────────
 bullBreak75(float lvl) =>
@@ -463,37 +449,65 @@ bearBreak75(float lvl) =>
         partial := len > 0 and (math.min(lvl, bodyHigh) - low) / len * 100 >= breakoutPct
     fullBody or partial
 
-// ───────────── Active position state (declared before the engine) ──────────
-var bool   posOn    = false
-var bool   posBuy   = false
-var bool   posPO2   = false
-var float  posEntry = na
-var float  posSL    = na
-var float  posTP1   = na
-var float  posTP2   = na
-var float  posTP3   = na
-var bool   posSwing = false
-var int    posBar   = 0
-var string posZone  = ""
-var int    posStat  = 0     // 0 running · 1/2/3 TP hit · -1 stopped · -2 break-even
-var bool   posBE    = false
-var int    posUid   = -1
+// ───────────── Orders and trades — ONE PER ZONE ────────────────────────────
+// The book stacks zones up the chart and puts an order on each one, and each
+// order aims at the NEXT zone. A single-slot engine could never do that, so
+// this keeps a list: stat -9 is a resting limit, 0 a live trade.
+type Ord
+    bool   buy
+    bool   po2
+    int    uid
+    int    bar
+    float  entry
+    float  sl
+    float  tp1
+    float  tp2
+    float  tp3
+    string zone
+    int    stat      // -9 resting · 0 running · 1/2/3 TP hit · -1 SL · -2 BE
+    bool   be
+    bool   swing
+    float  risk0
 
-// p41/p42: the entry is a LIMIT order resting AT the zone. It is armed when
-// the confirmation candle closes and can only fill on a LATER bar — filling it
-// on the confirmation bar itself would be reading the future, since the signal
-// is not known until that bar has closed and by then price has already left.
-var bool   ordOn    = false
-var bool   ordBuy   = false
-var bool   ordPO2   = false
-var float  ordEntry = na
-var float  ordSL    = na
-var float  ordTP1   = na
-var float  ordTP2   = na
-var float  ordTP3   = na
-var int    ordBar   = 0
-var string ordZone  = ""
-var int    ordUid   = -1
+var orders = array.new<Ord>()
+
+hasOrder(int _uid) =>
+    bool found = false
+    for o in orders
+        if o.uid == _uid and (o.stat == -9 or o.stat == 0)
+            found := true
+            break
+    found
+
+liveCount() =>
+    int n = 0
+    for o in orders
+        if o.stat == -9 or o.stat == 0
+            n += 1
+    n
+
+// the opposite-role zone levels lying ahead of the entry, nearest first
+nextZone(bool _isBuy, float _entry, int _rank) =>
+    float best = na
+    float prev = na
+    for r = 0 to _rank
+        float cur = na
+        for z in zones
+            if z.dead
+                continue
+            lvl = _isBuy ? z.bot : z.top
+            ahead = _isBuy ? (z.role == -1 and lvl > _entry) : (z.role == 1 and lvl < _entry)
+            if not ahead
+                continue
+            if not na(prev) and (_isBuy ? lvl <= prev : lvl >= prev)
+                continue
+            if na(cur) or (_isBuy ? lvl < cur : lvl > cur)
+                cur := lvl
+        best := cur
+        prev := cur
+        if na(cur)
+            break
+    best
 
 // ─────────────────────── Zone engine ───────────────────────────────────────
 bool buySig      = false
@@ -505,21 +519,8 @@ bool zoneBreakDn = false
 bool brokeResistanceNow = false
 bool brokeSupportNow    = false
 
-bool   sigFired = false
-bool   sigIsBuy = false
-bool   sigIsPO2 = false
-float  sigSl    = na
-float  sigTop   = na
-float  sigBot   = na
-float  sigAtr   = na
-string sigZone  = ""
-int    sigUid   = -1
 var int lastSigBar = -1
-// book p41: at TP1 you take the money off and the stop goes to entry — the
-// setup is FINISHED, it is only riding a free runner. Letting a risk-free
-// trade keep blocking the next signal is what left charts showing a position
-// from 285 bars ago with nothing new behind it.
-canFire = not (oneTrade and (ordOn or (posOn and not posBE)))
+canFire = liveCount() < maxOpen
 
 // p14: the small zone sits INSIDE the big one
 nested(Zone z) =>
@@ -586,22 +587,25 @@ for z in zones
             need = z.paired ? 1 : 2
             tradable = not z.dead and z.pendDir == 0 and ((z.state == 1 and z.touches >= need) or (z.srr and z.touches >= 1) or (z.state == 2 and z.touches >= 1 and z.touches <= 2)) and (not entriesHtfOnly or z.htf) and (not requireNested or nested(z))
             okTrend  = (not useTrendFilter or trendUp or trendUnknown or (allowCounterInv and z.state == 2)) and not sweptHigh
-            freshSig = z.sigTouch != z.touches
-            rejectOK = needReject ? close > z.top : close > z.bot
-            if tradable and okTrend and freshSig and bullConfirm and rejectOK and bosBuyOK and canFire and not sigFired
-                z.sigTouch := z.touches
-                isPO2 = z.state == 2 and z.touches == 2
-                po2Buy := isPO2 ? true : po2Buy
-                buySig := isPO2 ? buySig : true
-                sigFired := true
-                sigIsBuy := true
-                sigIsPO2 := isPO2
-                sigSl := math.min(z.bot, swingLo3) - zAtr * 0.15
-                sigTop := z.top
-                sigBot := z.bot
-                sigAtr := zAtr
-                sigZone := zoneText(z)
-                sigUid := z.uid
+            // one order per zone, placed while price is still ABOVE it, and
+            // aimed at the NEXT zone up. No confirmation candle is waited for:
+            // the book puts a LIMIT on the zone before price gets there.
+            if tradable and okTrend and canFire and not hasOrder(z.uid) and close > z.top
+                entry = z.top
+                rawSl = math.min(z.bot, swingLo3) - zAtr * slBufferATR
+                risk  = math.max(math.abs(entry - rawSl), atr * minSlAtr)
+                t1 = nextZone(true, entry, 0)
+                if not na(t1) and (t1 - entry) >= risk * minRR
+                    t2 = nextZone(true, entry, 1)
+                    t3 = nextZone(true, entry, 2)
+                    isPO2 = z.state == 2 and z.touches == 2
+                    po2Buy := isPO2 ? true : po2Buy
+                    buySig := isPO2 ? buySig : true
+                    lastSigBar := bar_index
+                    array.push(orders, Ord.new(true, isPO2, z.uid, bar_index, entry,
+                         entry - risk, t1, na(t2) ? entry + (t1 - entry) * 2 : t2,
+                         na(t3) ? entry + (t1 - entry) * 3 : t3,
+                         zoneText(z), -9, false, chartMin >= 60, risk))
     else
         if z.pendDir == 0 and bullBreak75(z.top)
             z.pendBar := bar_index
@@ -638,22 +642,22 @@ for z in zones
             need = z.paired ? 1 : 2
             tradable = not z.dead and z.pendDir == 0 and ((z.state == 1 and z.touches >= need) or (z.srr and z.touches >= 1) or (z.state == 2 and z.touches >= 1 and z.touches <= 2)) and (not entriesHtfOnly or z.htf) and (not requireNested or nested(z))
             okTrend  = (not useTrendFilter or trendDown or trendUnknown or (allowCounterInv and z.state == 2)) and not sweptLow
-            freshSig = z.sigTouch != z.touches
-            rejectOK = needReject ? close < z.bot : close < z.top
-            if tradable and okTrend and freshSig and bearConfirm and rejectOK and bosSellOK and canFire and not sigFired
-                z.sigTouch := z.touches
-                isPO2 = z.state == 2 and z.touches == 2
-                po2Sell := isPO2 ? true : po2Sell
-                sellSig := isPO2 ? sellSig : true
-                sigFired := true
-                sigIsBuy := false
-                sigIsPO2 := isPO2
-                sigSl := math.max(z.top, swingHi3) + zAtr * 0.15
-                sigTop := z.top
-                sigBot := z.bot
-                sigAtr := zAtr
-                sigZone := zoneText(z)
-                sigUid := z.uid
+            if tradable and okTrend and canFire and not hasOrder(z.uid) and close < z.bot
+                entry = z.bot
+                rawSl = math.max(z.top, swingHi3) + zAtr * slBufferATR
+                risk  = math.max(math.abs(rawSl - entry), atr * minSlAtr)
+                t1 = nextZone(false, entry, 0)
+                if not na(t1) and (entry - t1) >= risk * minRR
+                    t2 = nextZone(false, entry, 1)
+                    t3 = nextZone(false, entry, 2)
+                    isPO2 = z.state == 2 and z.touches == 2
+                    po2Sell := isPO2 ? true : po2Sell
+                    sellSig := isPO2 ? sellSig : true
+                    lastSigBar := bar_index
+                    array.push(orders, Ord.new(false, isPO2, z.uid, bar_index, entry,
+                         entry + risk, t1, na(t2) ? entry - (entry - t1) * 2 : t2,
+                         na(t3) ? entry - (entry - t1) * 3 : t3,
+                         zoneText(z), -9, false, chartMin >= 60, risk))
     refreshZone(z)
 
 // SRR / RSS qualification (book): a Support whose move broke ≥2 Resistances
@@ -672,153 +676,67 @@ if brokeResistanceNow or brokeSupportNow
                 z.srr := true
         refreshZone(z)
 
-// ───────────── Arm the LIMIT order on a NEW signal ─────────────────────────
-if sigFired
-    lastSigBar := bar_index
-    // p41/p42: the order sits AT the zone and the stop just beyond it. On the
-    // author's own chart — zone 4706.13–4720, stop 4698.67 — the red 1:1 line
-    // at 4732.33 is exactly the zone plus that 16.8 of risk.
-    float entry = close
-    float rawSl = sigSl
-    if entryAtZone
-        mid = (sigTop + sigBot) / 2
-        // book: "SL outside the zone, below/above the wick of the confirmation
-        // candle — on the liquidity". Both halves matter: a stop pinned to the
-        // zone edge alone is a hair wide and gets swept.
-        if sigIsBuy
-            // the edge price meets first coming back DOWN to a support
-            entry := math.min(entryEdge ? sigTop : mid, close)
-            rawSl := math.min(sigBot, swingLo3) - sigAtr * slBufferATR
-        else
-            entry := math.max(entryEdge ? sigBot : mid, close)
-            rawSl := math.max(sigTop, swingHi3) + sigAtr * slBufferATR
-    risk  = math.max(math.abs(entry - rawSl), atr * minSlAtr)
-    slLvl = sigIsBuy ? entry - risk : entry + risk
-    tpCap = risk * tpMaxR
-    // book p.44: TP1 from a CHART-timeframe opposite zone, TP2 from the
-    // ANALYSIS-timeframe one, TP3 whatever lies beyond. 1R/2R/3R as fallback.
-    float d1 = na
-    float d2 = na
-    float d3 = na
-    for z in zones
-        if z.dead
-            continue
-        lvl = sigIsBuy ? z.bot : z.top
-        ahead = sigIsBuy ? (z.role == -1 and lvl > entry) : (z.role == 1 and lvl < entry)
-        if not ahead
-            continue
-        d = math.abs(lvl - entry)
-        if not z.htf and d <= tpCap and (na(d1) or d < d1)
-            d1 := d
-        if z.htf and (na(d2) or d < d2)
-            d2 := d
-        if na(d3) or d > d3
-            d3 := d
-    // p41: "you can set the red line as the 1:1 risk-reward target" — with the
-    // order sitting on the zone, TP1 IS the 1:1 line, not whichever zone is
-    // nearest by chance.
-    d1 := entryAtZone ? risk * rrTp1 : na(d1) ? risk : math.max(d1, risk)
-    d2 := (na(d2) or d2 <= d1) ? math.max(d1 + risk, risk * 2) : d2
-    d3 := (na(d3) or d3 <= d2) ? math.max(d2 + risk, risk * 3) : d3
-    // a zone can sit absurdly far away — on a 5m scalp that produced a TP2
-    // 275 points from entry, which is not a target, it is a wish
-    d2 := math.max(math.min(d2, tpCap), d1 * 1.5)
-    d3 := math.max(math.min(d3, tpCap * 1.5), d2 * 1.5)
-    t1 = sigIsBuy ? entry + d1 : entry - d1
-    t2 = sigIsBuy ? entry + d2 : entry - d2
-    t3 = sigIsBuy ? entry + d3 : entry - d3
-    if entryAtZone
-        ordOn    := true
-        ordBuy   := sigIsBuy
-        ordPO2   := sigIsPO2
-        ordEntry := entry
-        ordSL    := slLvl
-        ordTP1   := t1
-        ordTP2   := t2
-        ordTP3   := t3
-        ordBar   := bar_index
-        ordZone  := sigZone
-        ordUid   := sigUid
-    else
-        posOn    := true
-        posBuy   := sigIsBuy
-        posPO2   := sigIsPO2
-        posEntry := entry
-        posSL    := slLvl
-        posTP1   := t1
-        posTP2   := t2
-        posTP3   := t3
-        posSwing := chartMin >= 60
-        posBar   := bar_index
-        posZone  := sigZone
-        posStat  := 0
-        posBE    := false
-        posUid   := sigUid
+// ───────────── Fill the resting orders, manage the live trades ─────────────
+if array.size(orders) > 0
+    for i = array.size(orders) - 1 to 0
+        Ord o = array.get(orders, i)
+        if o.stat == -9
+            // a limit can only fill on a bar AFTER it was placed — filling it
+            // on the same bar would be reading the future
+            if bar_index > o.bar
+                if low <= o.entry and high >= o.entry
+                    o.stat := 0
+                    o.bar  := bar_index
+                else
+                    blown = o.buy ? low <= o.sl : high >= o.sl
+                    gone  = o.buy ? high >= o.tp1 : low <= o.tp1
+                    if blown or gone or bar_index - o.bar > orderExpiry
+                        array.remove(orders, i)
+        else if o.stat == 0
+            // on the FILL bar only the stop may be judged: a buy limit fills
+            // because price traded DOWN to it, so a low beyond the stop came
+            // after the fill, but the bar's high may have printed before it
+            entryBar = bar_index == o.bar
+            if o.buy
+                if low <= o.sl
+                    o.stat := o.be ? -2 : -1
+                else if not entryBar
+                    if high >= o.tp3
+                        o.stat := 3
+                    else if high >= o.tp2 and o.stat < 2
+                        o.stat := 2
+                    else if high >= o.tp1 and o.stat < 1
+                        o.stat := 1
+            else
+                if high >= o.sl
+                    o.stat := o.be ? -2 : -1
+                else if not entryBar
+                    if low <= o.tp3
+                        o.stat := 3
+                    else if low <= o.tp2 and o.stat < 2
+                        o.stat := 2
+                    else if low <= o.tp1 and o.stat < 1
+                        o.stat := 1
+            // book p41: once it pays, make it risk free
+            if useBreakEven and o.stat >= 1 and not o.be
+                o.sl := o.entry
+                o.be := true
+            if o.stat == 3
+                o.stat := 3
+            if o.stat == 0 and bar_index - o.bar > maxTradeBars
+                o.stat := -3                      // timed out, closed flat
+            // a zone that stopped a trade out has proved it is not respected
+            if killOnStop and o.stat == -1
+                for z in zones
+                    if z.uid == o.uid
+                        z.dead := true
+                        break
 
-// ───────────── A resting order fills on a LATER bar ────────────────────────
-if ordOn and bar_index > ordBar
-    if low <= ordEntry and high >= ordEntry
-        posOn    := true
-        posBuy   := ordBuy
-        posPO2   := ordPO2
-        posEntry := ordEntry
-        posSL    := ordSL
-        posTP1   := ordTP1
-        posTP2   := ordTP2
-        posTP3   := ordTP3
-        // book: Scalper works M5/M15 · Swing works H1/H4/Daily — the timeframe
-        // you TRADE on decides it, nothing else
-        posSwing := chartMin >= 60
-        posBar   := bar_index
-        posZone  := ordZone
-        posStat  := 0
-        posBE    := false
-        posUid   := ordUid
-        ordOn    := false
-    else
-        blown = ordBuy ? low <= ordSL : high >= ordSL
-        gone  = ordBuy ? high >= ordTP1 : low <= ordTP1
-        if blown or gone or bar_index - ordBar > orderExpiry
-            ordOn := false          // invalidated, ran away, or timed out
+// keep the list from growing without bound
+while array.size(orders) > 60
+    array.shift(orders)
 
-// ───────────── Manage the open setup ───────────────────────────────────────
-if posOn and posStat >= 0 and posBar != bar_index
-    if posBuy
-        if low <= posSL
-            posStat := posBE ? -2 : -1
-            posOn := false
-        else if high >= posTP3
-            posStat := 3
-            posOn := false
-        else if high >= posTP2 and posStat < 2
-            posStat := 2
-        else if high >= posTP1 and posStat < 1
-            posStat := 1
-    else
-        if high >= posSL
-            posStat := posBE ? -2 : -1
-            posOn := false
-        else if low <= posTP3
-            posStat := 3
-            posOn := false
-        else if low <= posTP2 and posStat < 2
-            posStat := 2
-        else if low <= posTP1 and posStat < 1
-            posStat := 1
-    // book p.41: on the 5m we go break-even and take the money off the account
-    if useBreakEven and posOn and posStat >= 1 and not posBE
-        posSL := posEntry
-        posBE := true
-    if posOn and bar_index - posBar > maxTradeBars
-        posOn := false
-    // book: a zone that stopped a trade out has proved it is not respected
-    if killOnStop and not posOn and posStat == -1
-        for z in zones
-            if z.uid == posUid
-                z.dead := true
-                break
-
-// ───────────── Draw the last setup (fades once it is closed) ───────────────
+// ───────────── Draw every live order and trade ─────────────────────────────
 var line[]  pl = array.new<line>()
 var label[] pb = array.new<label>()
 
@@ -830,42 +748,33 @@ if barstate.islast
         label.delete(lb)
     array.clear(pb)
 
-// a limit order still waiting at its zone
-if showPosition and ordOn and barstate.islast
-    oc = ordBuy ? colBuy : colSell
-    array.push(pl, line.new(ordBar, ordEntry, bar_index + 25, ordEntry, color = color.new(oc, 20), width = 1, style = line.style_dashed))
-    array.push(pb, label.new(bar_index + 25, ordEntry, (ordBuy ? "BUY" : "SELL") + " LIMIT · " + ordZone + " · waiting\n" + str.tostring(ordEntry, format.mintick), style = label.style_label_left, color = color.new(oc, 25), textcolor = color.new(color.white, 0), size = size.small))
+    if showPosition
+        for o in orders
+            if o.stat != -9 and o.stat != 0
+                continue
+            resting = o.stat == -9
+            x1 = o.bar
+            x2 = bar_index + 25
+            dirCol  = o.buy ? colBuy : colSell
+            headCol = color.new(o.po2 ? colGold : dirCol, resting ? 30 : 0)
+            headTxt = color.new(o.po2 ? color.black : color.white, 0)
+            kind    = o.swing ? "SWING" : "SCALP"
+            dir     = o.buy ? "BUY" : "SELL"
+            state   = resting ? " LIMIT · waiting" :
+                      o.stat >= 1 ? "  ✓ TP" + str.tostring(o.stat) + (o.be ? " · risk free" : "") : "  • running"
+            st      = resting ? line.style_dashed : line.style_solid
 
-posRecent = not na(posEntry) and (posOn or bar_index - posBar <= posDrawBars)
-if showPosition and posRecent and barstate.islast
-    x1 = posBar
-    x2 = bar_index + 25
-    fade    = posOn ? 0 : 55
-    dirCol  = posBuy ? colBuy : colSell
-    headCol = color.new(posPO2 ? colGold : dirCol, fade)
-    headTxt = color.new(posPO2 ? color.black : color.white, posOn ? 0 : 30)
-    kind    = posSwing ? "SWING" : "SCALP"
-    dir     = posBuy ? "BUY" : "SELL"
-    stStyle = posOn ? line.style_solid : line.style_dotted
+            array.push(pl, line.new(x1, o.entry, x2, o.entry, color = color.new(color.white, 25), width = 2, style = line.style_dotted))
+            array.push(pl, line.new(x1, o.sl,    x2, o.sl,    color = color.new(colSell, resting ? 40 : 0), width = 2, style = st))
+            array.push(pl, line.new(x1, o.tp1,   x2, o.tp1,   color = color.new(colBuy,  resting ? 40 : 0), width = 2, style = st))
+            array.push(pl, line.new(x1, o.tp2,   x2, o.tp2,   color = color.new(colBuy, 45), width = 1, style = line.style_dashed))
+            array.push(pl, line.new(x1, o.tp3,   x2, o.tp3,   color = color.new(colBuy, 65), width = 1, style = line.style_dashed))
 
-    array.push(pl, line.new(x1, posEntry, x2, posEntry, color = color.new(color.white, 25 + fade / 2), width = 2, style = line.style_dotted))
-    array.push(pl, line.new(x1, posSL,    x2, posSL,    color = color.new(colSell, fade), width = 2, style = stStyle))
-    array.push(pl, line.new(x1, posTP1,   x2, posTP1,   color = color.new(colBuy, fade),  width = 2, style = stStyle))
-    // a finished trade keeps only the targets it actually reached, so an
-    // unreached TP3 cannot stretch the whole price scale
-    if posOn or posStat >= 2
-        array.push(pl, line.new(x1, posTP2, x2, posTP2, color = color.new(colBuy, 35 + fade / 2), width = 1, style = line.style_dashed))
-    if posOn or posStat >= 3
-        array.push(pl, line.new(x1, posTP3, x2, posTP3, color = color.new(colBuy, 55 + fade / 2), width = 1, style = line.style_dashed))
-
-    statTxt = posStat == -2 ? "  = TP1 → BE" : posStat == -1 ? "  ✗ SL" : posStat == 3 ? "  ✓ TP3" : posStat == 2 ? "  ✓ TP2" : posStat == 1 ? (posOn ? "  ✓ TP1 · risk free" : "  ✓ TP1") : posOn ? "  • running" : "  • closed"
-    array.push(pb, label.new(x2, posEntry, dir + " · " + kind + (posPO2 ? " · PO2" : "") + " · " + posZone + statTxt + "\n" + str.tostring(posEntry, format.mintick), style = label.style_label_left, color = headCol, textcolor = headTxt, size = size.normal))
-    array.push(pb, label.new(x2, posSL,  (posBE ? "SL·BE " : "SL   ") + str.tostring(posSL, format.mintick), style = label.style_label_left, color = color.new(colSell, 10 + fade / 2), textcolor = color.new(color.white, fade / 2), size = size.small))
-    array.push(pb, label.new(x2, posTP1, "TP1  " + str.tostring(posTP1, format.mintick), style = label.style_label_left, color = color.new(colBuy, 10 + fade / 2), textcolor = color.new(color.white, fade / 2), size = size.small))
-    if posOn or posStat >= 2
-        array.push(pb, label.new(x2, posTP2, "TP2  " + str.tostring(posTP2, format.mintick), style = label.style_label_left, color = color.new(colBuy, 35 + fade / 2), textcolor = color.new(color.white, fade / 2), size = size.small))
-    if posOn or posStat >= 3
-        array.push(pb, label.new(x2, posTP3, "TP3  " + str.tostring(posTP3, format.mintick), style = label.style_label_left, color = color.new(colBuy, 55 + fade / 2), textcolor = color.new(color.white, fade / 2), size = size.small))
+            array.push(pb, label.new(x2, o.entry, dir + " · " + kind + (o.po2 ? " · PO2" : "") + " · " + o.zone + state + "\n" + str.tostring(o.entry, format.mintick), style = label.style_label_left, color = headCol, textcolor = headTxt, size = size.small))
+            array.push(pb, label.new(x2, o.sl,  (o.be ? "SL·BE " : "SL   ") + str.tostring(o.sl, format.mintick), style = label.style_label_left, color = color.new(colSell, 15), textcolor = color.new(color.white, 0), size = size.tiny))
+            array.push(pb, label.new(x2, o.tp1, "TP1  " + str.tostring(o.tp1, format.mintick), style = label.style_label_left, color = color.new(colBuy, 15), textcolor = color.new(color.white, 0), size = size.tiny))
+            array.push(pb, label.new(x2, o.tp2, "TP2  " + str.tostring(o.tp2, format.mintick), style = label.style_label_left, color = color.new(colBuy, 45), textcolor = color.new(color.white, 20), size = size.tiny))
+            array.push(pb, label.new(x2, o.tp3, "TP3  " + str.tostring(o.tp3, format.mintick), style = label.style_label_left, color = color.new(colBuy, 65), textcolor = color.new(color.white, 20), size = size.tiny))
 
 // ───────────────────── History arrows ──────────────────────────────────────
 plotshape(buySig,  "BUY",      shape.triangleup,   location.belowbar, color.new(#00c853, 0), size = size.tiny,  display = display.pane)
@@ -887,14 +796,16 @@ if showPanel and barstate.islast
                 liveHtf += 1
             else
                 liveLtf += 1
-    stTxt = posStat == -2 ? " =BE" : posStat == -1 ? " ✗SL" : posStat > 0 ? " ✓TP" + str.tostring(posStat) : " •"
-    // a trade that closed 225 bars ago is history, not a "Position" — reading
-    // one as if it were live is exactly what made the chart look broken
-    posStale = not posOn and (na(posEntry) or bar_index - posBar > posDrawBars)
-    posTxt = ordOn ? ((ordBuy ? "BUY" : "SELL") + " LIMIT waiting @ " + str.tostring(ordEntry, format.mintick))
-             : posStale ? "— no active setup —"
-             : ((posBuy ? "BUY " : "SELL ") + (posSwing ? "SWING" : "SCALP") + " @ " + str.tostring(posEntry, format.mintick) + stTxt + (posOn ? "" : " (closed)"))
-    table.cell(info, 0, 0, "⚜  SNRZ v8.0  —  ZiNDAN", text_color = colGold, text_size = size.normal)
+    nOrd = 0
+    nRun = 0
+    for o in orders
+        if o.stat == -9
+            nOrd += 1
+        else if o.stat == 0
+            nRun += 1
+    posTxt = nOrd + nRun == 0 ? "— no setup right now —" :
+             str.tostring(nOrd) + " limit waiting · " + str.tostring(nRun) + " running"
+    table.cell(info, 0, 0, "⚜  SNRZ v9.0  —  ZiNDAN", text_color = colGold, text_size = size.normal)
     table.cell(info, 0, 1, "The Gold Chaser", text_color = color.new(colGold, 35), text_size = size.tiny)
     table.cell(info, 0, 2, trendTxt, text_color = trendCol, text_size = size.small)
     table.cell(info, 0, 3, "Zones: " + str.tostring(liveLtf) + " @ " + timeframe.period + "  +  " + str.tostring(liveHtf) + " @ " + htfTF, text_color = color.new(color.white, 20), text_size = size.small)

@@ -91,7 +91,7 @@ def place(signal, symbol: str, tf_minutes: int):
         "type": kind,
         "price": signal.price if pending else market,
         "sl": signal.sl,
-        "tp": signal.tp1,
+        "tp": signal.tp1,   # the next zone, not a 1R guess
         "magic": MAGIC,
         "comment": f"SNRZ {signal.kind} {signal.zone}",
     }
@@ -140,6 +140,8 @@ def main():
         if b["time"] == last_time:
             continue
         last_time = b["time"]
+        # every new zone produces its own signal, so several may arrive on one
+        # bar — each gets its own limit order at its own zone
         for sig in engine.on_candle(Candle(int(b["time"]), b["open"], b["high"], b["low"], b["close"])):
             print("SIGNAL:", sig)
             place(sig, SYMBOL, TIMEFRAME_MIN)

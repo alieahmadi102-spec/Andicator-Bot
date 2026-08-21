@@ -14,7 +14,7 @@
 //|   • One position at a time with SL / TP1 / TP2 / TP3 drawn       |
 //+------------------------------------------------------------------+
 #property copyright   "SNRZ (Zindan The Gold Chaser) — indicator port"
-#property version     "8.00"
+#property version     "9.00"
 #property description "SNRZ: chart zones AND analysis zones together (book p.41/p.44), one trade at a time"
 #property indicator_chart_window
 #property indicator_buffers 4
@@ -64,16 +64,13 @@ input int    InpFbaBars      = 3;     // A break must hold N bars before the zon
 input group "Signals"
 input bool   InpTrendFilter  = true;  // Trade only with structure trend
 input bool   InpAllowCounterInv = false; // Allow counter-trend entries on inversion zones
-input bool   InpNeedConfirm  = true;  // Require confirmation candle
 input int    InpMaxTouches   = 3;     // Max touches per zone (3-touch rule)
 input int    InpMaxFlips     = 2;     // Max role flips before a zone is finished
 input bool   InpKillOnStop   = true;  // A zone that got stopped out is finished
-input bool   InpNeedMicroBos = true;  // Confirmation must break the last bars' structure
-input int    InpMicroBosLen  = 2;     // ...over the last N bars (higher = stricter)
 input bool   InpBreakEven    = true;  // Move stop to entry once TP1 is reached
-input bool   InpNeedReject   = true;  // Confirmation candle must close OUTSIDE the zone
 input int    InpRangeBars    = 10;    // Range lockout (analysis-TF bars since opposite BOS)
-input bool   InpOneTrade     = true;  // One trade at a time (no overtrade)
+input int    InpMaxOpen      = 3;     // How many zones may carry a live order/trade at once
+input double InpMinRR        = 1.0;   // The next zone must be at least this many R away
 input int    InpMaxTradeBars = 60;   // Close an open trade after N chart bars
 input double InpMinSlATR     = 2.5;   // Minimum stop distance (ATR x) — the book puts the stop ON the liquidity
 input double InpTpMaxR       = 6.0;   // Max R for TP1/TP2 (farther zone -> TP3)
@@ -148,25 +145,92 @@ bool   g_bosUpPrev = false, g_bosDnPrev = false;
 double g_cHigh = 0, g_cPrevHigh = 0, g_cLow = 0, g_cPrevLow = 0;
 
 //--- active position --------------------------------------------------------
-bool     g_posOn = false, g_posBuy = false, g_posPO2 = false, g_posSwing = false;
-double   g_posEntry = 0, g_posSL = 0, g_posTP1 = 0, g_posTP2 = 0, g_posTP3 = 0;
-int      g_posStat = 0;                   // 0 running · 1/2/3 TP · -1 stop · -2 BE
+//--- Orders and trades: ONE PER ZONE ----------------------------------------
+// The book stacks zones up the chart and puts an order on each, and each order
+// aims at the NEXT zone. A single-slot engine could never do that.
+// stat: -9 resting limit - 0 running - 1/2/3 TP hit - -1 SL - -2 BE - -3 timed out
+struct SOrd
+  {
+   bool     buy;
+   bool     po2;
+   long     uid;
+   int      bar;
+   datetime time;
+   double   entry, sl, tp1, tp2, tp3, risk0;
+   string   zone;
+   int      stat;
+   bool     be;
+   bool     swing;
+  };
+SOrd g_orders[];
 
-//--- resting LIMIT order (book p41/p42) --------------------------------------
-// The entry is an order sitting AT the zone. It is armed when the confirmation
-// candle closes and can only fill on a LATER bar — filling it on the
-// confirmation bar itself would be reading the future, since the signal is not
-// known until that bar has closed and by then price has already left the zone.
-bool     g_ordOn = false, g_ordBuy = false, g_ordPO2 = false;
-double   g_ordEntry = 0, g_ordSL = 0, g_ordTP1 = 0, g_ordTP2 = 0, g_ordTP3 = 0;
-int      g_ordBar = 0;
-long     g_ordUid = -1;
-string   g_ordZone = "";
-bool     g_posBE   = false;               // stop already moved to entry
-long     g_posUid  = -1;                  // which zone produced this setup
-int      g_posBar  = 0;
-datetime g_posTime = 0;
-string   g_posZone = "";
+bool HasOrder(const long uid)
+  {
+   for(int i = 0; i < ArraySize(g_orders); i++)
+      if(g_orders[i].uid == uid && (g_orders[i].stat == -9 || g_orders[i].stat == 0))
+         return true;
+   return false;
+  }
+
+int LiveCount()
+  {
+   int n = 0;
+   for(int i = 0; i < ArraySize(g_orders); i++)
+      if(g_orders[i].stat == -9 || g_orders[i].stat == 0)
+         n++;
+   return n;
+  }
+
+// the Nth opposite-role zone level ahead of the entry (rank 0 = nearest)
+double NextZone(const bool isBuy, const double entry, const int rank)
+  {
+   double prev = 0.0;
+   bool   have = false;
+   double cur  = 0.0;
+   for(int r = 0; r <= rank; r++)
+     {
+      bool found = false;
+      cur = 0.0;
+      for(int i = 0; i < ArraySize(g_zones); i++)
+        {
+         if(g_zones[i].dead)
+            continue;
+         double lvl = isBuy ? g_zones[i].bot : g_zones[i].top;
+         bool ahead = isBuy ? (g_zones[i].role == -1 && lvl > entry)
+                      : (g_zones[i].role == 1 && lvl < entry);
+         if(!ahead)
+            continue;
+         if(have && (isBuy ? lvl <= prev : lvl >= prev))
+            continue;
+         if(!found || (isBuy ? lvl < cur : lvl > cur))
+           {
+            cur = lvl;
+            found = true;
+           }
+        }
+      if(!found)
+         return 0.0;
+      prev = cur;
+      have = true;
+     }
+   return cur;
+  }
+
+void PushOrder(const bool buy, const bool po2, const long uid, const int bar,
+               const datetime t, const double entry, const double sl,
+               const double tp1, const double tp2, const double tp3,
+               const string zone, const double risk, const bool swing)
+  {
+   int n = ArraySize(g_orders);
+   ArrayResize(g_orders, n + 1);
+   g_orders[n].buy = buy;    g_orders[n].po2 = po2;   g_orders[n].uid = uid;
+   g_orders[n].bar = bar;    g_orders[n].time = t;    g_orders[n].entry = entry;
+   g_orders[n].sl = sl;      g_orders[n].tp1 = tp1;   g_orders[n].tp2 = tp2;
+   g_orders[n].tp3 = tp3;    g_orders[n].zone = zone; g_orders[n].stat = -9;
+   g_orders[n].be = false;   g_orders[n].swing = swing; g_orders[n].risk0 = risk;
+   if(ArraySize(g_orders) > 60)
+      ArrayRemove(g_orders, 0, 1);
+  }
 
 //+------------------------------------------------------------------+
 //| The book marks zones only on Weekly / Daily / 4H / 1H, and        |
@@ -584,88 +648,54 @@ void PosText(const string tag, const datetime t, const double price,
    ObjectSetInteger(0, nm, OBJPROP_COLOR, col);
   }
 
+void ClearPositionObjects()
+  {
+   for(int i = ObjectsTotal(0) - 1; i >= 0; i--)
+     {
+      string nm = ObjectName(0, i);
+      if(StringFind(nm, g_prefix + "P_") == 0 || StringFind(nm, g_prefix + "T_") == 0)
+         ObjectDelete(0, nm);
+     }
+  }
+
+// draws EVERY live order and trade, not just the newest one
 void DrawPosition(const datetime tNow)
   {
-   if(!InpShowPosition || g_posTime == 0)
+   ClearPositionObjects();
+   if(!InpShowPosition)
       return;
    datetime t2 = tNow + (datetime)(PeriodSeconds(_Period) * 25);
-   color dirCol = g_posBuy ? clrMediumSeaGreen : clrTomato;
-   color head   = g_posPO2 ? InpColInv : dirCol;
-   int   st     = g_posOn ? STYLE_SOLID : STYLE_DOT;
-   string kind  = g_posSwing ? "SWING" : "SCALP";
-   string dir   = g_posBuy ? "BUY" : "SELL";
-   string stat  = g_posStat == -2 ? "  = TP1 -> BE" :
-                  g_posStat == -1 ? "  x SL" :
-                  g_posStat == 3  ? "  v TP3" :
-                  g_posStat == 2  ? "  v TP2" :
-                  g_posStat == 1  ? "  v TP1" : (g_posOn ? "  . running" : "  . closed");
-
-   PosLine("E",  g_posTime, t2, g_posEntry, clrWhite,           2, STYLE_DOT);
-   PosLine("SL", g_posTime, t2, g_posSL,    clrTomato,          2, st);
-   PosLine("T1", g_posTime, t2, g_posTP1,   clrMediumSeaGreen,  2, st);
-   // on a FINISHED trade only the levels it actually reached stay drawn
-   if(g_posOn || g_posStat >= 2)
-      PosLine("T2", g_posTime, t2, g_posTP2, clrMediumSeaGreen, 1, STYLE_DASH);
-   else
+   for(int i = 0; i < ArraySize(g_orders); i++)
      {
-      ObjectDelete(0, g_prefix + "P_T2");
-      ObjectDelete(0, g_prefix + "T_T2");
-     }
-   if(g_posOn || g_posStat >= 3)
-      PosLine("T3", g_posTime, t2, g_posTP3, clrMediumSeaGreen, 1, STYLE_DASH);
-   else
-     {
-      ObjectDelete(0, g_prefix + "P_T3");
-      ObjectDelete(0, g_prefix + "T_T3");
-     }
-
-   PosText("E",  t2, g_posEntry, dir + " " + kind + (g_posPO2 ? " PO2" : "") + " " +
-           g_posZone + stat + "  " + DoubleToString(g_posEntry, _Digits), head);
-   PosText("SL", t2, g_posSL,  (g_posBE ? "SL-BE " : "SL  ") + DoubleToString(g_posSL, _Digits), clrTomato);
-   PosText("T1", t2, g_posTP1, "TP1 " + DoubleToString(g_posTP1, _Digits), clrMediumSeaGreen);
-   if(g_posOn || g_posStat >= 2)
-      PosText("T2", t2, g_posTP2, "TP2 " + DoubleToString(g_posTP2, _Digits), clrMediumSeaGreen);
-   if(g_posOn || g_posStat >= 3)
-      PosText("T3", t2, g_posTP3, "TP3 " + DoubleToString(g_posTP3, _Digits), clrMediumSeaGreen);
-  }
-//+------------------------------------------------------------------+
-//| Targets: nearest opposite zones ahead of price, else 1R/2R/3R     |
-//+------------------------------------------------------------------+
-void BuildTargets(const bool isBuy, const double entry, const double risk,
-                  double &t1, double &t2, double &t3)
-  {
-   // Book p.44: "TP1 from the 5m timeframe, TP2 from the 1h timeframe" — so
-   // the first target is the nearest opposite CHART zone and the second is the
-   // nearest opposite ANALYSIS zone. 1R/2R/3R when no zone sits there.
-   double cap = risk * InpTpMaxR;
-   double d1 = -1, d2 = -1, d3 = -1;
-   for(int i = 0; i < ArraySize(g_zones); i++)
-     {
-      if(g_zones[i].dead)
+      if(g_orders[i].stat != -9 && g_orders[i].stat != 0)
          continue;
-      double lvl = isBuy ? g_zones[i].bot : g_zones[i].top;
-      bool ahead = isBuy ? (g_zones[i].role == -1 && lvl > entry)
-                   : (g_zones[i].role ==  1 && lvl < entry);
-      if(!ahead)
-         continue;
-      double d = MathAbs(lvl - entry);
-      if(!g_zones[i].htf && d <= cap && (d1 < 0 || d < d1))
-         d1 = d;
-      if(g_zones[i].htf && (d2 < 0 || d < d2))
-         d2 = d;
-      if(d3 < 0 || d > d3)
-         d3 = d;
+      string  id     = "O" + IntegerToString(i);
+      bool    rest   = (g_orders[i].stat == -9);
+      color   dirCol = g_orders[i].buy ? clrMediumSeaGreen : clrTomato;
+      color   head   = g_orders[i].po2 ? InpColInv : dirCol;
+      int     st     = rest ? STYLE_DASH : STYLE_SOLID;
+      string  kind   = g_orders[i].swing ? "SWING" : "SCALP";
+      string  dir    = g_orders[i].buy ? "BUY" : "SELL";
+      string  stat   = rest ? " LIMIT waiting"
+                       : (g_orders[i].stat >= 1
+                          ? "  v TP" + IntegerToString(g_orders[i].stat) +
+                          (g_orders[i].be ? " risk free" : "")
+                          : "  . running");
+      datetime t1 = g_orders[i].time;
+      PosLine(id + "E",  t1, t2, g_orders[i].entry, clrWhite,          2, STYLE_DOT);
+      PosLine(id + "SL", t1, t2, g_orders[i].sl,    clrTomato,         2, st);
+      PosLine(id + "T1", t1, t2, g_orders[i].tp1,   clrMediumSeaGreen, 2, st);
+      PosLine(id + "T2", t1, t2, g_orders[i].tp2,   clrMediumSeaGreen, 1, STYLE_DASH);
+      PosLine(id + "T3", t1, t2, g_orders[i].tp3,   clrMediumSeaGreen, 1, STYLE_DASH);
+      PosText(id + "E",  t2, g_orders[i].entry, dir + " " + kind +
+              (g_orders[i].po2 ? " PO2" : "") + " " + g_orders[i].zone + stat +
+              "  " + DoubleToString(g_orders[i].entry, _Digits), head);
+      PosText(id + "SL", t2, g_orders[i].sl, (g_orders[i].be ? "SL-BE " : "SL  ") +
+              DoubleToString(g_orders[i].sl, _Digits), clrTomato);
+      PosText(id + "T1", t2, g_orders[i].tp1, "TP1 " + DoubleToString(g_orders[i].tp1, _Digits), clrMediumSeaGreen);
+      PosText(id + "T2", t2, g_orders[i].tp2, "TP2 " + DoubleToString(g_orders[i].tp2, _Digits), clrMediumSeaGreen);
+      PosText(id + "T3", t2, g_orders[i].tp3, "TP3 " + DoubleToString(g_orders[i].tp3, _Digits), clrMediumSeaGreen);
      }
-   d1 = (d1 < 0) ? risk : MathMax(d1, risk);
-   d2 = (d2 < 0 || d2 <= d1) ? MathMax(d1 + risk, risk * 2.0) : d2;
-   d3 = (d3 < 0 || d3 <= d2) ? MathMax(d2 + risk, risk * 3.0) : d3;
-   // a zone can sit absurdly far away — on a 5m scalp that produced a TP2
-   // 275 points from entry, which is not a target, it is a wish
-   d2 = MathMax(MathMin(d2, cap),       d1 * 1.5);
-   d3 = MathMax(MathMin(d3, cap * 1.5), d2 * 1.5);
-   t1 = isBuy ? entry + d1 : entry - d1;
-   t2 = isBuy ? entry + d2 : entry - d2;
-   t3 = isBuy ? entry + d3 : entry - d3;
   }
 //+------------------------------------------------------------------+
 //| Process one CLOSED analysis-timeframe bar: pivots, zones, trend   |
@@ -783,9 +813,7 @@ int OnCalculate(const int rates_total,
       g_lastBosUpH = g_lastBosDnH = -999999;
       g_bosUpPrev = g_bosDnPrev = false;
       g_cHigh = g_cPrevHigh = g_cLow = g_cPrevLow = 0;
-      g_posOn = false; g_posTime = 0; g_posStat = 0;
-      g_ordOn = false;
-      g_posBE = false; g_posUid = -1;
+      ArrayResize(g_orders, 0);
      }
 
    int start = MathMax(prev_calculated - 1, MathMax(InpPivotLtf, InpPivotHtf) * 2 + 15);
@@ -885,97 +913,71 @@ int OnCalculate(const int rates_total,
       bool trendDown    = (effTrend == -1 && !inRange);
       bool trendUnknown = (effTrend ==  0 && !inRange);
 
-      //--- confirmation candles (SNRZ style, on the CHART timeframe) --------
+      // The limit-order model needs no confirmation candle: the book puts the
+      // order ON the zone before price arrives, and the fill IS the entry.
       double o = open[bar], h = high[bar], l = low[bar], c = close[bar];
-      double o1 = open[bar - 1], c1 = close[bar - 1];
-      bool bullEngulf = (c > o) && (c1 < o1) && (c >= o1);
-      bool bearEngulf = (c < o) && (c1 > o1) && (c <= o1);
-      double rng = h - l;
-      bool bullPin = rng > 0 && (MathMin(o, c) - l) >= 0.6 * rng && c >= o;
-      bool bearPin = rng > 0 && (h - MathMax(o, c)) >= 0.6 * rng && c <= o;
-      bool bullConfirm = bullEngulf || bullPin;
-      bool bearConfirm = bearEngulf || bearPin;
-      // book, confirmation list: "a small Break of Structure in the trade
-      // direction" — without it a sell fires in the middle of a rally just
-      // because one candle poked the zone
-      double microHi = close[bar - 1], microLo = close[bar - 1];
-      for(int k = 1; k <= InpMicroBosLen && bar - k >= 0; k++)
-        {
-         microHi = MathMax(microHi, close[bar - k]);
-         microLo = MathMin(microLo, close[bar - k]);
-        }
-      bool bosBuyOK  = !InpNeedMicroBos || c > microHi;
-      bool bosSellOK = !InpNeedMicroBos || c < microLo;
       bool brokeSupportNow    = false;
       bool brokeResistanceNow = false;
 
-      //--- resolve the open position ---------------------------------------
-      if(g_ordOn && bar > g_ordBar)
+      //--- fill the resting orders, manage the live trades ------------------
+      for(int i = ArraySize(g_orders) - 1; i >= 0; i--)
         {
-         if(l <= g_ordEntry && h >= g_ordEntry)
+         if(g_orders[i].stat == -9)
            {
-            g_posOn  = true;   g_posBuy = g_ordBuy;  g_posPO2 = g_ordPO2;
-            g_posEntry = g_ordEntry; g_posSL = g_ordSL;
-            g_posTP1 = g_ordTP1; g_posTP2 = g_ordTP2; g_posTP3 = g_ordTP3;
-            // book: Scalper works M5/M15 · Swing works H1/H4/Daily — the
-            // timeframe you TRADE on decides it, nothing else
-            g_posSwing = (PeriodSeconds(_Period) >= 3600);
-            g_posBar = bar;  g_posTime = time[bar];
-            g_posZone = g_ordZone; g_posStat = 0;
-            g_posBE = false; g_posUid = g_ordUid;
-            g_ordOn = false;
+            // a limit can only fill on a bar AFTER it was placed
+            if(bar <= g_orders[i].bar)
+               continue;
+            if(l <= g_orders[i].entry && h >= g_orders[i].entry)
+              {
+               g_orders[i].stat = 0;
+               g_orders[i].bar  = bar;
+               g_orders[i].time = time[bar];
+              }
+            else
+              {
+               bool blown = g_orders[i].buy ? (l <= g_orders[i].sl) : (h >= g_orders[i].sl);
+               bool gone  = g_orders[i].buy ? (h >= g_orders[i].tp1) : (l <= g_orders[i].tp1);
+               if(blown || gone || bar - g_orders[i].bar > InpOrderExpiry)
+                  ArrayRemove(g_orders, i, 1);
+              }
+            continue;
+           }
+         if(g_orders[i].stat != 0)
+            continue;
+
+         // On the FILL bar only the stop may be judged. A buy limit fills
+         // because price traded DOWN to it, so a low beyond the stop came
+         // after the fill — but the bar's high may have printed before it.
+         bool entryBar = (bar == g_orders[i].bar);
+         if(g_orders[i].buy)
+           {
+            if(l <= g_orders[i].sl)          g_orders[i].stat = g_orders[i].be ? -2 : -1;
+            else if(entryBar)                { }
+            else if(h >= g_orders[i].tp3)    g_orders[i].stat = 3;
+            else if(h >= g_orders[i].tp2 && g_orders[i].stat < 2) g_orders[i].stat = 2;
+            else if(h >= g_orders[i].tp1 && g_orders[i].stat < 1) g_orders[i].stat = 1;
            }
          else
            {
-            bool blown = g_ordBuy ? (l <= g_ordSL)  : (h >= g_ordSL);
-            bool gone  = g_ordBuy ? (h >= g_ordTP1) : (l <= g_ordTP1);
-            if(blown || gone || bar - g_ordBar > InpOrderExpiry)
-               g_ordOn = false;      // invalidated, ran away, or timed out
+            if(h >= g_orders[i].sl)          g_orders[i].stat = g_orders[i].be ? -2 : -1;
+            else if(entryBar)                { }
+            else if(l <= g_orders[i].tp3)    g_orders[i].stat = 3;
+            else if(l <= g_orders[i].tp2 && g_orders[i].stat < 2) g_orders[i].stat = 2;
+            else if(l <= g_orders[i].tp1 && g_orders[i].stat < 1) g_orders[i].stat = 1;
            }
-        }
-
-      if(g_posOn)
-        {
-         // On the bar the order filled, only the STOP may be judged. A buy
-         // limit fills because price traded DOWN to it, so a low beyond the
-         // stop came after the fill and is a real stop-out — but the bar's
-         // high may well have printed before the fill, and counting that as a
-         // target reached would be reading the future.
-         bool entryBar = (bar == g_posBar);
-         if(g_posBuy)
+         // book p41: once it pays, make it risk free (Zero Float)
+         if(InpBreakEven && g_orders[i].stat >= 1 && !g_orders[i].be)
            {
-            if(l <= g_posSL)              { g_posStat = g_posBE ? -2 : -1; g_posOn = false; }
-            else if(entryBar)             { }
-            else if(h >= g_posTP3)        { g_posStat =  3; g_posOn = false; }
-            else if(h >= g_posTP2 && g_posStat < 2) g_posStat = 2;
-            else if(h >= g_posTP1 && g_posStat < 1) g_posStat = 1;
+            g_orders[i].sl = g_orders[i].entry;
+            g_orders[i].be = true;
            }
-         else
-           {
-            if(h >= g_posSL)              { g_posStat = g_posBE ? -2 : -1; g_posOn = false; }
-            else if(entryBar)             { }
-            else if(l <= g_posTP3)        { g_posStat =  3; g_posOn = false; }
-            else if(l <= g_posTP2 && g_posStat < 2) g_posStat = 2;
-            else if(l <= g_posTP1 && g_posStat < 1) g_posStat = 1;
-           }
-         // book: once the trade has paid 1:1, make it risk free (Zero Float)
-         if(InpBreakEven && g_posOn && g_posStat >= 1 && !g_posBE)
-           {
-            g_posSL = g_posEntry;
-            g_posBE = true;
-           }
-         if(g_posOn && bar - g_posBar > InpMaxTradeBars)
-            g_posOn = false;                 // never block the next setup forever
-
-         // book: a zone whose signal got stopped out has been broken — it is
-         // finished, and must not hand out the opposite trade at the same level
-         if(InpKillOnStop && !g_posOn && g_posStat == -1 && g_posUid >= 0)
-           {
-            for(int i = 0; i < ArraySize(g_zones); i++)
-               if(g_zones[i].id == g_posUid)
-                  g_zones[i].dead = true;
-            g_posUid = -1;
-           }
+         if(g_orders[i].stat == 0 && bar - g_orders[i].bar > InpMaxTradeBars)
+            g_orders[i].stat = -3;               // timed out, closed flat
+         // a zone that stopped a trade out has proved it is not respected
+         if(InpKillOnStop && g_orders[i].stat == -1)
+            for(int k = 0; k < ArraySize(g_zones); k++)
+               if(g_zones[k].id == g_orders[i].uid)
+                  g_zones[k].dead = true;
         }
 
       // A Weekly/Daily zone can be years old and hundreds of points away. It is
@@ -989,12 +991,9 @@ int OnCalculate(const int rates_total,
             RemoveZoneAt(i);
         }
 
-      // book: don't overtrade — manage one setup at a time
-      // book p41: at TP1 you take the money off and the stop goes to entry —
-      // the setup is FINISHED, it is only riding a free runner. Letting a
-      // risk-free trade keep blocking the next signal is what left charts
-      // showing a position from 285 bars ago with nothing new behind it.
-      bool canFire  = !(InpOneTrade && (g_ordOn || (g_posOn && !g_posBE)));
+      // every zone carries its own order, so nothing blocks anything: the
+      // only limit is one live order per zone and a cap on the total
+      bool canFire = LiveCount() < InpMaxOpen;
 
       // liquidity sweep guard (book): gold takes the sell-side liquidity first
       // and then moves, so a sell right after a fresh low is selling the
@@ -1018,7 +1017,6 @@ int OnCalculate(const int rates_total,
          sweptLow  = (loR <= loW);
          sweptHigh = (hiR >= hiW);
         }
-      bool sigFired = false;
 
       //--- zone engine -----------------------------------------------------
       for(int i = 0; i < ArraySize(g_zones); i++)
@@ -1084,61 +1082,37 @@ int OnCalculate(const int rates_total,
                                (!InpRequireNested  || ZoneNested(i));
                bool okTrend = (!InpTrendFilter || trendUp || trendUnknown ||
                                (InpAllowCounterInv && g_zones[i].state == 2)) && !sweptHigh;
-               bool okConf  = !InpNeedConfirm || bullConfirm;
-               bool fresh   = (g_zones[i].sigTouch != g_zones[i].touches);
-               bool rejectOK = InpNeedReject ? (c > g_zones[i].top) : (c > g_zones[i].bot);
-               if(tradable && okTrend && okConf && fresh && rejectOK && bosBuyOK && canFire && !sigFired)
+               // one order per zone, placed while price is still ABOVE it and
+               // aimed at the NEXT zone up. The book puts a LIMIT on the zone
+               // BEFORE price gets there — no rejection candle is waited for.
+               if(tradable && okTrend && canFire && !HasOrder(g_zones[i].id) && c > g_zones[i].top)
                  {
-                  g_zones[i].sigTouch = g_zones[i].touches;
-                  bool isPO2 = (g_zones[i].state == 2 && g_zones[i].touches == 2);
-                  sigFired = true;
-                  if(isPO2)
-                    {
-                     BufPO2Buy[bar] = l - atr * 0.4;
-                     Notify("PO2 BUY — Power of Second Touch at " + ZoneText(g_zones[i]), live);
-                    }
-                  else
-                    {
-                     BufBuy[bar] = l - atr * 0.3;
-                     Notify("BUY — rejection at " + ZoneText(g_zones[i]), live);
-                    }
-                  // p41/p42: the order sits AT the zone, the stop just
-                  // beyond it, and TP1 is the 1:1 line. On the author's own
-                  // chart — zone 4706.13-4720, stop 4698.67 — the red 1:1 line
-                  // at 4732.33 is exactly the zone plus that 16.8 of risk.
                   double swingLo = MathMin(MathMin(low[bar], low[bar - 1]), low[bar - 2]);
                   double zAtr    = g_zones[i].htf ? atrA : atr;
-                  double entry   = c;
-                  double rawSl   = MathMin(g_zones[i].bot, swingLo) - zAtr * 0.15;
-                  if(InpEntryAtZone)
-                    {
-                     double mid = (g_zones[i].top + g_zones[i].bot) / 2.0;
-                     // the edge price meets first coming back DOWN to a support
-                     entry = MathMin(InpEntryEdge ? g_zones[i].top : mid, c);
-                     rawSl = MathMin(g_zones[i].bot, swingLo) - zAtr * InpSlBufferATR;
-                    }
+                  double entry   = g_zones[i].top;
+                  double rawSl   = MathMin(g_zones[i].bot, swingLo) - zAtr * InpSlBufferATR;
                   double risk    = MathMax(MathAbs(entry - rawSl), atr * InpMinSlATR);
-                  double t1, t2, t3;
-                  BuildTargets(true, entry, risk, t1, t2, t3);
-                  if(InpEntryAtZone)
-                     t1 = entry + risk * InpRrTp1;   // p41: TP1 IS the 1:1 line
-                  if(InpEntryAtZone)
+                  double t1 = NextZone(true, entry, 0);
+                  if(t1 > 0.0 && (t1 - entry) >= risk * InpMinRR)
                     {
-                     g_ordOn = true; g_ordBuy = true; g_ordPO2 = isPO2;
-                     g_ordEntry = entry; g_ordSL = entry - risk;
-                     g_ordTP1 = t1; g_ordTP2 = t2; g_ordTP3 = t3;
-                     g_ordBar = bar; g_ordZone = ZoneText(g_zones[i]);
-                     g_ordUid = g_zones[i].id;
-                    }
-                  else
-                    {
-                     g_posOn = true; g_posBuy = true; g_posPO2 = isPO2;
-                     g_posEntry = entry; g_posSL = entry - risk;
-                     g_posTP1 = t1; g_posTP2 = t2; g_posTP3 = t3;
-                     g_posSwing = (PeriodSeconds(_Period) >= 3600);
-                     g_posBar = bar; g_posTime = time[bar];
-                     g_posZone = ZoneText(g_zones[i]); g_posStat = 0;
-                     g_posBE = false; g_posUid = g_zones[i].id;
+                     double t2 = NextZone(true, entry, 1);
+                     double t3 = NextZone(true, entry, 2);
+                     if(t2 <= 0.0) t2 = entry + (t1 - entry) * 2.0;
+                     if(t3 <= 0.0) t3 = entry + (t1 - entry) * 3.0;
+                     bool isPO2 = (g_zones[i].state == 2 && g_zones[i].touches == 2);
+                     if(isPO2)
+                       {
+                        BufPO2Buy[bar] = l - atr * 0.4;
+                        Notify("PO2 BUY limit at " + ZoneText(g_zones[i]), live);
+                       }
+                     else
+                       {
+                        BufBuy[bar] = l - atr * 0.3;
+                        Notify("BUY limit at " + ZoneText(g_zones[i]), live);
+                       }
+                     PushOrder(true, isPO2, g_zones[i].id, bar, time[bar], entry,
+                               entry - risk, t1, t2, t3, ZoneText(g_zones[i]),
+                               risk, PeriodSeconds(_Period) >= 3600);
                     }
                  }
               }
@@ -1198,56 +1172,34 @@ int OnCalculate(const int rates_total,
                                (!InpRequireNested  || ZoneNested(i));
                bool okTrend = (!InpTrendFilter || trendDown || trendUnknown ||
                                (InpAllowCounterInv && g_zones[i].state == 2)) && !sweptLow;
-               bool okConf  = !InpNeedConfirm || bearConfirm;
-               bool fresh   = (g_zones[i].sigTouch != g_zones[i].touches);
-               bool rejectOK = InpNeedReject ? (c < g_zones[i].bot) : (c < g_zones[i].top);
-               if(tradable && okTrend && okConf && fresh && rejectOK && bosSellOK && canFire && !sigFired)
+               if(tradable && okTrend && canFire && !HasOrder(g_zones[i].id) && c < g_zones[i].bot)
                  {
-                  g_zones[i].sigTouch = g_zones[i].touches;
-                  bool isPO2 = (g_zones[i].state == 2 && g_zones[i].touches == 2);
-                  sigFired = true;
-                  if(isPO2)
-                    {
-                     BufPO2Sell[bar] = h + atr * 0.4;
-                     Notify("PO2 SELL — Power of Second Touch at " + ZoneText(g_zones[i]), live);
-                    }
-                  else
-                    {
-                     BufSell[bar] = h + atr * 0.3;
-                     Notify("SELL — rejection at " + ZoneText(g_zones[i]), live);
-                    }
                   double swingHi = MathMax(MathMax(high[bar], high[bar - 1]), high[bar - 2]);
                   double zAtr    = g_zones[i].htf ? atrA : atr;
-                  double entry   = c;
-                  double rawSl   = MathMax(g_zones[i].top, swingHi) + zAtr * 0.15;
-                  if(InpEntryAtZone)
-                    {
-                     double mid = (g_zones[i].top + g_zones[i].bot) / 2.0;
-                     entry = MathMax(InpEntryEdge ? g_zones[i].bot : mid, c);
-                     rawSl = MathMax(g_zones[i].top, swingHi) + zAtr * InpSlBufferATR;
-                    }
+                  double entry   = g_zones[i].bot;
+                  double rawSl   = MathMax(g_zones[i].top, swingHi) + zAtr * InpSlBufferATR;
                   double risk    = MathMax(MathAbs(rawSl - entry), atr * InpMinSlATR);
-                  double t1, t2, t3;
-                  BuildTargets(false, entry, risk, t1, t2, t3);
-                  if(InpEntryAtZone)
-                     t1 = entry - risk * InpRrTp1;   // p41: TP1 IS the 1:1 line
-                  if(InpEntryAtZone)
+                  double t1 = NextZone(false, entry, 0);
+                  if(t1 > 0.0 && (entry - t1) >= risk * InpMinRR)
                     {
-                     g_ordOn = true; g_ordBuy = false; g_ordPO2 = isPO2;
-                     g_ordEntry = entry; g_ordSL = entry + risk;
-                     g_ordTP1 = t1; g_ordTP2 = t2; g_ordTP3 = t3;
-                     g_ordBar = bar; g_ordZone = ZoneText(g_zones[i]);
-                     g_ordUid = g_zones[i].id;
-                    }
-                  else
-                    {
-                     g_posOn = true; g_posBuy = false; g_posPO2 = isPO2;
-                     g_posEntry = entry; g_posSL = entry + risk;
-                     g_posTP1 = t1; g_posTP2 = t2; g_posTP3 = t3;
-                     g_posSwing = (PeriodSeconds(_Period) >= 3600);
-                     g_posBar = bar; g_posTime = time[bar];
-                     g_posZone = ZoneText(g_zones[i]); g_posStat = 0;
-                     g_posBE = false; g_posUid = g_zones[i].id;
+                     double t2 = NextZone(false, entry, 1);
+                     double t3 = NextZone(false, entry, 2);
+                     if(t2 <= 0.0) t2 = entry - (entry - t1) * 2.0;
+                     if(t3 <= 0.0) t3 = entry - (entry - t1) * 3.0;
+                     bool isPO2 = (g_zones[i].state == 2 && g_zones[i].touches == 2);
+                     if(isPO2)
+                       {
+                        BufPO2Sell[bar] = h + atr * 0.4;
+                        Notify("PO2 SELL limit at " + ZoneText(g_zones[i]), live);
+                       }
+                     else
+                       {
+                        BufSell[bar] = h + atr * 0.3;
+                        Notify("SELL limit at " + ZoneText(g_zones[i]), live);
+                       }
+                     PushOrder(false, isPO2, g_zones[i].id, bar, time[bar], entry,
+                               entry + risk, t1, t2, t3, ZoneText(g_zones[i]),
+                               risk, PeriodSeconds(_Period) >= 3600);
                     }
                  }
               }

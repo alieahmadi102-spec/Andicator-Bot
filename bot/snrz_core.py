@@ -140,7 +140,8 @@ class Config:
     min_sl_atr: float = 2.5     # a floor against noise, NOT a way to buy a
                                 # win rate. A stop so wide it can never be hit
                                 # turns every open loser into a fake 'win'.
-    one_trade: bool = True      # book: don't overtrade — one setup at a time
+    max_open: int = 3           # how many zones may carry a live order/trade
+    min_rr: float = 1.0         # the next zone must be at least this many R away
     max_trade_bars: int = 60    # a setup that never resolves must not linger
     rr_tp1: float = 1.0     # fallback TP1 = SL distance x this (book: at least 1:1)
     tp_max_r: float = 6.0   # a zone further than this many R is not a FIRST target
@@ -155,7 +156,6 @@ class Config:
     # p39: zones are marked on W/D/4H/1H; the low timeframes only MONITOR.
     entries_htf_only: bool = False
     # p42: entry at the zone midpoint, stop just beyond the zone, TP1 at 1:1
-    entry_at_zone: bool = True
     entry_edge: bool = True      # limit at the near edge of the zone, not its mid
     sl_buffer_atr: float = 0.8   # the book puts the stop just beyond the zone,
                                  # on the liquidity behind it
@@ -178,11 +178,15 @@ class Config:
 
 @dataclass
 class PendingOrder:
-    """The book places a LIMIT order at the zone (p41/p42), so the fill can
-    only happen on a bar AFTER the confirmation candle closed. Opening the
-    position at the zone price on the confirmation bar itself would be reading
-    the future: the signal is only known at that bar's close, by which time
-    price has already left the zone."""
+    """A limit order resting AT one zone (book p41/p42).
+
+    One order per zone, placed the moment the zone becomes tradable, and the
+    target is the NEXT zone in the trade direction — that is the book's own
+    picture: zones stacked up the chart, an order on each, each one aiming at
+    the one above (or below) it. Earlier builds ran a single trade at a time
+    with a 1R target, so most zones never got an order at all and the target
+    had nothing to do with the chart.
+    """
     bar: int
     side: str
     zone: str
@@ -235,8 +239,11 @@ class SnrzEngine:
         self._bos_dn_prev = False
         self.in_range = False
         # the single open setup (book: one trade at a time)
-        self.position: Optional["Position"] = None
-        self.pending: Optional["PendingOrder"] = None
+        # one order and one trade PER ZONE — the book stacks zones and puts
+        # an order on each; a single-slot engine could never do that.
+        self.orders: List["PendingOrder"] = []
+        self.trades: List["Position"] = []
+        self.position: Optional["Position"] = None   # the newest, for display
         self._zone_seq = 0
         # analysis-timeframe stream, aggregated from the chart candles
         self.htf_candles: List[Candle] = []
@@ -492,77 +499,11 @@ class SnrzEngine:
 
     # ── targets (book p.44): TP1 from a CHART zone, TP2 from an ANALYSIS
     #    zone, TP3 whatever lies beyond — 1R / 2R / 3R when no zone is there ──
-    def _targets(self, is_buy: bool, entry: float, risk: float) -> tuple[float, float, float]:
-        cap = risk * self.cfg.tp_max_r
-        d1 = d2 = d3 = None
-        for z in self.zones:
-            if z.dead:
-                continue
-            lvl = z.bot if is_buy else z.top
-            ahead = (z.role == Role.RESISTANCE and lvl > entry) if is_buy \
-                else (z.role == Role.SUPPORT and lvl < entry)
-            if not ahead:
-                continue
-            d = abs(lvl - entry)
-            if not z.htf and d <= cap and (d1 is None or d < d1):
-                d1 = d
-            if z.htf and (d2 is None or d < d2):
-                d2 = d
-            if d3 is None or d > d3:
-                d3 = d
-        # p41: "you can set the red line as the 1:1 risk-reward target" — so
-        # TP1 is 1R, not whatever zone happens to be nearest.
-        d1 = risk * self.cfg.rr_tp1 if self.cfg.entry_at_zone else \
-            (risk if d1 is None else max(d1, risk))
-        d2 = max(d1 + risk, risk * 2) if (d2 is None or d2 <= d1) else d2
-        d3 = max(d2 + risk, risk * 3) if (d3 is None or d3 <= d2) else d3
-        # a zone can sit absurdly far away — on a 5m scalp that produced a TP2
-        # 275 points from entry, which is not a target, it is a wish
-        d2 = min(d2, cap)
-        d3 = min(d3, cap * 1.5)
-        d2 = max(d2, d1 * 1.5)
-        d3 = max(d3, d2 * 1.5)
-        if is_buy:
-            return entry + d1, entry + d2, entry + d3
-        return entry - d1, entry - d2, entry - d3
-
-    def _levels(self, is_buy: bool, z: "Zone", c: Candle, atr: float):
-        """Book p41/p42: the order sits at the zone, the stop just beyond it,
-        and the first target is the 1:1 line. Measuring the author's own chart
-        confirms it — zone 4706.13-4720, stop 4698.67, and the red 1:1 line at
-        4732.33 is exactly the midpoint 4715.5 plus that 16.8 of risk.
-        Entering at the confirmation candle's close instead made the stop as
-        wide as the whole zone plus the candle."""
-        cfg = self.cfg
-        if cfg.entry_at_zone:
-            mid = (z.top + z.bot) / 2
-            # book: "SL outside the zone, below/above the wick of the
-            # confirmation candle — on the liquidity". Both halves matter: a
-            # stop pinned to the zone edge alone is a hair wide and gets swept.
-            wick_lo = min(w.low for w in self.candles[-3:])
-            wick_hi = max(w.high for w in self.candles[-3:])
-            if is_buy:
-                # the edge price meets first coming back down to a support
-                entry = min(z.top if cfg.entry_edge else mid, c.close)
-                raw_sl = min(z.bot, wick_lo) - atr * cfg.sl_buffer_atr
-            else:
-                entry = max(z.bot if cfg.entry_edge else mid, c.close)
-                raw_sl = max(z.top, wick_hi) + atr * cfg.sl_buffer_atr
-        else:
-            entry = c.close
-            if is_buy:
-                raw_sl = min(z.bot, min(w.low for w in self.candles[-3:])) - atr * 0.15
-            else:
-                raw_sl = max(z.top, max(w.high for w in self.candles[-3:])) + atr * 0.15
-        risk = max(abs(entry - raw_sl), atr * cfg.min_sl_atr)
-        sl = entry - risk if is_buy else entry + risk
-        tp1, tp2, tp3 = self._targets(is_buy, entry, risk)
-        return entry, sl, tp1, tp2, tp3
-
     def _fresh_extreme(self, idx: int, is_high: bool) -> bool:
         """True when the last few bars have just taken out the extreme of the
-        whole lookback — the liquidity grab of book §15. Selling straight into
-        a fresh low (or buying a fresh high) is taking the wrong side of it."""
+        whole lookback — the liquidity grab of the book's liquidity section.
+        Selling straight into a fresh low (or buying a fresh high) is taking
+        the wrong side of it."""
         n = self.cfg.sweep_bars
         if idx < n:
             return False
@@ -573,72 +514,124 @@ class SnrzEngine:
         return min(w.low for w in recent) <= min(w.low for w in window)
 
     def _nested(self, z: "Zone") -> bool:
-        """p14/p35: the small zone sits INSIDE the big one — a chart-timeframe
-        zone is only worth trading where the analysis timeframe already marked
-        the same area with the same role."""
+        """p14: the small zone sits INSIDE the big one."""
         if z.htf:
             return True
         return any(h.htf and not h.dead and h.role == z.role
                    and z.bot <= h.top and z.top >= h.bot for h in self.zones)
 
-    def _fill_pending(self, c: Candle, idx: int):
-        """A resting limit order fills when price trades back to it."""
-        o = self.pending
-        if o is None or idx <= o.bar:
-            return
-        if c.low <= o.entry <= c.high:
-            self.position = Position(idx, o.side, o.zone, o.po2, o.entry, o.sl,
-                                     o.tp1, o.tp2, o.tp3,
-                                     risk0=abs(o.entry - o.sl), uid=o.uid)
-            self.pending = None
-            return
-        blown = (c.high >= o.sl) if o.side == "sell" else (c.low <= o.sl)
-        gone = (c.low <= o.tp1) if o.side == "sell" else (c.high >= o.tp1)
-        if blown or idx - o.bar > self.cfg.order_expiry_bars or gone:
-            self.pending = None          # invalidated, ran away, or timed out
+    def _zones_ahead(self, is_buy: bool, entry: float) -> List[float]:
+        """The opposite-role zones lying ahead of the entry, nearest first.
 
-    def _update_position(self, c: Candle, idx: int):
-        p = self.position
-        if p is None or p.closed:
-            return
-        # On the bar the limit order filled, only the STOP may be judged. A buy
-        # limit fills because price traded DOWN to it, so a low beyond the stop
-        # came after the fill and is a real stop-out — but the bar's high may
-        # well have printed before the fill, and counting that as a target
-        # reached is reading the future. It is worth ~0.2R a trade.
-        entry_bar = idx == p.index
-        if p.side == "buy":
-            if c.low <= p.sl:
-                p.stat, p.closed = (-2 if p.be else -1), True
-            elif entry_bar:
-                pass
-            elif c.high >= p.tp3:
-                p.stat, p.closed = 3, True
-            elif c.high >= p.tp2 and p.stat < 2:
-                p.stat = 2
-            elif c.high >= p.tp1 and p.stat < 1:
-                p.stat = 1
+        This is the whole target rule: a BUY aims at the next SELL zone above
+        it, that zone's own order aims at the one above THAT, and so on up the
+        chart. No 1R guesswork — the chart supplies the targets."""
+        out = []
+        for z in self.zones:
+            if z.dead:
+                continue
+            if is_buy and z.role == Role.RESISTANCE and z.bot > entry:
+                out.append(z.bot)
+            elif (not is_buy) and z.role == Role.SUPPORT and z.top < entry:
+                out.append(z.top)
+        out.sort(reverse=not is_buy)
+        return out
+
+    def _levels(self, is_buy: bool, z: "Zone", c: Candle, atr: float):
+        """Order at the zone, stop just beyond it, targets = the next zones.
+
+        Returns None when there is no zone ahead to aim at — the book's "No
+        Setup, No Trade". Inventing a 1R target where the chart offers nothing
+        is exactly the guesswork this is meant to remove."""
+        cfg = self.cfg
+        wick_lo = min(w.low for w in self.candles[-3:])
+        wick_hi = max(w.high for w in self.candles[-3:])
+        if is_buy:
+            entry = z.top                      # the edge price meets first
+            raw_sl = min(z.bot, wick_lo) - atr * cfg.sl_buffer_atr
         else:
-            if c.high >= p.sl:
-                p.stat, p.closed = (-2 if p.be else -1), True
-            elif entry_bar:
-                pass
-            elif c.low <= p.tp3:
-                p.stat, p.closed = 3, True
-            elif c.low <= p.tp2 and p.stat < 2:
-                p.stat = 2
-            elif c.low <= p.tp1 and p.stat < 1:
-                p.stat = 1
-        # book: once the trade has paid 1:1, make it risk free (Zero Float)
-        if self.cfg.break_even and not p.closed and p.stat >= 1 and not p.be:
-            p.sl, p.be = p.entry, True
-        if not p.closed and idx - p.index > self.cfg.max_trade_bars:
-            p.closed = True
-        # book: a zone whose signal got stopped out has been broken — finished
-        if self.cfg.kill_on_stop and p.closed and p.stat == -1:
-            for z in self.zones:
-                if z.uid == p.uid:
-                    z.dead = True
+            entry = z.bot
+            raw_sl = max(z.top, wick_hi) + atr * cfg.sl_buffer_atr
+        risk = max(abs(entry - raw_sl), atr * cfg.min_sl_atr)
+        sl = entry - risk if is_buy else entry + risk
+
+        ahead = self._zones_ahead(is_buy, entry)
+        # the first target must be worth the risk, or the setup is not one
+        ahead = [t for t in ahead if abs(t - entry) >= risk * cfg.min_rr]
+        if not ahead:
+            return None
+        tp1 = ahead[0]
+        tp2 = ahead[1] if len(ahead) > 1 else (entry + (tp1 - entry) * 2)
+        tp3 = ahead[2] if len(ahead) > 2 else (entry + (tp1 - entry) * 3)
+        return entry, sl, tp1, tp2, tp3
+
+    def _has_order_or_trade(self, uid: int) -> bool:
+        return any(o.uid == uid for o in self.orders) or \
+            any(t.uid == uid and not t.closed for t in self.trades)
+
+    def _fill_orders(self, c: Candle, idx: int):
+        """A resting limit fills when price trades back to it, never on the bar
+        it was placed."""
+        keep = []
+        for o in self.orders:
+            if idx <= o.bar:
+                keep.append(o)
+                continue
+            if c.low <= o.entry <= c.high:
+                t = Position(idx, o.side, o.zone, o.po2, o.entry, o.sl,
+                             o.tp1, o.tp2, o.tp3,
+                             risk0=abs(o.entry - o.sl), uid=o.uid)
+                self.trades.append(t)
+                self.position = t
+                continue                          # order consumed
+            blown = (c.high >= o.sl) if o.side == "sell" else (c.low <= o.sl)
+            gone = (c.low <= o.tp1) if o.side == "sell" else (c.high >= o.tp1)
+            if blown or gone or idx - o.bar > self.cfg.order_expiry_bars:
+                continue                          # invalidated or timed out
+            keep.append(o)
+        self.orders = keep
+
+    def _update_trades(self, c: Candle, idx: int):
+        for p in self.trades:
+            if p.closed:
+                continue
+            # on the fill bar only the STOP may be judged: a buy limit fills
+            # because price traded DOWN to it, so a low beyond the stop came
+            # after the fill, but the bar's high may have printed before it
+            entry_bar = idx == p.index
+            if p.side == "buy":
+                if c.low <= p.sl:
+                    p.stat, p.closed = (-2 if p.be else -1), True
+                elif entry_bar:
+                    pass
+                elif c.high >= p.tp3:
+                    p.stat, p.closed = 3, True
+                elif c.high >= p.tp2 and p.stat < 2:
+                    p.stat = 2
+                elif c.high >= p.tp1 and p.stat < 1:
+                    p.stat = 1
+            else:
+                if c.high >= p.sl:
+                    p.stat, p.closed = (-2 if p.be else -1), True
+                elif entry_bar:
+                    pass
+                elif c.low <= p.tp3:
+                    p.stat, p.closed = 3, True
+                elif c.low <= p.tp2 and p.stat < 2:
+                    p.stat = 2
+                elif c.low <= p.tp1 and p.stat < 1:
+                    p.stat = 1
+            # book p41: once it pays, make it risk free
+            if self.cfg.break_even and not p.closed and p.stat >= 1 and not p.be:
+                p.sl, p.be = p.entry, True
+            if not p.closed and idx - p.index > self.cfg.max_trade_bars:
+                p.closed = True
+            if self.cfg.kill_on_stop and p.closed and p.stat == -1:
+                for z in self.zones:
+                    if z.uid == p.uid:
+                        z.dead = True
+        if len(self.trades) > 400:
+            self.trades = [t for t in self.trades if not t.closed][-200:]
 
     @property
     def _effective_trend(self) -> int:
@@ -689,8 +682,8 @@ class SnrzEngine:
                 self._pivot_zones(self.htf_candles, self.cfg.pivot_htf, atr_h,
                                   idx, htf=True, track_trend=True)
                 self._update_trend(self.htf_candles[-1], atr_h, idx)
-        self._fill_pending(c, idx)
-        self._update_position(c, idx)
+        self._fill_orders(c, idx)
+        self._update_trades(c, idx)
         # expire zones by age, and drop any that price has left far behind
         atr_h = self._htf_atr() or atr
         kept: List[Zone] = []
@@ -714,13 +707,10 @@ class SnrzEngine:
         cfg = self.cfg
         broke_support = broke_resistance = False
         # book: don't overtrade — while a setup is running, no new signal
-        # book p41: at TP1 you take the money off and the stop goes to entry —
-        # the setup is FINISHED, it is only riding a free runner. Letting a
-        # risk-free trade keep blocking the next signal is what left charts
-        # showing a position from 285 bars ago with nothing new behind it.
-        blocking_pos = self.position is not None and self.position.open \
-            and not self.position.be
-        can_fire = not (cfg.one_trade and (self.pending is not None or blocking_pos))
+        # Every zone gets its OWN order, so nothing blocks anything: the only
+        # limit is one live order per zone and a cap on how many run at once.
+        live = len(self.orders) + sum(1 for t in self.trades if not t.closed)
+        can_fire = live < cfg.max_open
 
         for z in self.zones:
             if idx <= z.born_index:
@@ -773,20 +763,18 @@ class SnrzEngine:
                         ok_trend = False
                     ok_conf = (not cfg.need_confirm) or bull_conf
                     reject_ok = c.close > z.top if cfg.need_reject else c.close > z.bot
-                    if tradable and ok_trend and ok_conf and z.sig_touch != z.touches \
-                            and reject_ok and bos_buy_ok and can_fire and not out:
-                        z.sig_touch = z.touches            # one signal per touch
-                        entry, sl, tp1, tp2, tp3 = self._levels(True, z, c, atr)
-                        po2 = z.state == State.INVERTED and z.touches == 2
-                        out.append(Signal(idx, "buy", "PO2" if po2 else "rejection",
-                                          z.kind, entry, sl, tp1, tp2, tp3))
-                        if cfg.entry_at_zone:
-                            self.pending = PendingOrder(idx, "buy", z.kind, po2,
-                                                        z.uid, entry, sl, tp1, tp2, tp3)
-                        else:
-                            self.position = Position(idx, "buy", z.kind, po2,
-                                                     entry, sl, tp1, tp2, tp3,
-                                                     risk0=abs(entry - sl), uid=z.uid)
+                    if tradable and ok_trend and can_fire \
+                            and not self._has_order_or_trade(z.uid) \
+                            and c.close > z.top:      # price is ABOVE the zone
+                        lv = self._levels(True, z, c, atr)
+                        if lv is not None:
+                            entry, sl, tp1, tp2, tp3 = lv
+                            po2 = z.state == State.INVERTED and z.touches == 2
+                            out.append(Signal(idx, "buy", "PO2" if po2 else "limit",
+                                              z.kind, entry, sl, tp1, tp2, tp3))
+                            self.orders.append(PendingOrder(
+                                idx, "buy", z.kind, po2, z.uid,
+                                entry, sl, tp1, tp2, tp3))
             else:
                 if z.pend_dir == 0 and self._bull_break(z.top, c):
                     z.pend_bar, z.pend_dir = idx, 1
@@ -833,20 +821,18 @@ class SnrzEngine:
                         ok_trend = False
                     ok_conf = (not cfg.need_confirm) or bear_conf
                     reject_ok = c.close < z.bot if cfg.need_reject else c.close < z.top
-                    if tradable and ok_trend and ok_conf and z.sig_touch != z.touches \
-                            and reject_ok and bos_sell_ok and can_fire and not out:
-                        z.sig_touch = z.touches
-                        entry, sl, tp1, tp2, tp3 = self._levels(False, z, c, atr)
-                        po2 = z.state == State.INVERTED and z.touches == 2
-                        out.append(Signal(idx, "sell", "PO2" if po2 else "rejection",
-                                          z.kind, entry, sl, tp1, tp2, tp3))
-                        if cfg.entry_at_zone:
-                            self.pending = PendingOrder(idx, "sell", z.kind, po2,
-                                                        z.uid, entry, sl, tp1, tp2, tp3)
-                        else:
-                            self.position = Position(idx, "sell", z.kind, po2,
-                                                     entry, sl, tp1, tp2, tp3,
-                                                     risk0=abs(entry - sl), uid=z.uid)
+                    if tradable and ok_trend and can_fire \
+                            and not self._has_order_or_trade(z.uid) \
+                            and c.close < z.bot:      # price is BELOW the zone
+                        lv = self._levels(False, z, c, atr)
+                        if lv is not None:
+                            entry, sl, tp1, tp2, tp3 = lv
+                            po2 = z.state == State.INVERTED and z.touches == 2
+                            out.append(Signal(idx, "sell", "PO2" if po2 else "limit",
+                                              z.kind, entry, sl, tp1, tp2, tp3))
+                            self.orders.append(PendingOrder(
+                                idx, "sell", z.kind, po2, z.uid,
+                                entry, sl, tp1, tp2, tp3))
             z.in_zone_prev = in_zone
 
         # SRR / RSS qualification (book): a Support whose move broke >=2
