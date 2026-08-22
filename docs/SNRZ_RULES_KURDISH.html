@@ -1,0 +1,461 @@
+<title>ڕێساکانی زۆنی SNRZ</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Noto+Kufi+Arabic:wght@500;700&family=Noto+Naskh+Arabic:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+
+<style>
+  :root{
+    --ground:#F6F2EA;
+    --surface:#FFFDF8;
+    --surface-2:#F0EADD;
+    --ink:#1C1814;
+    --muted:#6B6155;
+    --gold:#8A6413;
+    --gold-soft:#B98F2E;
+    --claret:#7A2020;
+    --line:#E0D6C3;
+    --line-soft:#EBE3D5;
+    --ok:#2F6B45;
+    --warn:#8A5A10;
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --ground:#12100E;
+      --surface:#1B1815;
+      --surface-2:#221E1A;
+      --ink:#F1EADD;
+      --muted:#A3988A;
+      --gold:#D9AE4B;
+      --gold-soft:#8C7233;
+      --claret:#C86A5C;
+      --line:#2F2822;
+      --line-soft:#262019;
+      --ok:#6FBB8B;
+      --warn:#D9AE4B;
+    }
+  }
+  :root[data-theme="dark"]{
+    --ground:#12100E;
+    --surface:#1B1815;
+    --surface-2:#221E1A;
+    --ink:#F1EADD;
+    --muted:#A3988A;
+    --gold:#D9AE4B;
+    --gold-soft:#8C7233;
+    --claret:#C86A5C;
+    --line:#2F2822;
+    --line-soft:#262019;
+    --ok:#6FBB8B;
+    --warn:#D9AE4B;
+  }
+
+  body{
+    background:var(--ground);
+    color:var(--ink);
+    font-family:"Noto Naskh Arabic","Segoe UI",Tahoma,sans-serif;
+    font-size:17px;
+    line-height:2;
+    margin:0;
+    -webkit-font-smoothing:antialiased;
+  }
+  .doc{max-width:1020px;margin:0 auto;padding:0 20px 96px;}
+  .prose{max-width:66ch;}
+
+  /* ── masthead ─────────────────────────────────────────── */
+  .mast{
+    border-bottom:2px solid var(--gold);
+    padding:56px 0 26px;
+    margin-bottom:44px;
+  }
+  .eyebrow{
+    font-family:"IBM Plex Mono",monospace;
+    font-size:12px;letter-spacing:.16em;
+    color:var(--gold);text-transform:uppercase;
+    margin:0 0 14px;
+  }
+  h1{
+    font-family:"Noto Kufi Arabic",sans-serif;
+    font-weight:700;font-size:clamp(30px,5.4vw,46px);
+    line-height:1.5;margin:0 0 12px;text-wrap:balance;
+  }
+  .sub{color:var(--muted);font-size:17px;margin:0;max-width:60ch;}
+  .stamp{
+    display:flex;flex-wrap:wrap;gap:8px 22px;margin-top:22px;
+    font-family:"IBM Plex Mono",monospace;font-size:12.5px;color:var(--muted);
+  }
+
+  /* ── sections ─────────────────────────────────────────── */
+  section{margin:0 0 56px;}
+  h2{
+    font-family:"Noto Kufi Arabic",sans-serif;
+    font-weight:700;font-size:23px;line-height:1.7;
+    margin:0 0 6px;display:flex;align-items:baseline;gap:12px;
+  }
+  h2 .num{
+    font-family:"IBM Plex Mono",monospace;font-size:14px;
+    color:var(--gold);flex:none;
+  }
+  h2 + .lede{color:var(--muted);margin:0 0 22px;max-width:62ch;}
+  h3{
+    font-family:"Noto Kufi Arabic",sans-serif;
+    font-weight:500;font-size:17px;margin:30px 0 10px;
+  }
+  p{margin:0 0 14px;}
+
+  /* ── chips ────────────────────────────────────────────── */
+  .chip{
+    display:inline-block;font-family:"IBM Plex Mono",monospace;
+    font-size:11px;letter-spacing:.04em;line-height:1.9;
+    padding:0 8px;border-radius:3px;white-space:nowrap;
+    border:1px solid transparent;
+  }
+  .chip-book{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 40%,transparent);
+             background:color-mix(in srgb,var(--ok) 10%,transparent);}
+  .chip-mine{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 45%,transparent);
+             background:color-mix(in srgb,var(--warn) 12%,transparent);}
+  .n{font-family:"IBM Plex Mono",monospace;font-size:.92em;font-weight:500;
+     font-variant-numeric:tabular-nums;color:var(--gold);}
+  .tag{font-family:"IBM Plex Mono",monospace;font-weight:600;font-size:.9em;}
+
+  /* ── tables ───────────────────────────────────────────── */
+  .scroll{overflow-x:auto;margin:0 0 10px;border:1px solid var(--line);
+          border-radius:6px;background:var(--surface);}
+  table{border-collapse:collapse;width:100%;min-width:560px;}
+  th,td{padding:11px 14px;text-align:right;border-bottom:1px solid var(--line-soft);
+        vertical-align:top;line-height:1.85;}
+  thead th{
+    font-family:"Noto Kufi Arabic",sans-serif;font-weight:500;font-size:13px;
+    color:var(--muted);background:var(--surface-2);
+    border-bottom:1px solid var(--line);white-space:nowrap;
+  }
+  tbody tr:last-child td{border-bottom:none;}
+  td.mono,th.mono{font-family:"IBM Plex Mono",monospace;font-variant-numeric:tabular-nums;
+                  white-space:nowrap;font-size:14px;}
+  .pic{font-family:"IBM Plex Mono",monospace;font-size:12.5px;color:var(--muted);white-space:nowrap;}
+  .side-buy{color:var(--ok);font-weight:600;}
+  .side-sell{color:var(--claret);font-weight:600;}
+
+  /* ── lifecycle flow ───────────────────────────────────── */
+  .flow{
+    display:flex;flex-wrap:wrap;align-items:stretch;gap:10px;
+    margin:6px 0 18px;
+  }
+  .node{
+    background:var(--surface);border:1px solid var(--line);border-radius:6px;
+    padding:12px 16px;min-width:132px;flex:1 1 132px;
+  }
+  .node b{display:block;font-family:"IBM Plex Mono",monospace;font-size:13px;
+          letter-spacing:.03em;margin-bottom:2px;}
+  .node span{font-size:13.5px;color:var(--muted);line-height:1.7;display:block;}
+  .node.fresh b{color:var(--muted);}
+  .node.valid{border-color:var(--gold-soft);}
+  .node.valid b{color:var(--gold);}
+  .node.inv b{color:var(--claret);}
+  .node.done{border-style:dashed;}
+  .node.done b{color:var(--muted);}
+  .arrow{
+    align-self:center;font-family:"IBM Plex Mono",monospace;
+    color:var(--gold-soft);font-size:15px;flex:none;
+  }
+
+  /* ── callout ──────────────────────────────────────────── */
+  .note{
+    background:var(--surface);border-right:3px solid var(--gold);
+    border-radius:0 6px 6px 0;padding:16px 20px;margin:0 0 20px;
+  }
+  .note p:last-child{margin-bottom:0;}
+
+  /* ── question cards ───────────────────────────────────── */
+  .qs{display:flex;flex-direction:column;gap:14px;}
+  .q{
+    background:var(--surface);border:1px solid var(--line);
+    border-right:3px solid var(--claret);border-radius:0 6px 6px 0;
+    padding:18px 20px;
+  }
+  .q h4{
+    font-family:"Noto Kufi Arabic",sans-serif;font-weight:500;font-size:16.5px;
+    margin:0 0 8px;display:flex;gap:10px;align-items:baseline;
+  }
+  .q h4 .qn{font-family:"IBM Plex Mono",monospace;font-size:13px;color:var(--claret);flex:none;}
+  .q p{margin:0 0 8px;font-size:16px;}
+  .q p:last-child{margin:0;}
+  .q .ask{color:var(--gold);font-weight:700;}
+
+  ul{margin:0 0 16px;padding-right:22px;}
+  li{margin-bottom:7px;}
+  li::marker{color:var(--gold-soft);}
+
+  footer{
+    border-top:1px solid var(--line);margin-top:64px;padding-top:22px;
+    color:var(--muted);font-size:14px;
+  }
+  footer .mono{font-family:"IBM Plex Mono",monospace;font-size:13px;}
+</style>
+
+<div class="doc" dir="rtl" lang="ckb">
+
+  <header class="mast">
+    <p class="eyebrow">SNRZ · Zindan The Gold Chaser</p>
+    <h1>ڕێساکانی زۆن — ئەوەی بۆتەکە ئێستا پیادەی دەکات</h1>
+    <p class="sub">ئەم بەڵگەنامەیە هەموو ئەو ڕێسایانە دەخاتەڕوو کە بۆتەکە بۆ دیاریکردنی زۆن، دانانی ئۆردەر و دیاریکردنی تارگێت بەکاریان دەهێنێت. بۆ هەر ڕێسایەک ژمارەی وێنەکەی لە ماستەرکلاسەکە نووسراوە، بۆ ئەوەی خێرا بەراورد بکرێت.</p>
+    <div class="stamp">
+      <span>وەشان: SNRZ v9.7</span>
+      <span>سەرچاوە: ٥٧ وێنەی ماستەرکلاس ٢٠٢٦</span>
+      <span>تاقیکردنەوە: ٨٣ ڕۆژ XAUUSD</span>
+    </div>
+  </header>
+
+  <section class="prose">
+    <div class="note">
+      <p><b>دوو جۆر ژمارە لەم بەڵگەنامەیەدایە:</b></p>
+      <p><span class="chip chip-book">لە کتێب</span> — ڕاستەوخۆ لە وێنەکانەوە هاتووە.</p>
+      <p><span class="chip chip-mine">ژمارەی من</span> — کتێب ژمارەی بۆ دیاری نەکردووە و من خۆم دامناوە. ئەمانە زۆرترین پێویستییان بە پشکنینی کاپیتان هەیە.</p>
+    </div>
+  </section>
+
+  <!-- ١ -->
+  <section>
+    <h2><span class="num">٠١</span> حەوت ڕێگای دروستبوونی زۆن</h2>
+    <p class="lede">وێنەی ٢٤ دەڵێت: «لە کاتی دیاریکردنی زۆنەکانمان ئێمە ٥ جۆری دیاریکردنی زۆنمان هەیە». ئەم پێنجە لەگەڵ GAP و کاندڵی مۆمێنتوم، دەکاتە حەوت ڕێگا.</p>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr>
+            <th class="mono">#</th><th>ڕێگا</th><th>مەرجەکەی</th>
+            <th>حاڵەتی لەدایکبوون</th><th class="mono">وێنە</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr><td class="mono">1</td><td class="mono">S + S</td>
+              <td>دوو سویینگی نزمی هاوقیمەت — جیاوازییان کەمتر لە <span class="n">0.5 ATR</span> <span class="chip chip-mine">ژمارەی من</span></td>
+              <td><b class="tag">ڤالید</b></td><td class="pic">24</td></tr>
+          <tr><td class="mono">2</td><td class="mono">R + R</td>
+              <td>دوو سویینگی بەرزی هاوقیمەت</td>
+              <td><b class="tag">ڤالید</b></td><td class="pic">24</td></tr>
+          <tr><td class="mono">3</td><td class="mono">S + R</td>
+              <td>یەک سویینگی نزم و یەک سویینگی بەرز — زۆنەکە باندی نێوانیانە</td>
+              <td><b class="tag">ڤالید</b></td><td class="pic">24</td></tr>
+          <tr><td class="mono">4</td><td class="mono">R + S</td>
+              <td>هەمان شت، بە پێچەوانەی ڕیزبەندی</td>
+              <td><b class="tag">ڤالید</b></td><td class="pic">24</td></tr>
+          <tr><td class="mono">5</td><td class="mono">GAP</td>
+              <td>بۆشایی نێوان سەپۆرتێک و ڕێزیستانسێک، دوورییان لە <span class="n">0.6</span> تا <span class="n">2.5 ATR</span> <span class="chip chip-mine">ژمارەی من</span> — تەنها لەسەر تایمی شیکاری</td>
+              <td><b class="tag">ڤالید</b></td><td class="pic">51 · 52</td></tr>
+          <tr><td class="mono">6</td><td class="mono">ENGULF</td>
+              <td>جووتێکی ڕاستەقینەی ئینگۆلف لای سویینگەکە؛ زۆنەکە <b>لەشی ئەو کاندڵەیە کە کوورترە</b></td>
+              <td><b class="tag">فرێش</b></td><td class="pic">27 · 28</td></tr>
+          <tr><td class="mono">7</td><td class="mono">MOMENTUM</td>
+              <td>یەک کاندڵی مۆمێنتوم بە تەنها، لەشی ≥ <span class="n">0.8 ATR</span> <span class="chip chip-mine">ژمارەی من</span></td>
+              <td><b class="tag">فرێش</b></td><td class="pic">43</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="color:var(--muted);font-size:14.5px;">ئەو پێنج ڕێگایەی سەرەوە کە لە <b>دوو</b> سویینگەوە دروست دەبن، لە دایکبوونیاندا ڕاستەوخۆ <b>ڤالید</b>ن — چونکە دوو بەرکەوتنیان لەخۆیاندا هەیە. ئەو دووانەی لە <b>یەک</b> سویینگەوە دێن، <b>فرێش</b> دەبن و هێشتا دوو بەرکەوتنیان قەرزارە.</p>
+  </section>
+
+  <!-- ٢ -->
+  <section>
+    <h2><span class="num">٠٢</span> مەرجە هاوبەشەکانی هەموو زۆنێک</h2>
+    <p class="lede">هەر زۆنێک، بە هەر ڕێگایەک دروست بێت، دەبێت ئەمانەی هەبێت.</p>
+    <ul>
+      <li><b>بەرزی زۆنەکە</b> لە نێوان <span class="n">0.15</span> و <span class="n">0.4 ATR</span> بێت <span class="chip chip-mine">ژمارەی من</span> — زۆنێکی بەرزتر لەمە ناوچەیە، زۆن نییە.</li>
+      <li><b>تێکەڵ نەبوون</b>: لەگەڵ زۆنێکی تری هەمان کۆمەڵدا نابێت لەسەر یەک بێت.</li>
+      <li><b>First Movement و Second Movement</b> — هەردووکیان ≥ <span class="n">1.2 ATR</span> <span class="chip chip-mine">ژمارەی من</span> <span class="chip chip-book">وێنە 35 · 36</span>. وێنەی ٣٥ دەڵێت: «جیاوازی لەگەڵ سەپۆرتی ئاسایدا تەنها ئەوەیە کە First Movement و Second Movementی هەیە، و ئەگەر هەر یەک لە مووڤمێنتەکان بیگ مووڤمێنت بێ، مارکێت زیاتر ڕێزی لێ ئەگرێ».</li>
+      <li><b>دووری لە قیمەت</b>: زۆنی دوورتر لە <span class="n">6 ATR</span> لادەبرێت <span class="chip chip-mine">ژمارەی من</span>.</li>
+      <li><b>تەمەن</b>: زۆنی چارت <span class="n">600</span> کاندڵ، زۆنی تایمی شیکاری <span class="n">150</span> کاندڵ <span class="chip chip-mine">ژمارەی من</span>.</li>
+    </ul>
+  </section>
+
+  <!-- ٣ -->
+  <section>
+    <h2><span class="num">٠٣</span> ژیانی زۆن</h2>
+    <p class="lede">زۆنێک لە دایک دەبێت، ڤالید دەبێت، دەشکێت و ڕۆڵی دەگۆڕێت، یان تەواو دەبێت.</p>
+    <div class="flow">
+      <div class="node fresh"><b>FRESH</b><span>تازە دروستبوو، هێشتا دوو بەرکەوتنی نییە</span></div>
+      <div class="arrow">←</div>
+      <div class="node valid"><b>VALID</b><span>دوو بەرکەوتن + دوو مووڤمێنتی گەورە</span></div>
+      <div class="arrow">←</div>
+      <div class="node inv"><b>INVERTED</b><span>شکانی <span class="n">75%</span>ی لەشی کاندڵ لە دەرەوەی زۆن</span></div>
+    </div>
+    <ul>
+      <li><b>ڤالیدبوون</b> — دوو بەرکەوتن، لەگەڵ دوو مووڤمێنتی گەورە <span class="chip chip-book">وێنە 35</span></li>
+      <li><b>ئینڤێرژن</b> — کاتێک کاندڵێک <span class="n">75%</span>ی لەشی لە دەرەوەی زۆنەکە دادەخات <span class="chip chip-mine">ژمارەی من</span>. ئەگەر زۆنەکە پێشتر <b>ڤالید</b> بووبێت ⇒ <span class="tag">I.VS</span> / <span class="tag">I.VR</span>؛ ئەگەر ئاسایی بووبێت ⇒ <span class="tag">SBR</span> / <span class="tag">RBS</span></li>
+      <li><b>FBA</b> — ئەو ناوچەیەی مارکێت <b>دوو جار</b> ئاوتی ناتەواوی بەسەردا هێناوە و دواتر ڕیسپێکتی کردووەتەوە <span class="chip chip-book">وێنە 47 · 48 · 49 · 50</span></li>
+      <li><b>SRR / RSS</b> — مووڤمێنتی زۆنەکە <b>دوو</b> ئاستی پێچەوانەی شکاندبێت. «ئەگەر زیاتریش بێت کێشە نییە» <span class="chip chip-book">وێنە 25 · 29</span></li>
+      <li><b>تەواوبوون</b> — سێ بەرکەوتنی خەرج کرد، یان دوو جار ڕۆڵی گۆڕی، یان ستۆپ لۆسێکی لەسەر خوارد <span class="chip chip-mine">ژمارەی من</span></li>
+    </ul>
+  </section>
+
+  <!-- ٤ -->
+  <section>
+    <h2><span class="num">٠٤</span> ناوی زۆنەکان</h2>
+    <p class="lede">ناو لە ڕۆڵ و حاڵەتەکەیەوە دەردەچێت. زۆنێکی شکاو ناوی ڕەچەڵەکی خۆی لەگەڵ خۆیدا دەهێنێت.</p>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>حاڵەتی زۆنەکە</th><th class="mono">ناو</th><th>ئاراستە</th><th class="mono">وێنە</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>سەپۆرتی ڤالید (دوو مووڤمێنت)</td><td class="mono">V.S</td><td class="side-buy">BUY</td><td class="pic">35 · 38</td></tr>
+          <tr><td>ڕێزیستانسی ڤالید</td><td class="mono">V.R</td><td class="side-sell">SELL</td><td class="pic">35 · 37</td></tr>
+          <tr><td>ڕێزیستانسی <b>ڤالید</b> کە شکا و بوو بە سەپۆرت</td><td class="mono">I.VR</td><td class="side-buy">BUY</td><td class="pic">46</td></tr>
+          <tr><td>سەپۆرتی <b>ڤالید</b> کە شکا و بوو بە ڕێزیستانس</td><td class="mono">I.VS</td><td class="side-sell">SELL</td><td class="pic">45</td></tr>
+          <tr><td>ڕێزیستانسی <b>ئاسایی</b> کە شکا و بوو بە سەپۆرت</td><td class="mono">RBS</td><td class="side-buy">BUY</td><td class="pic">19 · 20</td></tr>
+          <tr><td>سەپۆرتی <b>ئاسایی</b> کە شکا و بوو بە ڕێزیستانس</td><td class="mono">SBR</td><td class="side-sell">SELL</td><td class="pic">18 · 21</td></tr>
+          <tr><td>سەپۆرتێک کە <b>دوو</b> ڕێزیستانسی شکاندووە</td><td class="mono">SRR</td><td class="side-buy">BUY</td><td class="pic">22 · 29</td></tr>
+          <tr><td>ڕێزیستانسێک کە <b>دوو</b> سەپۆرتی شکاندووە</td><td class="mono">RSS</td><td class="side-sell">SELL</td><td class="pic">23 · 25</td></tr>
+          <tr><td>بەرکەوتنی <b>دووەم</b> لەسەر زۆنی ئینڤێرژن</td><td class="mono">PO2</td><td>بەهێزترین</td><td class="pic">55</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ٥ -->
+  <section>
+    <h2><span class="num">٠٥</span> کەی ئۆردەر دادەنرێت</h2>
+    <p class="lede">وێنەی ٣٩ دوو لیستەکە بە ڕوونی دەداتێ، و بۆت تەنها لەم دوو لیستەوە ئۆردەر دەکات.</p>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>ئاراستە</th><th>تەنها لەم زۆنانەوە</th><th class="mono">وێنە</th></tr></thead>
+        <tbody>
+          <tr><td class="side-buy">BUY</td><td class="mono">V.S · I.VR · RBS · SRR</td><td class="pic">39</td></tr>
+          <tr><td class="side-sell">SELL</td><td class="mono">V.R · I.VS · SBR · RSS</td><td class="pic">39</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <ul>
+      <li><b>لیمیت ئۆردەر</b> ڕاستەوخۆ لەسەر خودی زۆنەکە دادەنرێت — چاوەڕێی کاندڵی تأیید ناکەین <span class="chip chip-book">وێنە 41 · 42</span></li>
+      <li><b>ستۆپ لۆس</b> کەمێک لە دەرەوەی زۆنەکە، لەسەر لیکویدیتییەکەی پشتی</li>
+      <li><b>هەر زۆنێک ئۆردەری خۆی هەیە.</b> زۆرترین <span class="n">3</span> ئۆردەری زیندوو بە یەک کات <span class="chip chip-mine">ژمارەی من</span></li>
+      <li><b>تڕێند شایە</b> — تەنها لەگەڵ تڕێندی تایمی شیکاری ئۆردەر دەکەین</li>
+    </ul>
+  </section>
+
+  <!-- ٦ -->
+  <section>
+    <h2><span class="num">٠٦</span> تارگێت چۆن دیاری دەکرێت</h2>
+    <p class="lede">وێنەی ٤٤: «ئۆردەری بای دەڕوات بۆ زۆنی سێل — بە پێچەوانەشەوە. تارگێتی یەکەم لە ٥ خولەکی، تارگێتی دووەم لە ١ کاتژمێری.»</p>
+    <ul>
+      <li><b>TP1</b> = یەکەم زۆنی پێچەوانە لەسەر <b>خودی چارتەکە</b></li>
+      <li><b>TP2</b> = زۆنی پێچەوانە لەسەر <b>تایمی شیکاری</b></li>
+      <li><b>TP3</b> = ئەو زۆنەی لە دوایاندا دێت</li>
+      <li>تەنها ئەم زۆنانە دەتوانن <b>تارگێت</b> بن: <span class="mono tag">V.S · V.R · PO2 فرێش · PO2 ئینڤێرژن · FBA</span> <span class="chip chip-book">وێنە 44</span></li>
+      <li>ئەگەر هیچ زۆنێکی گونجاو لەپێشدا نەبێت، یان نزیکتر بێت لە <span class="n">1</span> ئەوەندەی ستۆپەکە — <b>هیچ ئۆردەرێک دانانرێت</b>. ئەمە هەمان «No Setup, No Trade»ی کتێبە.</li>
+    </ul>
+  </section>
+
+  <!-- ٧ -->
+  <section>
+    <h2><span class="num">٠٧</span> بەڕێوەبردنی ترەید</h2>
+    <p class="lede">وێنەی ٤١ ترەیدێکی تەواو نیشان دەدات: زۆن <span class="n">4706–4720</span>، ستۆپ <span class="n">4698.67</span>، و هێڵێکی سوور لەسەر <span class="n">4732.33</span> — واتە دقیقاً <span class="n">1:1</span>.</p>
+    <ul>
+      <li>لە خاڵی <span class="n">1:1</span> (هەمان هێڵە سوورەکە) <b>بریک ئیڤن</b> دەکەین و پارە لە حساب دەردەهێنین <span class="chip chip-book">وێنە 41</span></li>
+      <li>دابەشکردنی خەرجکردن: <span class="n">50%</span> لە <span class="n">1:1</span>، <span class="n">25%</span> لە TP2، <span class="n">25%</span> لە TP3 <span class="chip chip-mine">ژمارەی من</span> — کتێب ڕێژەکانی دیاری نەکردووە</li>
+      <li>مدیریەتی سەرمایە: لە <span class="n">1000$</span> تەنها <span class="n">100$</span> بخە حساب؛ بۆ تازەکار حسابی <b>Cent</b> بە لۆتی <span class="n">0.001</span> <span class="chip chip-book">وێنە 56</span></li>
+    </ul>
+  </section>
+
+  <!-- ٨ -->
+  <section>
+    <h2><span class="num">٠٨</span> ڕیزبەندی بەهێزی ستاپەکان</h2>
+    <p class="lede">وێنەی ٥٤، عیناً. کاتێک تەنها چەند شوێنی ئۆردەری زیندوومان هەیە، بەهێزترینەکان دەیانبەن.</p>
+    <div class="scroll">
+      <table>
+        <thead><tr><th class="mono">پلە</th><th>ستاپ</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">1</td><td>تڕێند (Trend is King)</td></tr>
+          <tr><td class="mono">2</td><td class="mono">PO2</td></tr>
+          <tr><td class="mono">3</td><td class="mono">PO2 Inversion</td></tr>
+          <tr><td class="mono">4</td><td class="mono">V.S / V.R Inversion</td></tr>
+          <tr><td class="mono">5</td><td class="mono">GAP</td></tr>
+          <tr><td class="mono">6</td><td class="mono">V.S / V.R Fresh</td></tr>
+          <tr><td class="mono">7</td><td class="mono">SBR / RBS</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ٩ -->
+  <section>
+    <h2><span class="num">٠٩</span> چی لەسەر چارت دیار دەکەوێت</h2>
+    <p class="lede">چارتەکە تەنها ئەوە نیشان دەدات کە ڕێبازەکە بەڕاستی ترەیدی دەکات.</p>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>جۆری زۆن</th><th>لەسەر چارت</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">V.S · V.R · SRR · RSS</td><td>✔ دەکێشرێت</td></tr>
+          <tr><td class="mono">I.VS · I.VR · SBR · RBS</td><td>✔ دەکێشرێت</td></tr>
+          <tr><td class="mono">FBA</td><td>✔ دەکێشرێت</td></tr>
+          <tr><td class="mono">S / R</td><td>✘ <b>شاردراوەتەوە</b> — نە ئۆردەری لێ دەکرێت (وێنە 39)، نە دەبێتە تارگێت (وێنە 44)</td></tr>
+          <tr><td>زۆنی تەواوبوو</td><td>✘ <b>لە چارت دەسڕدرێتەوە</b></td></tr>
+          <tr><td>زۆنی تازە (کەمتر لە <span class="n">30</span> کاندڵ)</td><td>🆕 نیشانە دەکرێت</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ١٠ -->
+  <section>
+    <h2><span class="num">١٠</span> حەوت پرسیار بۆ کاپیتان</h2>
+    <p class="lede">ئەمانە ئەو شوێنانەن کە ڕێساکەم بۆ ڕوون نەبووەوە، یان کتێب ژمارەی نەداوە و من خۆم دامناوە. وەڵامی ئەمانە ڕاستەوخۆ لە کۆدەکەدا دەگۆڕدرێت.</p>
+    <div class="qs">
+
+      <div class="q">
+        <h4><span class="qn">٠١</span> «سایەکان دۆستی یەکتریان کردووە» چ مانایەکی هەیە؟</h4>
+        <p>وێنەی ٢٧ و ٢٨ دەڵێن: «لەو شوێنەوەی کە دوستی کردووە بە بەرز بوون و کاندڵێک پێش خۆی کامیان کوورتر بوون ئەوە دیاری ئەکەین».</p>
+        <p>من زۆنەکەم کردووەتە <b>لەشی</b> ئەو کاندڵەی کوورترە. بەڵام لەوانەیە مەبەست ئەوە بێت کە لێواری زۆنەکە لەو شوێنەیە کە <b>دوو سایەکە بەیەک دەگەن</b>، واتە سایەکەش بخرێتە ناو زۆنەکەوە.</p>
+        <p class="ask">کامیان ڕاستە — لەش، یان لەش + سایە؟</p>
+      </div>
+
+      <div class="q">
+        <h4><span class="qn">٠٢</span> جیاوازی <span class="mono">S+R</span> و <span class="mono">R+S</span> چییە؟</h4>
+        <p>وێنەی ٢٤ ئەمانە وەک دوو ڕێگای جیاواز دەژمێرێت، بەڵام نەیوتووە جیاوازییان لە کێشاندا چییە، یان لە کام لایەوە ترەید دەکرێن.</p>
+        <p>من ئێستا لەڕووی شوێنی قیمەتەوە بڕیار دەدەم: ئەگەر قیمەت لەسەرەوەی ناوەڕاستی باندەکە بێت ⇒ سەپۆرت، ئەگەر لەخوارەوە بێت ⇒ ڕێزیستانس.</p>
+        <p class="ask">ئایا ئەمە ڕاستە، یان <span class="mono">S+R</span> هەمیشە سەپۆرتە و <span class="mono">R+S</span> هەمیشە ڕێزیستانس؟</p>
+      </div>
+
+      <div class="q">
+        <h4><span class="qn">٠٣</span> «Big Movement» مەرجە یان تەنها خاڵی زیادەیە؟</h4>
+        <p>وێنەی ٣٥ و ٣٦ دەڵێن: «ئەگەر هەر یەک لە مووڤمێنتەکان بیگ مووڤمێنت بێ، مارکێت <b>زیاتر</b> ڕێزی لێ ئەگرێ» — ئەمە قسەیەکی <b>کوالیتی</b>یە، نە مەرجێکی ڕەق.</p>
+        <p>بەڵام من لە کۆدەکەدا کردوومەتە فلتەرێکی ڕەق: هەر زۆنێک مووڤمێنتەکەی کەمتر بێت لە <span class="n">1.2 ATR</span>، بە تەواوی <b>ڕەت دەکرێتەوە</b>.</p>
+        <p class="ask">ئایا دەبێت تەنها لە <b>ڕیزبەندی بەهێزی</b>دا (وێنە ٥٤) کاریگەری هەبێت و هیچ زۆنێک نەکوژێت؟</p>
+      </div>
+
+      <div class="q">
+        <h4><span class="qn">٠٤</span> کاندڵی مۆمێنتوم چەند گەورە بێت؟</h4>
+        <p>وێنەی ٤٣ دەڵێت یەک کاندڵی مۆمێنتوم بە تەنها زۆنێکە و «لە ٨٠٪ی حاڵەتەکاندا مارکێت لێی دووبارە دەکاتەوە» — بەڵام هیچ ژمارەیەکی نەداوە.</p>
+        <p>من دامناوە: لەشی کاندڵەکە ≥ <span class="n">0.8 ATR</span>.</p>
+        <p class="ask">کاپیتان بە چ پێوەرێک دەڵێت کاندڵێک مۆمێنتومە؟</p>
+      </div>
+
+      <div class="q">
+        <h4><span class="qn">٠٥</span> ڕێسای «سێ بەرکەوتن و زۆنەکە تەواو» لە کوێدایە؟</h4>
+        <p>من ئەمەم لە <b>PDFـی ٢٠٢٤</b>دا بینیبوو، بەڵام لە ٥٧ وێنەکەدا نەمدۆزییەوە.</p>
+        <p>ئەم ڕێسایە کاریگەرییەکی گەورەی هەیە: هەر زۆنێک دوای سێ بەرکەوتن دەکوژرێت و چیتر ئۆردەری لێ ناکرێت.</p>
+        <p class="ask">ئایا ئەم ڕێسایە ڕاستە و بمێنێتەوە، یان لابدرێت؟</p>
+      </div>
+
+      <div class="q">
+        <h4><span class="qn">٠٦</span> ناکۆکی نێوان وێنەی ٥٤ و ٥٥ لەسەر PO2</h4>
+        <p>وێنەی ٥٥ دەڵێت PO2 <b>تەنها لەسەر زۆنی ئینڤێرژن</b> دیاری دەکرێت.</p>
+        <p>بەڵام وێنەی ٥٤ لە ڕیزبەندییەکەیدا <span class="mono">PO2</span> و <span class="mono">PO2 Inversion</span> وەک <b>دوو شتی جیاواز</b> ڕیز کردووە (پلەی ٢ و ٣) — واتە PO2 لەسەر زۆنی نا-ئینڤێرژنیش هەیە.</p>
+        <p class="ask">کامیان ڕاستە؟ من ئێستا وەشانی وێنەی ٥٥م پیادە کردووە.</p>
+      </div>
+
+      <div class="q">
+        <h4><span class="qn">٠٧</span> تەمەنی زۆن چەندە؟</h4>
+        <p>کتێب نەیوتووە زۆنێک دوای چەند کاندڵ بەتاڵ دەبێتەوە.</p>
+        <p>ژمارەکانی من: <span class="n">600</span> کاندڵ بۆ زۆنی چارت، <span class="n">150</span> کاندڵ بۆ زۆنی تایمی شیکاری. ئەمانە <b>هی منن، نەک هی کتێب</b>.</p>
+        <p class="ask">کاپیتان زۆنێک چەند لەسەر چارت ڕادەگرێت؟</p>
+      </div>
+
+    </div>
+  </section>
+
+  <footer>
+    <p>ئەم بەڵگەنامەیە لە کۆدی زیندووی بۆتەکەوە دەرهێنراوە — وەشانی <span class="mono">SNRZ v9.7</span>، هەمان ڕێسا لە هەر سێ پیادەکردندا (TradingView · MT5 · Python).</p>
+    <p>ئەنجامی تاقیکردنەوە لەسەر <span class="n">83</span> ڕۆژی داتای ڕاستەقینەی XAUUSD (بەبێ سپرێد):</p>
+    <p class="mono" dir="ltr" style="text-align:left;">M1 −0.02R · M5 +0.06R · M15 −0.14R · M30 +0.00R · H1 −0.48R · H4 +0.53R</p>
+  </footer>
+
+</div>
