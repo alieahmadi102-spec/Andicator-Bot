@@ -14,7 +14,7 @@
 //|   • One position at a time with SL / TP1 / TP2 / TP3 drawn       |
 //+------------------------------------------------------------------+
 #property copyright   "SNRZ (Zindan The Gold Chaser) — indicator port"
-#property version     "9.70"
+#property version     "9.80"
 #property description "SNRZ: chart zones AND analysis zones together (book p.41/p.44), one trade at a time"
 #property indicator_chart_window
 #property indicator_buffers 4
@@ -60,7 +60,9 @@ input double InpMinZoneATR   = 0.15;  // Min zone height (ATR x)
 input double InpMaxZoneATR   = 0.40;  // Max zone height (ATR x)
 input int    InpLifeLtf      = 600;   // Chart zone lifetime (chart bars)
 input int    InpLifeHtf      = 150;    // Analysis zone lifetime (analysis bars)
-input double InpMaxZoneDistATR = 6.0; // Drop zones further than (ATR x)
+input double InpMaxZoneDistATR = 6.0; // Hide zones further than (ATR x) - still targets
+input bool   InpDropFar      = false; // ...delete them instead of hiding them
+input bool   InpExpireByAge  = false; // Let a zone expire by age as well as by a break
 input bool   InpPairZones     = true;  // Draw a zone only from TWO swings (p24: S+S/R+R/S+R/R+S)
 input double InpPairTolATR   = 0.50;  // ..."similar price" = closer than (ATR x)
 input int    InpPairMaxGap   = 150;   // ...and the two swings closer than N bars
@@ -151,6 +153,7 @@ struct SZone
    long     id;        // object id
    bool     inZonePrev;
    bool     paired;    // drawn from TWO swings (p24) — born valid, needs 1 touch
+   bool     far;       // too far from price to draw — still a valid target
    int      falseBreaks; // how many times broken and respected again
    bool     fba;       // TWO of those = a False Breakout Area
    int      pendBar;   // chart bar an unconfirmed 75% break happened on
@@ -360,6 +363,8 @@ void DeleteZone(const SZone &z);
 bool ZoneVisible(const SZone &z)
   {
    if(z.dead && InpDropDead)
+      return false;
+   if(z.far)
       return false;
    if(InpShowFresh)
       return true;
@@ -627,6 +632,7 @@ void AddZone(double top, double bot, const int role, const int bornH, const doub
    g_zones[n].id         = ++g_zoneSeq;
    g_zones[n].inZonePrev = false;
    g_zones[n].paired     = paired;
+   g_zones[n].far        = false;
    g_zones[n].falseBreaks = 0;
    g_zones[n].fba        = false;
    g_zones[n].pendBar    = -1;
@@ -975,10 +981,11 @@ void ProcessHtfBar(const int j, const MqlRates &htf[], const double &atrH[], con
       else if(g_lastHigh < g_prevHigh && g_lastLow < g_prevLow) g_trendState = -1;
      }
 
-   // expire ANALYSIS zones by analysis-TF age (chart zones age on chart bars)
-   for(int i = ArraySize(g_zones) - 1; i >= 0; i--)
-      if(g_zones[i].htf && j - g_zones[i].bornH > InpLifeHtf)
-         RemoveZoneAt(i);
+   // Analysis zones, like chart zones, die by a BREAK — off by default.
+   if(InpExpireByAge)
+      for(int i = ArraySize(g_zones) - 1; i >= 0; i--)
+         if(g_zones[i].htf && j - g_zones[i].bornH > InpLifeHtf)
+            RemoveZoneAt(i);
   }
 //+------------------------------------------------------------------+
 int OnCalculate(const int rates_total,
@@ -1119,10 +1126,12 @@ int OnCalculate(const int rates_total,
            }
         }
 
-      //--- expire chart zones by chart-bar age, and drop far ones -----------
-      for(int i = ArraySize(g_zones) - 1; i >= 0; i--)
-         if(!g_zones[i].htf && bar - g_zones[i].bornH > InpLifeLtf)
-            RemoveZoneAt(i);
+      //--- a zone dies when the market BREAKS it, not when a clock runs out.
+      //    The book never retires a level by age; this is off by default.
+      if(InpExpireByAge)
+         for(int i = ArraySize(g_zones) - 1; i >= 0; i--)
+            if(!g_zones[i].htf && bar - g_zones[i].bornH > InpLifeLtf)
+               RemoveZoneAt(i);
 
       // both sides of structure broken recently = sideway. "No Setup, No Trade".
       bool inRange   = (hIdx - g_lastBosUpH) <= InpRangeBars &&
@@ -1218,12 +1227,15 @@ int OnCalculate(const int rates_total,
 
       // A Weekly/Daily zone can be years old and hundreds of points away. It is
       // not tradeable any more and it wrecks the chart scale, so drop it.
+      //    A level price has not reached yet is exactly what a running trade
+      //    is aiming AT, so distance only HIDES the box now.
       for(int i = ArraySize(g_zones) - 1; i >= 0; i--)
         {
          double ref = g_zones[i].htf ? atrA : atr;
          double gap = c > g_zones[i].top ? c - g_zones[i].top
                       : (c < g_zones[i].bot ? g_zones[i].bot - c : 0.0);
-         if(gap > ref * InpMaxZoneDistATR)
+         g_zones[i].far = (gap > ref * InpMaxZoneDistATR);
+         if(InpDropFar && g_zones[i].far)
             RemoveZoneAt(i);
         }
 
@@ -1338,8 +1350,11 @@ int OnCalculate(const int rates_total,
                     {
                      double t2 = NextZone(true, entry, 1);
                      double t3 = NextZone(true, entry, 2);
-                     if(t2 <= 0.0) t2 = entry + (t1 - entry) * 2.0;
-                     if(t3 <= 0.0) t3 = entry + (t1 - entry) * 3.0;
+                     // Every target is a zone that is ALREADY on the chart
+                     // and still unbroken. No second zone ahead means no TP2:
+                     // the whole position comes off at TP1.
+                     if(t2 <= 0.0) t2 = t1;
+                     if(t3 <= 0.0) t3 = t2;
                      bool isPO2 = (g_zones[i].state == 2 && g_zones[i].touches == 1); // image 55
                      if(isPO2)
                        {
@@ -1430,8 +1445,9 @@ int OnCalculate(const int rates_total,
                     {
                      double t2 = NextZone(false, entry, 1);
                      double t3 = NextZone(false, entry, 2);
-                     if(t2 <= 0.0) t2 = entry - (entry - t1) * 2.0;
-                     if(t3 <= 0.0) t3 = entry - (entry - t1) * 3.0;
+                     // same rule on the sell side: no zone, no target
+                     if(t2 <= 0.0) t2 = t1;
+                     if(t3 <= 0.0) t3 = t2;
                      bool isPO2 = (g_zones[i].state == 2 && g_zones[i].touches == 1); // image 55
                      if(isPO2)
                        {

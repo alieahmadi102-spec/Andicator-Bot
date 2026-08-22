@@ -69,6 +69,7 @@ class Zone:
     fba: bool = False           # TWO of those = a False Breakout Area
     pend_bar: int = -1          # bar a still-unconfirmed break happened on
     pend_dir: int = 0           # +1 broke up · -1 broke down
+    far: bool = False           # too far from price to be worth drawing
 
     @property
     def kind(self) -> str:
@@ -116,6 +117,9 @@ class Config:
     pivot_htf: int = 8
     max_zones_ltf: int = 14
     max_zones_htf: int = 8
+    # A zone is killed by a BREAK, not by a clock. These two stay only for
+    # anyone who wants the old behaviour back; both are off by default.
+    expire_by_age: bool = False
     life_ltf: int = 600         # chart bars
     life_htf: int = 150         # analysis bars
     pivot_len: int = 10         # (kept for compatibility)
@@ -134,7 +138,10 @@ class Config:
     need_reject: bool = True    # confirmation candle must close outside the zone
     range_bars: int = 10        # both sides of structure broken this recently = range
     max_touches: int = 3
-    max_zone_dist_atr: float = 6.0   # a zone this far from price is not tradeable
+    # Far zones are HIDDEN, not deleted: the level a trade is aiming at is
+    # usually the one price has not reached yet.
+    max_zone_dist_atr: float = 6.0   # ...further than this = hide it
+    drop_far_zones: bool = False     # ...delete it instead (old behaviour)
     max_flips: int = 2          # role inversions before a level is retired
     kill_on_stop: bool = True   # a zone whose signal got stopped out is finished
     need_micro_bos: bool = True # book: "a small BOS in the trade direction"
@@ -174,8 +181,6 @@ class Config:
     gap_max_atr: float = 2.5     # ...and at most this far
     gap_htf_only: bool = True    # the book marks GAP on H1/H4/D/W only
     max_trade_bars: int = 60    # a setup that never resolves must not linger
-    rr_tp1: float = 1.0     # fallback TP1 = SL distance x this (book: at least 1:1)
-    tp_max_r: float = 6.0   # a zone further than this many R is not a FIRST target
 
     # ── rules taken from the page-by-page read of the book ────────────────
     # p24: a zone is a band bracketing TWO swing points at a similar price
@@ -797,10 +802,15 @@ class SnrzEngine:
         rest = [t[0] for t in ahead if (t[0] > tp1 if is_buy else t[0] < tp1)]
         htf = [t[0] for t in ahead
                if t[1] and (t[0] > tp1 if is_buy else t[0] < tp1)]
+        # Every target is a zone that is ALREADY on the chart and has not been
+        # broken. When there is no second or third such zone, there is no TP2
+        # or TP3 — the whole position comes off at TP1. The old code put a
+        # target at 2x and 3x the TP1 distance, which is a price the chart
+        # never named.
         tp2 = (htf[0] if (htf and cfg.tp2_analysis_tf)
-               else (rest[0] if rest else entry + (tp1 - entry) * 2))
+               else (rest[0] if rest else tp1))
         beyond = [x for x in rest if (x > tp2 if is_buy else x < tp2)]
-        tp3 = beyond[0] if beyond else entry + (tp1 - entry) * 3
+        tp3 = beyond[0] if beyond else tp2
         return entry, sl, tp1, tp2, tp3
 
     def _has_order_or_trade(self, uid: int) -> bool:
@@ -927,7 +937,12 @@ class SnrzEngine:
                 self._update_trend(self.htf_candles[-1], atr_h, idx)
         self._fill_orders(c, idx)
         self._update_trades(c, idx)
-        # expire zones by age, and drop any that price has left far behind
+        # A zone dies when the market BREAKS it — not when a clock runs out and
+        # not because price walked away from it. Both of those were my own
+        # inventions: the book never retires a level by age, and a level far
+        # overhead is exactly what a running trade is aiming AT. `far` is now
+        # only a hint for the drawing code, so a distant zone stops cluttering
+        # the chart while still being available as a target.
         atr_h = self._htf_atr() or atr
         kept: List[Zone] = []
         for z in self.zones:
@@ -935,8 +950,12 @@ class SnrzEngine:
             life = self.cfg.life_htf * max(1, self.cfg.htf_mult) if z.htf else self.cfg.life_ltf
             gap = (c.close - z.top if c.close > z.top else
                    z.bot - c.close if c.close < z.bot else 0.0)
-            if idx - z.born_index <= life and gap <= ref * self.cfg.max_zone_dist_atr:
-                kept.append(z)
+            z.far = gap > ref * self.cfg.max_zone_dist_atr
+            if self.cfg.expire_by_age and idx - z.born_index > life:
+                continue
+            if self.cfg.drop_far_zones and z.far:
+                continue
+            kept.append(z)
         self.zones = kept
         bull_conf, bear_conf = self._confirm(c, self.candles[idx - 1])
         # book, confirmation list: "a small Break of Structure in the trade
