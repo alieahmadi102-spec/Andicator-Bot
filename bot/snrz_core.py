@@ -182,8 +182,11 @@ class Config:
     #      (S+S, R+R, S+R, R+S). One pivot on its own is not a zone.
     pair_zones: bool = True
     pair_tol_atr: float = 0.5    # "a similar price" = within this many ATR
-    pair_max_gap: int = 90       # ...and no further apart than this many bars
-    pair_lookback: int = 10      # how many earlier swings to try to pair with
+    pair_max_gap: int = 150      # ...and no further apart than this many bars
+    pair_lookback: int = 20      # how many earlier swings to try to pair with
+    engulf_zones: bool = True    # p24 method 5, drawn per images 27/28
+    momentum_zones: bool = True  # image 43: one momentum candle IS a zone
+    momentum_body_atr: float = 0.8   # ...and this is how big "momentum" is
     # p39: zones are marked on W/D/4H/1H; the low timeframes only MONITOR.
     entries_htf_only: bool = False
     # p42: entry at the zone midpoint, stop just beyond the zone, TP1 at 1:1
@@ -383,6 +386,70 @@ class SnrzEngine:
             victim = next((i for i in same if self.zones[i].dead), same[0])
             self.zones.pop(victim)
 
+    def _engulf_zone(self, series: List[Candle], p: int, is_high: bool,
+                     atr: float, idx: int, htf: bool,
+                     hi_run: float, lo_run: float, big: float):
+        """Book p24 method 5, drawn the way images 27/28 describe it.
+
+        «لەو شوێنەوەی کە دوستی کردووە بە بەرز بوون و کاندڵێک پێش خۆی کامیان
+        کوورتر بوون ئەوە دیاری ئەکەین» — mark it where the wicks have
+        befriended, taking whichever of the two candles is SHORTER.
+
+        So this needs a real engulfing PAIR around the pivot: at a pivot low a
+        bullish candle that engulfs the bearish one before it, at a pivot high
+        the mirror. The zone is the shorter candle's body — not the pivot
+        candle's wick, and not every pivot that failed to find a mate."""
+        cfg = self.cfg
+        # the pair may straddle the pivot on either side: (p-1, p) or (p, p+1)
+        for a in ((p - 1, p) if cfg.engulf_zones else ()):
+            b = a + 1
+            if a < 0 or b >= len(series):
+                continue
+            c1, c2 = series[a], series[b]
+            up = c2.close > c2.open
+            if is_high and up:
+                continue                       # a top needs a BEARISH engulf
+            if (not is_high) and (not up):
+                continue                       # a bottom needs a BULLISH one
+            b1_hi, b1_lo = max(c1.open, c1.close), min(c1.open, c1.close)
+            b2_hi, b2_lo = max(c2.open, c2.close), min(c2.open, c2.close)
+            if not (b2_hi >= b1_hi and b2_lo <= b1_lo and (b2_hi - b2_lo) > 0):
+                continue                       # c2 must really engulf c1
+            # "whichever is SHORTER" — by full range, wick included
+            short = c1 if (c1.high - c1.low) <= (c2.high - c2.low) else c2
+            top = max(short.open, short.close)
+            bot = min(short.open, short.close)
+            if top - bot <= 0:
+                continue
+            role = Role.RESISTANCE if is_high else Role.SUPPORT
+            away = (hi_run - bot) if role == Role.SUPPORT else (top - lo_run)
+            if away < big or self._overlaps(top, bot, htf):
+                continue
+            # unpaired, so it is born FRESH: it still owes its two touches
+            self._add_zone(top, bot, role, atr, idx, htf,
+                           src="engulf", valid=False)
+            return
+
+        # Image 43: a single MOMENTUM candle is a zone in its own right — "in
+        # 80% of cases the market repeats from it". That is the book's own
+        # basis for a one-candle zone, and it is the only thing that belongs
+        # here besides the engulf. A pivot candle with a small body is neither,
+        # and gets nothing drawn on it.
+        if cfg.momentum_zones:
+            pc = series[p]
+            body = abs(pc.close - pc.open)
+            if body >= atr * cfg.momentum_body_atr:
+                if is_high:
+                    top, bot = pc.high, max(pc.open, pc.close)
+                    away = top - lo_run
+                else:
+                    top, bot = min(pc.open, pc.close), pc.low
+                    away = hi_run - bot
+                if top > bot and away >= big and not self._overlaps(top, bot, htf):
+                    self._add_zone(top, bot,
+                                   Role.RESISTANCE if is_high else Role.SUPPORT,
+                                   atr, idx, htf, src="mom", valid=False)
+
     def _pivot_zones(self, series: List[Candle], n: int, atr: float,
                      idx: int, htf: bool, track_trend: bool):
         """One pivot pass over a candle series. Runs on the chart candles and
@@ -473,22 +540,17 @@ class SnrzEngine:
                         sw, gmate, price, is_high, atr, idx, htf, series[j].close):
                     continue
             if mate is None:
-                # p24, the FIFTH way to draw a zone: "when there is no S/R
-                # pair to draw from, draw it from the engulf" — the book never
-                # says "then draw nothing". Without this fallback the chart
-                # ran at 2 live zones instead of 8 and the panel read Zones: 0.
-                # An unpaired zone is born FRESH, so it still needs its two
-                # touches before it may be traded.
-                if is_high:
-                    top, bot = pc.high, max(pc.open, pc.close)
-                    if (top - lo_run) >= big and not self._overlaps(top, bot, htf):
-                        self._add_zone(top, bot, Role.RESISTANCE, atr, idx, htf,
-                                       src="pivot", valid=False)
-                else:
-                    top, bot = min(pc.open, pc.close), pc.low
-                    if (hi_run - bot) >= big and not self._overlaps(top, bot, htf):
-                        self._add_zone(top, bot, Role.SUPPORT, atr, idx, htf,
-                                       src="pivot", valid=False)
+                # p24, the FIFTH way to draw a zone: "when there is no S/R pair
+                # to draw from, draw it from the ENGULF" — and images 27/28 say
+                # exactly where: "at the place where the wicks have befriended,
+                # and whichever candle is SHORTER than the one before it".
+                #
+                # Until v9.6 this branch drew a zone at EVERY unpaired pivot,
+                # which is not a rule the book has anywhere: 70% of all zones
+                # came out of here. Now it draws only where a real engulf pair
+                # sits, and the SHORTER candle of the pair is the band.
+                self._engulf_zone(series, p, is_high, atr, idx, htf,
+                                  hi_run, lo_run, big)
                 continue
 
             top = max(mate.price, price)

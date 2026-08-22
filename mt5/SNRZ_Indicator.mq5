@@ -14,7 +14,7 @@
 //|   • One position at a time with SL / TP1 / TP2 / TP3 drawn       |
 //+------------------------------------------------------------------+
 #property copyright   "SNRZ (Zindan The Gold Chaser) — indicator port"
-#property version     "9.60"
+#property version     "9.70"
 #property description "SNRZ: chart zones AND analysis zones together (book p.41/p.44), one trade at a time"
 #property indicator_chart_window
 #property indicator_buffers 4
@@ -63,8 +63,14 @@ input int    InpLifeHtf      = 150;    // Analysis zone lifetime (analysis bars)
 input double InpMaxZoneDistATR = 6.0; // Drop zones further than (ATR x)
 input bool   InpPairZones     = true;  // Draw a zone only from TWO swings (p24: S+S/R+R/S+R/R+S)
 input double InpPairTolATR   = 0.50;  // ..."similar price" = closer than (ATR x)
-input int    InpPairMaxGap   = 90;    // ...and the two swings closer than N bars
-input int    InpPairLookback = 10;     // ...searching the last N swings
+input int    InpPairMaxGap   = 150;   // ...and the two swings closer than N bars
+input int    InpPairLookback = 20;    // ...searching the last N swings
+input bool   InpEngulfZones  = true;  // Method 5: draw a zone from the ENGULF pair (images 27/28)
+input bool   InpMomentumZones= true;  // A single MOMENTUM candle is a zone too (image 43)
+input double InpMomBodyATR   = 0.8;   // ..."momentum" = body at least this many ATR
+input bool   InpShowFresh    = false; // Also draw zones that are not valid yet
+input bool   InpDropDead     = true;  // Delete a finished zone from the chart
+input int    InpNewBars      = 30;    // Mark a zone NEW for this many bars
 // Images 31/33/52 - the GAP: "the space between a support and a resistance;
 // when that space is created the market fills it back with 80% probability".
 // Unlike the S+S / R+R pairs these are two levels at DIFFERENT prices and the
@@ -346,9 +352,28 @@ string ZoneText(const SZone &z)
    return base;
   }
 
+void DeleteZone(const SZone &z);
+
+// Images 39 and 44: a zone that is still plain FRESH gives no entry and cannot
+// be a target either, so by default it stays off the chart. What the method
+// trades is a zone that has JUST become valid, inverted, or an FBA.
+bool ZoneVisible(const SZone &z)
+  {
+   if(z.dead && InpDropDead)
+      return false;
+   if(InpShowFresh)
+      return true;
+   return (z.state == 1 || z.state == 2 || z.fba || z.srr);
+  }
+
 void DrawZone(const SZone &z, const datetime t1, const datetime t2)
   {
    string nm = ZoneName(z.id);
+   if(!ZoneVisible(z))
+     {
+      DeleteZone(z);
+      return;
+     }
    if(ObjectFind(0, nm) < 0)
      {
       ObjectCreate(0, nm, OBJ_RECTANGLE, 0, t1, z.top, t2, z.bot);
@@ -374,7 +399,12 @@ void DrawZone(const SZone &z, const datetime t1, const datetime t2)
      }
    ObjectSetInteger(0, ln, OBJPROP_TIME, 0, t2);
    ObjectSetDouble (0, ln, OBJPROP_PRICE, 0, (z.top + z.bot) / 2.0);
-   ObjectSetString (0, ln, OBJPROP_TEXT, ZoneText(z));
+   // a zone that has only just formed is the one the method actually trades
+   string txt = ZoneText(z);
+   if(InpNewBars > 0 && !z.dead &&
+      (long)(t2 - z.bornTime) <= (long)InpNewBars * PeriodSeconds(_Period))
+      txt = "NEW " + txt;
+   ObjectSetString (0, ln, OBJPROP_TEXT, txt);
    ObjectSetInteger(0, ln, OBJPROP_COLOR, ZoneColor(z));
   }
 
@@ -487,6 +517,61 @@ void MateSegRates(const double price, const int bar, const double atr,
      }
   }
 
+//+------------------------------------------------------------------+
+//| Images 27/28 — the ENGULF zone, method 5 of p24: "mark it where   |
+//| the wicks have befriended, and whichever candle is SHORTER than   |
+//| the one before it". Needs a real engulfing pair around the pivot  |
+//| (bearish at a top, bullish at a bottom); the band is the shorter  |
+//| candle's body. Leaves top<=bot when the pivot has no such pair.   |
+//+------------------------------------------------------------------+
+void EngulfPair(const double &o[], const double &h[], const double &l[],
+                const double &c[], const int p, const bool isHigh,
+                const int n, double &outTop, double &outBot)
+  {
+   outTop = 0.0; outBot = 1.0;                 // "nothing found"
+   for(int k = 0; k <= 1; k++)
+     {
+      int i1 = p - 1 + k;                      // the candle that gets engulfed
+      int i2 = p + k;                          // the one that engulfs it
+      if(i1 < 0 || i2 >= n)
+         continue;
+      bool up = c[i2] > o[i2];
+      if(isHigh == up)                         // top needs bearish, bottom bullish
+         continue;
+      double b1h = MathMax(o[i1], c[i1]), b1l = MathMin(o[i1], c[i1]);
+      double b2h = MathMax(o[i2], c[i2]), b2l = MathMin(o[i2], c[i2]);
+      if(!(b2h >= b1h && b2l <= b1l && b2h > b2l))
+         continue;
+      int si = (h[i1] - l[i1]) <= (h[i2] - l[i2]) ? i1 : i2;
+      outTop = MathMax(o[si], c[si]);
+      outBot = MathMin(o[si], c[si]);
+      return;
+     }
+  }
+
+void EngulfPairRates(const MqlRates &r[], const int p, const bool isHigh,
+                     const int n, double &outTop, double &outBot)
+  {
+   outTop = 0.0; outBot = 1.0;
+   for(int k = 0; k <= 1; k++)
+     {
+      int i1 = p - 1 + k, i2 = p + k;
+      if(i1 < 0 || i2 >= n)
+         continue;
+      bool up = r[i2].close > r[i2].open;
+      if(isHigh == up)
+         continue;
+      double b1h = MathMax(r[i1].open, r[i1].close), b1l = MathMin(r[i1].open, r[i1].close);
+      double b2h = MathMax(r[i2].open, r[i2].close), b2l = MathMin(r[i2].open, r[i2].close);
+      if(!(b2h >= b1h && b2l <= b1l && b2h > b2l))
+         continue;
+      int si = (r[i1].high - r[i1].low) <= (r[i2].high - r[i2].low) ? i1 : i2;
+      outTop = MathMax(r[si].open, r[si].close);
+      outBot = MathMin(r[si].open, r[si].close);
+      return;
+     }
+  }
+
 // index of the newest earlier swing at a similar price, or -1
 int FindMate(const bool htf, const double price, const int bar, const double atr)
   {
@@ -584,7 +669,8 @@ void AddSwingZone(const bool htf, const double price, const bool isHigh,
                   const double bodyHi, const double bodyLo,
                   const double hiRun, const double loRun,
                   const double refClose, const datetime t1, const datetime t2,
-                  const double firstHi, const double firstLo)
+                  const double firstHi, const double firstLo,
+                  const double engTop, const double engBot, const double momBody)
   {
    int mi = InpPairZones ? FindMate(htf, price, bar, atr) : -1;
    double matePrice = 0.0;
@@ -632,20 +718,30 @@ void AddSwingZone(const bool htf, const double price, const bool isHigh,
 
    if(mi < 0)
      {
-      // p24, the FIFTH way to draw a zone: "when there is no S/R pair to draw
-      // from, draw it from the engulf". The book never says "then draw
-      // nothing" — and without this the panel read Zones: 0. An unpaired zone
-      // is born FRESH, so it still needs its two touches before it trades.
+      // p24 method 5, and the only two things the book draws on a SINGLE
+      // swing: the ENGULF pair (images 27/28 — the shorter candle's body) and
+      // the MOMENTUM candle (image 43). Until v9.7 this drew a zone at every
+      // unpaired pivot, which is a rule the book does not have; 70% of all
+      // zones came from here. An unpaired zone is born FRESH either way.
       double bigM = atr * InpBigMoveATR;
-      if(isHigh)
+      double ft = 0.0, fb = 0.0;
+      bool   got = false;
+      if(InpEngulfZones && engTop > engBot)
         {
-         if((price - loRun) >= bigM && !Overlaps(price, bodyHi, htf))
-            AddZone(price, bodyHi, -1, bornH, atr, t1, t2, htf, false);
+         ft = engTop; fb = engBot; got = true;
         }
       else
+         if(InpMomentumZones && momBody >= atr * InpMomBodyATR)
+           {
+            ft = isHigh ? price  : bodyLo;
+            fb = isHigh ? bodyHi : price;
+            got = (ft > fb);
+           }
+      if(got)
         {
-         if((hiRun - price) >= bigM && !Overlaps(bodyLo, price, htf))
-            AddZone(bodyLo, price, 1, bornH, atr, t1, t2, htf, false);
+         double away = isHigh ? (ft - loRun) : (hiRun - fb);
+         if(away >= bigM && !Overlaps(ft, fb, htf))
+            AddZone(ft, fb, isHigh ? -1 : 1, bornH, atr, t1, t2, htf, false);
         }
       return;
      }
@@ -845,20 +941,22 @@ void ProcessHtfBar(const int j, const MqlRates &htf[], const double &atrH[], con
 
       double bodyHiH = MathMax(htf[p].open, htf[p].close);
       double bodyLoH = MathMin(htf[p].open, htf[p].close);
-      double fHi = 0.0, fLo = 0.0;
+      double fHi = 0.0, fLo = 0.0, eT = 0.0, eB = 1.0;
       if(isPL)
         {
          MateSegRates(htf[p].low, p, atr, htf, fHi, fLo);
+         EngulfPairRates(htf, p, false, hCount, eT, eB);
          AddSwingZone(true, htf[p].low, false, p, j, atr, bodyHiH, bodyLoH,
                       hiRun, loRun, htf[j].close, htf[p].time, htf[j].time,
-                      fHi, fLo);
+                      fHi, fLo, eT, eB, MathAbs(htf[p].close - htf[p].open));
         }
       if(isPH)
         {
          MateSegRates(htf[p].high, p, atr, htf, fHi, fLo);
+         EngulfPairRates(htf, p, true, hCount, eT, eB);
          AddSwingZone(true, htf[p].high, true, p, j, atr, bodyHiH, bodyLoH,
                       hiRun, loRun, htf[j].close, htf[p].time, htf[j].time,
-                      fHi, fLo);
+                      fHi, fLo, eT, eB, MathAbs(htf[p].close - htf[p].open));
         }
      }
 
@@ -1000,22 +1098,24 @@ int OnCalculate(const int rates_total,
            }
          double bodyHiC = MathMax(open[pc], close[pc]);
          double bodyLoC = MathMin(open[pc], close[pc]);
-         double fHiC = 0.0, fLoC = 0.0;
+         double fHiC = 0.0, fLoC = 0.0, eTC = 0.0, eBC = 1.0;
          if(isPH)
            {
             g_cPrevHigh = g_cHigh;  g_cHigh = high[pc];
             MateSeg(false, high[pc], pc, atr, high, low, fHiC, fLoC);
+            EngulfPair(open, high, low, close, pc, true, rates_total, eTC, eBC);
             AddSwingZone(false, high[pc], true, pc, bar, atr, bodyHiC, bodyLoC,
                          hiRunC, loRunC, close[bar], time[pc], time[bar],
-                         fHiC, fLoC);
+                         fHiC, fLoC, eTC, eBC, MathAbs(close[pc] - open[pc]));
            }
          if(isPL)
            {
             g_cPrevLow = g_cLow;    g_cLow = low[pc];
             MateSeg(false, low[pc], pc, atr, high, low, fHiC, fLoC);
+            EngulfPair(open, high, low, close, pc, false, rates_total, eTC, eBC);
             AddSwingZone(false, low[pc], false, pc, bar, atr, bodyHiC, bodyLoC,
                          hiRunC, loRunC, close[bar], time[pc], time[bar],
-                         fHiC, fLoC);
+                         fHiC, fLoC, eTC, eBC, MathAbs(close[pc] - open[pc]));
            }
         }
 
