@@ -14,7 +14,7 @@
 //|   • One position at a time with SL / TP1 / TP2 / TP3 drawn       |
 //+------------------------------------------------------------------+
 #property copyright   "SNRZ (Zindan The Gold Chaser) — indicator port"
-#property version     "10.40"
+#property version     "10.50"
 #property description "SNRZ: chart zones AND analysis zones together (book p.41/p.44), one trade at a time"
 #property indicator_chart_window
 #property indicator_buffers 4
@@ -68,6 +68,9 @@ input bool   InpPairZones     = true;  // Draw a zone only from TWO swings (p24:
 input double InpPairTolATR   = 0.50;  // ..."similar price" = closer than (ATR x)
 input int    InpPairMaxGap   = 150;   // ...and the two swings closer than N bars
 input int    InpPairLookback = 20;    // ...searching the last N swings
+input bool   InpStructZone   = true;  // Draw the analysis zone from the STRUCTURE of the turn
+input int    InpStructBars   = 3;     // ...how many candles either side of the pivot count as the turn
+input double InpMaxZoneATRHtf= 1.0;   // Analysis-zone height cap (ATR x) - a sanity bound only
 input bool   InpRefineHtf    = true;  // Tighten an analysis zone to the chart structure inside it
 input bool   InpLineZones    = true;  // Draw LINE-CHART zones too (images 31/12/13)
 input bool   InpFlipNeedsPullback = true; // A broken level trades at the PULLBACK swing, not the old band
@@ -471,11 +474,14 @@ struct SSwing
    bool   isHigh;
    int    bar;        // chart bar (or analysis bar for the HTF set)
    bool   line;       // a LINE-CHART swing: a pivot of CLOSES, no wicks
+   double stLo;       // the turn this pivot sits in: wick side out to the
+   double stHi;       // extreme, body side to the closes
   };
 SSwing g_swLtf[], g_swHtf[];
 
 void PushSwing(const bool htf, const double price, const bool isHigh,
-               const int bar, const bool line)
+               const int bar, const bool line,
+               const double stLo, const double stHi)
   {
    int n;
    if(htf)
@@ -484,6 +490,7 @@ void PushSwing(const bool htf, const double price, const bool isHigh,
       ArrayResize(g_swHtf, n + 1);
       g_swHtf[n].price = price; g_swHtf[n].isHigh = isHigh;
       g_swHtf[n].bar = bar;     g_swHtf[n].line = line;
+      g_swHtf[n].stLo = stLo;   g_swHtf[n].stHi = stHi;
       if(ArraySize(g_swHtf) > 60) ArrayRemove(g_swHtf, 0, 1);
      }
    else
@@ -492,6 +499,7 @@ void PushSwing(const bool htf, const double price, const bool isHigh,
       ArrayResize(g_swLtf, n + 1);
       g_swLtf[n].price = price; g_swLtf[n].isHigh = isHigh;
       g_swLtf[n].bar = bar;     g_swLtf[n].line = line;
+      g_swLtf[n].stLo = stLo;   g_swLtf[n].stHi = stHi;
       if(ArraySize(g_swLtf) > 60) ArrayRemove(g_swLtf, 0, 1);
      }
   }
@@ -524,7 +532,8 @@ void MateSeg(const bool htf, const double price, const int bar, const double atr
 
 void MateSegRates(const double price, const int bar, const double atr,
                   const MqlRates &r[], double &outHi, double &outLo,
-                  const bool line = false)
+                  const bool line = false,
+                  const double stLo = 0.0, const double stHi = 0.0)
   {
    outHi = -DBL_MAX; outLo = DBL_MAX;
    int mi = FindMate(true, price, bar, atr, line);
@@ -620,7 +629,9 @@ void AddZone(double top, double bot, const int role, const int bornH, const doub
   {
    double h  = top - bot;
    double mn = atr * InpMinZoneATR;
-   double mx = atr * InpMaxZoneATR;
+   // the analysis zone takes its shape from the structure of the turn, so its
+   // cap is a sanity bound rather than a shape
+   double mx = atr * (htf ? InpMaxZoneATRHtf : InpMaxZoneATR);
    if(h < mn)
      {
       double mid = (top + bot) / 2.0;
@@ -782,6 +793,50 @@ void RefineInner(const double price, const double atr)
   }
 
 //+------------------------------------------------------------------+
+//| The turn a pivot sits in: wick side out to the extreme, body side |
+//| to the closes. Stored with the swing so a later pair can widen    |
+//| its zone to cover BOTH turns - the shape of the captain's boxes.  |
+//+------------------------------------------------------------------+
+void StructBand(const double &o[], const double &h[], const double &l[],
+                const double &c[], const int p, const int n, const bool isHigh,
+                double &outLo, double &outHi)
+  {
+   int k = InpStructBars;
+   int a = MathMax(0, p - k), z = MathMin(n - 1, p + k);
+   outLo = l[a]; outHi = h[a];
+   double bodyHi = MathMax(o[a], c[a]), bodyLo = MathMin(o[a], c[a]);
+   for(int i = a; i <= z; i++)
+     {
+      outLo  = MathMin(outLo, l[i]);
+      outHi  = MathMax(outHi, h[i]);
+      bodyHi = MathMax(bodyHi, MathMax(o[i], c[i]));
+      bodyLo = MathMin(bodyLo, MathMin(o[i], c[i]));
+     }
+   // a low pivot keeps its wick low and stops at the bodies above it
+   if(!isHigh) outHi = bodyHi;
+   else        outLo = bodyLo;
+  }
+
+void StructBandRates(const MqlRates &r[], const int p, const int n,
+                     const bool isHigh, double &outLo, double &outHi)
+  {
+   int k = InpStructBars;
+   int a = MathMax(0, p - k), z = MathMin(n - 1, p + k);
+   outLo = r[a].low; outHi = r[a].high;
+   double bodyHi = MathMax(r[a].open, r[a].close);
+   double bodyLo = MathMin(r[a].open, r[a].close);
+   for(int i = a; i <= z; i++)
+     {
+      outLo  = MathMin(outLo, r[i].low);
+      outHi  = MathMax(outHi, r[i].high);
+      bodyHi = MathMax(bodyHi, MathMax(r[i].open, r[i].close));
+      bodyLo = MathMin(bodyLo, MathMin(r[i].open, r[i].close));
+     }
+   if(!isHigh) outHi = bodyHi;
+   else        outLo = bodyLo;
+  }
+
+//+------------------------------------------------------------------+
 //| One confirmed swing -> at most one zone, drawn with its mate      |
 //+------------------------------------------------------------------+
 void AddSwingZone(const bool htf, const double price, const bool isHigh,
@@ -796,12 +851,15 @@ void AddSwingZone(const bool htf, const double price, const bool isHigh,
    int mi = InpPairZones ? FindMate(htf, price, bar, atr, line) : -1;
    double matePrice = 0.0;
    bool   mateHigh  = false;
+   double mateStLo  = 0.0, mateStHi = 0.0;
    if(mi >= 0)
      {
       matePrice = htf ? g_swHtf[mi].price  : g_swLtf[mi].price;
       mateHigh  = htf ? g_swHtf[mi].isHigh : g_swLtf[mi].isHigh;
+      mateStLo  = htf ? g_swHtf[mi].stLo   : g_swLtf[mi].stLo;
+      mateStHi  = htf ? g_swHtf[mi].stHi   : g_swLtf[mi].stHi;
      }
-   PushSwing(htf, price, isHigh, bar, line);
+   PushSwing(htf, price, isHigh, bar, line, stLo, stHi);
 
    // A GAP mate is the OPPOSITE kind of swing at a DIFFERENT price, so the
    // same-price search above can never find one - it needs its own pass.
@@ -900,6 +958,13 @@ void AddSwingZone(const bool htf, const double price, const bool isHigh,
    bool okBig = (InpBigMoveRule == BIGMOVE_OFF) ? true
                 : (InpBigMoveRule == BIGMOVE_BOTH ? (bigAway && bigFirst)
                                                   : (bigAway || bigFirst));
+   // The analysis zone takes the shape of BOTH turns, not a hairline through
+   // two swing prices: wick side out to the extreme, body side to the closes.
+   if(InpStructZone && htf && !line && mateStHi > mateStLo && stHi > stLo)
+     {
+      b = MathMin(b, MathMin(stLo, mateStLo));
+      t = MathMax(t, MathMax(stHi, mateStHi));
+     }
    if(!Overlaps(t, b, htf) && okBig)
       AddZone(t, b, role, bornH, atr, t1, t2, htf, true);
   }
@@ -1081,22 +1146,26 @@ void ProcessHtfBar(const int j, const MqlRates &htf[], const double &atrH[], con
 
       double bodyHiH = MathMax(htf[p].open, htf[p].close);
       double bodyLoH = MathMin(htf[p].open, htf[p].close);
-      double fHi = 0.0, fLo = 0.0, eT = 0.0, eB = 1.0;
+      double fHi = 0.0, fLo = 0.0, eT = 0.0, eB = 1.0, sLo = 0.0, sHi = 0.0;
       if(isPL)
         {
          MateSegRates(htf[p].low, p, atr, htf, fHi, fLo);
          EngulfPairRates(htf, p, false, hCount, eT, eB);
+         StructBandRates(htf, p, hCount, false, sLo, sHi);
          AddSwingZone(true, htf[p].low, false, p, j, atr, bodyHiH, bodyLoH,
                       hiRun, loRun, htf[j].close, htf[p].time, htf[j].time,
-                      fHi, fLo, eT, eB, MathAbs(htf[p].close - htf[p].open));
+                      fHi, fLo, eT, eB, MathAbs(htf[p].close - htf[p].open),
+                      false, sLo, sHi);
         }
       if(isPH)
         {
          MateSegRates(htf[p].high, p, atr, htf, fHi, fLo);
          EngulfPairRates(htf, p, true, hCount, eT, eB);
+         StructBandRates(htf, p, hCount, true, sLo, sHi);
          AddSwingZone(true, htf[p].high, true, p, j, atr, bodyHiH, bodyLoH,
                       hiRun, loRun, htf[j].close, htf[p].time, htf[j].time,
-                      fHi, fLo, eT, eB, MathAbs(htf[p].close - htf[p].open));
+                      fHi, fLo, eT, eB, MathAbs(htf[p].close - htf[p].open),
+                      false, sLo, sHi);
         }
 
       //--- and the line chart of the ANALYSIS timeframe
@@ -1266,7 +1335,7 @@ int OnCalculate(const int rates_total,
            }
          double bodyHiC = MathMax(open[pc], close[pc]);
          double bodyLoC = MathMin(open[pc], close[pc]);
-         double fHiC = 0.0, fLoC = 0.0, eTC = 0.0, eBC = 1.0;
+         double fHiC = 0.0, fLoC = 0.0, eTC = 0.0, eBC = 1.0, sLoC = 0.0, sHiC = 0.0;
          if(isPH)
            {
             g_cPrevHigh = g_cHigh;  g_cHigh = high[pc];
@@ -1274,9 +1343,11 @@ int OnCalculate(const int rates_total,
             RefineInner(high[pc], atr);
             MateSeg(false, high[pc], pc, atr, high, low, fHiC, fLoC);
             EngulfPair(open, high, low, close, pc, true, rates_total, eTC, eBC);
+            StructBand(open, high, low, close, pc, rates_total, true, sLoC, sHiC);
             AddSwingZone(false, high[pc], true, pc, bar, atr, bodyHiC, bodyLoC,
                          hiRunC, loRunC, close[bar], time[pc], time[bar],
-                         fHiC, fLoC, eTC, eBC, MathAbs(close[pc] - open[pc]));
+                         fHiC, fLoC, eTC, eBC, MathAbs(close[pc] - open[pc]),
+                         false, sLoC, sHiC);
            }
          if(isPL)
            {
@@ -1285,9 +1356,11 @@ int OnCalculate(const int rates_total,
             RefineInner(low[pc], atr);
             MateSeg(false, low[pc], pc, atr, high, low, fHiC, fLoC);
             EngulfPair(open, high, low, close, pc, false, rates_total, eTC, eBC);
+            StructBand(open, high, low, close, pc, rates_total, false, sLoC, sHiC);
             AddSwingZone(false, low[pc], false, pc, bar, atr, bodyHiC, bodyLoC,
                          hiRunC, loRunC, close[bar], time[pc], time[bar],
-                         fHiC, fLoC, eTC, eBC, MathAbs(close[pc] - open[pc]));
+                         fHiC, fLoC, eTC, eBC, MathAbs(close[pc] - open[pc]),
+                         false, sLoC, sHiC);
            }
 
          //--- the LINE CHART's own zones: pivots of CLOSES, no wicks at all.

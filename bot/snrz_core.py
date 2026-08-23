@@ -138,7 +138,12 @@ class Config:
     need_big_move: bool = True  # (kept: the pullback re-anchor still reads it)
     breakout_pct: float = 75.0
     min_zone_atr: float = 0.15
-    max_zone_atr_htf: float = 0.4   # ...and the analysis zones have their own
+    # The analysis zone is drawn from the STRUCTURE of the turn, so its cap is
+    # a sanity bound rather than a shape — the shape comes from the candles.
+    htf_struct_zone: bool = True
+    refine_max_touch: int = 0   # refining is still allowed up to this touch
+    htf_struct_bars: int = 3
+    max_zone_atr_htf: float = 1.0   # ...and the analysis zones have their own
     max_zone_atr: float = 0.4   # a zone 1 ATR tall is a region, not a zone —
                                 # on H4 that drew 287-dollar bands across the chart
     atr_len: int = 14
@@ -722,6 +727,9 @@ class SnrzEngine:
             # strength ranking of image 54
             # two touches already define it, so it is born VALID (p35: first
             # movement + second movement). The entry is the RETURN to it.
+            if htf and cfg.htf_struct_zone and not use_close:
+                top, bot = self._struct_expand(series, (mate.index, p), role,
+                                               top, bot, cfg.htf_struct_bars)
             self._add_zone(top, bot, role, atr, idx, htf,
                            src=("line " + src) if use_close else src, valid=True)
 
@@ -885,6 +893,31 @@ class SnrzEngine:
             return max(w.high for w in recent) >= max(w.high for w in window)
         return min(w.low for w in recent) <= min(w.low for w in window)
 
+    def _struct_expand(self, series: List[Candle], idxs, role: Role,
+                       top: float, bot: float, k: int):
+        """Draw an ANALYSIS zone the way the captain draws it: not a hairline
+        through two swing prices, but the whole turn those swings sit in.
+
+        His 1-hour boxes cover the base of the reversal — from the wick that
+        made the extreme across to the body edge of the candles around it. So
+        for each of the two pivots the zone is built from, the band is widened
+        to that turn: wick side out to the extreme, body side to the closes.
+        That is what leaves room for the 15-minute layer to tighten it."""
+        lo, hi = bot, top
+        n = len(series)
+        for i in idxs:
+            a, b = max(0, i - k), min(n - 1, i + k)
+            seg = series[a: b + 1]
+            if not seg:
+                continue
+            if role == Role.SUPPORT:
+                lo = min(lo, min(w.low for w in seg))
+                hi = max(hi, max(max(w.open, w.close) for w in seg))
+            else:
+                hi = max(hi, max(w.high for w in seg))
+                lo = min(lo, min(min(w.open, w.close) for w in seg))
+        return (hi, lo) if hi > lo else (top, bot)
+
     def _refine_inner(self, price: float, atr: float):
         """The captain's middle timeframe, in code.
 
@@ -899,7 +932,9 @@ class SnrzEngine:
         resting on would move the trade after the fact."""
         cfg = self.cfg
         for z in self.zones:
-            if not z.htf or z.dead or z.refined or z.touches > 0:
+            if not z.htf or z.dead or z.refined:
+                continue
+            if z.touches > cfg.refine_max_touch:
                 continue
             if not (z.bot <= price <= z.top):
                 continue

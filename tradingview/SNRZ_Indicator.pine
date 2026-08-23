@@ -36,6 +36,9 @@ indicator("SNRZ Strategy [Zindan] v9", "SNRZ v10.2", overlay = true, max_boxes_c
 // ───────────────────────────── Inputs ──────────────────────────────────────
 grpZ  = "Zones (SNRZ)"
 htfIn         = input.timeframe("", "Analysis timeframe (empty = AUTO, one rung up)", group = grpZ, tooltip = "کتاب: زون را روی تایم بالاتر می‌زنی و تأیید را روی چارت می‌گیری. هر دو دسته زون هم‌زمان رسم می‌شوند: زون‌های خودِ چارت (تارگت اول) و زون‌های تایم بالاتر (تارگت دوم).")
+structZone    = input.bool(true, "زونِ تایمِ تحلیل از **ساختارِ چرخش** کشیده شود", group = grpZ, tooltip = "کاپیتان باکسِ ۱ ساعته را باریک نمی‌کشد — کلِ ناحیه‌ی چرخش را می‌گیرد: از نوکِ سایه تا بدنه‌ی آن‌طرف، دورِ **هر دو** نقطه‌ی جفت. همین است که به لایه‌ی ۱۵ دقیقه چیزی برای کوچک‌کردن می‌دهد.\n\nروی ۸۳ روز XAUUSD: M5 از +۰٫۱۰۴ به +۰٫۱۱۰ و H4 از +۰٫۳۳ به +۰٫۴۲ بهتر شد، ولی H1 از −۰٫۰۵ به −۰٫۱۴ بدتر. میانه تقریباً ثابت.")
+structBars    = input.int(3, "…چند کندل هر طرفِ پیوت جزو چرخش است", minval = 1, maxval = 10, group = grpZ)
+maxZoneATRHtf = input.float(1.0, "سقفِ ارتفاعِ زونِ تایمِ تحلیل (ATR ×)", minval = 0.1, step = 0.1, group = grpZ, tooltip = "زونِ تحلیل شکلش را از ساختار می‌گیرد، پس این عدد فقط یک حدِ ایمنی است نه شکل‌دهنده.")
 refineHtf     = input.bool(true, "زونِ تایمِ تحلیل را با ساختارِ چارت کوچک کن", group = grpZ, tooltip = "لایه‌ی میانیِ کاپیتان: زون را روی ۱ ساعته می‌زنی، به ۱۵ دقیقه می‌روی و **داخلِ** آن زونِ کوچک‌تر می‌کشی، بعد روی ۵ دقیقه تأیید می‌گیری. پس زونِ تحلیل با لبه‌ی پهنِ خودش ترید نمی‌شود — اول با ساختارِ چارتِ داخلش تنگ می‌شود. یک بار اتفاق می‌افتد، روی دومین سوئینگِ داخلی، و فقط تا وقتی زون دست‌نخورده است و اردری رویش نیست.")
 htfSkipRung   = input.bool(false, "تایمِ تحلیل دو پله بالاتر باشد (جدولِ SKIP کتاب)", group = grpZ, tooltip = "جدولِ خودِ کتاب: Weekly/Daily(SKIP)/4H — یعنی تایمِ تحلیل دو پله بالاتر از چارت است و یک پله عمداً رد می‌شود. روی ۸۳ روز XAUUSD واقعی این خوانش واضح بدتر شد: روی M5 که تایمِ محبوبِ کاپیتان است، +۰٫۱۰R افتاد به +۰٫۰۲R. پس پیش‌فرض خاموش است تا کاپیتان تأیید کند.")
 pivotLtf      = input.int(5,    "Pivot length — chart zones",              minval = 2,  group = grpZ, tooltip = "کوچک‌تر = زون بیشتر روی خود چارت = سیگنال بیشتر در تایم‌های پایین.")
@@ -140,6 +143,15 @@ phL = ta.pivothigh(high, pivotLtf, pivotLtf)
 plL = ta.pivotlow(low,  pivotLtf, pivotLtf)
 bodyHiL = math.max(open[pivotLtf], close[pivotLtf])
 bodyLoL = math.min(open[pivotLtf], close[pivotLtf])
+// The structural band of the pivot itself: the turn it sits in, wick side out
+// to the extreme and body side to the closes. Stored with the swing so a later
+// pair can widen its zone to cover BOTH turns — that is the shape of the
+// captain's 1-hour boxes, and what leaves room for the 15-minute layer.
+stK      = math.min(structBars, pivotLtf)
+stLoL    = ta.lowest(low, 2 * stK + 1)[pivotLtf - stK]
+stHiL    = ta.highest(high, 2 * stK + 1)[pivotLtf - stK]
+stBodyHiL= ta.highest(math.max(open, close), 2 * stK + 1)[pivotLtf - stK]
+stBodyLoL= ta.lowest(math.min(open, close),  2 * stK + 1)[pivotLtf - stK]
 hiRunL  = ta.highest(high, pivotLtf)
 loRunL  = ta.lowest(low,  pivotLtf)
 
@@ -194,12 +206,17 @@ loRunSrc = ta.lowest(low,  pivotHtf)
 [engBearTSrc, engBearBSrc] = engulfZone(pivotHtf, true)
 [engBullTSrc, engBullBSrc] = engulfZone(pivotHtf, false)
 momBodySrc = math.abs(close[pivotHtf] - open[pivotHtf])
+stKh       = math.min(structBars, pivotHtf)
+stLoSrc    = ta.lowest(low, 2 * stKh + 1)[pivotHtf - stKh]
+stHiSrc    = ta.highest(high, 2 * stKh + 1)[pivotHtf - stKh]
+stBodyHiSrc= ta.highest(math.max(open, close), 2 * stKh + 1)[pivotHtf - stKh]
+stBodyLoSrc= ta.lowest(math.min(open, close),  2 * stKh + 1)[pivotHtf - stKh]
 phLcSrc = ta.pivothigh(close, pivotHtf, pivotHtf)
 plLcSrc = ta.pivotlow(close,  pivotHtf, pivotHtf)
 hiRunLcSrc = ta.highest(close, pivotHtf)
 loRunLcSrc = ta.lowest(close,  pivotHtf)
 
-[phH, plH, bodyHiH, bodyLoH, closeH, atrH, hiRunH, loRunH, engBearTH, engBearBH, engBullTH, engBullBH, momBodyH, phLcH, plLcH, hiRunLcH, loRunLcH] = request.security(syminfo.tickerid, htfTF, [phSrc, plSrc, bodyHiSrc, bodyLoSrc, close[1], atr[1], hiRunSrc, loRunSrc, engBearTSrc, engBearBSrc, engBullTSrc, engBullBSrc, momBodySrc, phLcSrc, plLcSrc, hiRunLcSrc, loRunLcSrc], lookahead = barmerge.lookahead_off)
+[phH, plH, bodyHiH, bodyLoH, closeH, atrH, hiRunH, loRunH, engBearTH, engBearBH, engBullTH, engBullBH, momBodyH, phLcH, plLcH, hiRunLcH, loRunLcH, stLoH, stHiH, stBodyHiH, stBodyLoH] = request.security(syminfo.tickerid, htfTF, [phSrc, plSrc, bodyHiSrc, bodyLoSrc, close[1], atr[1], hiRunSrc, loRunSrc, engBearTSrc, engBearBSrc, engBullTSrc, engBullBSrc, momBodySrc, phLcSrc, plLcSrc, hiRunLcSrc, loRunLcSrc, stLoSrc, stHiSrc, stBodyHiSrc, stBodyLoSrc], lookahead = barmerge.lookahead_off)
 
 atrA = na(atrH) ? atr : atrH              // ATR of the analysis timeframe
 
@@ -340,7 +357,9 @@ refreshZone(Zone z) =>
 newZone(float _top, float _bot, int _role, bool _htf, int _uid, float _atr, int _back, bool _paired) =>
     h  = _top - _bot
     mn = _atr * minZoneATR
-    mx = _atr * maxZoneATR
+    // the analysis zones take their shape from the structure, so their cap is
+    // only a sanity bound
+    mx = _atr * (_htf ? maxZoneATRHtf : maxZoneATR)
     t  = _top
     b  = _bot
     if h < mn
@@ -432,10 +451,14 @@ var ltfSwPrice = array.new<float>()
 var ltfSwHigh  = array.new<bool>()
 var ltfSwBar   = array.new<int>()
 var ltfSwLine  = array.new<bool>()
+var ltfStLo    = array.new<float>()
+var ltfStHi    = array.new<float>()
 var htfSwPrice = array.new<float>()
 var htfSwHigh  = array.new<bool>()
 var htfSwBar   = array.new<int>()
 var htfSwLine  = array.new<bool>()
+var htfStLo    = array.new<float>()
+var htfStHi    = array.new<float>()
 // Image 35: a valid zone has a FIRST movement as well as a second one, and
 // "the more each of the movements is momentum, the more the market respects
 // that zone". These hold, for every remembered swing, how far price has run
@@ -471,13 +494,17 @@ findMate(bool _htf, float _price, int _bar, float _atr, bool _line) =>
                 break
     found
 
-pushSwing(bool _htf, float _price, bool _isHigh, int _bar, float _segHi, float _segLo, bool _line) =>
+pushSwing(bool _htf, float _price, bool _isHigh, int _bar, float _segHi, float _segLo, bool _line, float _stLo, float _stHi) =>
     aP = _htf ? htfSwPrice : ltfSwPrice
     aH = _htf ? htfSwHigh  : ltfSwHigh
     aB = _htf ? htfSwBar   : ltfSwBar
     aL = _htf ? htfSwLine  : ltfSwLine
     sH = _htf ? htfSegHi   : ltfSegHi
     sL = _htf ? htfSegLo   : ltfSegLo
+    tL = _htf ? htfStLo    : ltfStLo
+    tH = _htf ? htfStHi    : ltfStHi
+    array.push(tL, _stLo)
+    array.push(tH, _stHi)
     array.push(aP, _price)
     array.push(aH, _isHigh)
     array.push(aB, _bar)
@@ -491,6 +518,8 @@ pushSwing(bool _htf, float _price, bool _isHigh, int _bar, float _segHi, float _
         array.shift(aL)
         array.shift(sH)
         array.shift(sL)
+        array.shift(tL)
+        array.shift(tH)
 
 // Every bar, each remembered swing's first-movement extreme is extended by the
 // candle that has just become a PIVOT candidate — `high[_back]`, not `high` —
@@ -533,7 +562,7 @@ reanchorFlipped(float _price, bool _isHigh, float _atr, bool _htf) =>
                         z.awaitPull := -1
 
 // one swing -> at most one zone, drawn with its mate when pairing is on
-addSwing(bool _htf, float _price, bool _isHigh, int _bar, int _back, float _atr, float _bodyHi, float _bodyLo, float _hiRun, float _loRun, int _uid, float _engT, float _engB, float _momBody, bool _line) =>
+addSwing(bool _htf, float _price, bool _isHigh, int _bar, int _back, float _atr, float _bodyHi, float _bodyLo, float _hiRun, float _loRun, int _uid, float _engT, float _engB, float _momBody, bool _line, float _stLo, float _stHi) =>
     reanchorFlipped(_price, _isHigh, _atr, _htf)
     mate = findMate(_htf, _price, _bar, _atr, _line)
     mi   = pairZones ? mate : -1
@@ -544,13 +573,17 @@ addSwing(bool _htf, float _price, bool _isHigh, int _bar, int _back, float _atr,
     bool  mateHigh  = false
     float mateSegHi = na
     float mateSegLo = na
+    float mateStLo  = na
+    float mateStHi  = na
     if mi >= 0
         matePrice := array.get(_htf ? htfSwPrice : ltfSwPrice, mi)
         mateHigh  := array.get(_htf ? htfSwHigh  : ltfSwHigh,  mi)
         // read BEFORE the push: a push that trims the array shifts every index
         mateSegHi := array.get(_htf ? htfSegHi : ltfSegHi, mi)
         mateSegLo := array.get(_htf ? htfSegLo : ltfSegLo, mi)
-    pushSwing(_htf, _price, _isHigh, _bar, _price, _price, _line)
+        mateStLo  := array.get(_htf ? htfStLo  : ltfStLo,  mi)
+        mateStHi  := array.get(_htf ? htfStHi  : ltfStHi,  mi)
+    pushSwing(_htf, _price, _isHigh, _bar, _price, _price, _line, _stLo, _stHi)
 
     // A GAP mate is the OPPOSITE kind of swing at a DIFFERENT price, so the
     // same-price search above can never find one — it needs its own pass.
@@ -601,6 +634,17 @@ addSwing(bool _htf, float _price, bool _isHigh, int _bar, int _back, float _atr,
         bigA  = away >= _atr * bigMoveMult
         bigF  = not na(first) and first >= _atr * bigMoveMult
         okBig = bigMoveRule == "off" ? true : bigMoveRule == "both" ? (bigA and bigF) : (bigA or bigF)
+        // The analysis zone is drawn from the STRUCTURE of both turns, not as
+        // a hairline through two swing prices: wick side out to the extreme,
+        // body side to the closes. That is the shape of the captain's 1-hour
+        // boxes, and what leaves the 15-minute layer something to tighten.
+        if structZone and _htf and not _line and not na(mateStLo)
+            if role == 1
+                b := math.min(b, math.min(_stLo, mateStLo))
+                t := math.max(t, math.max(_stHi, mateStHi))
+            else
+                t := math.max(t, math.max(_stHi, mateStHi))
+                b := math.min(b, math.min(_stLo, mateStLo))
         if not overlaps(t, b, _htf) and okBig
             array.push(zones, newZone(t, b, role, _htf, _uid, _atr, _back, true))
     else if _line
@@ -643,30 +687,30 @@ extendSeg(true,  htfBackSeg)
 // chart timeframe: the many small zones that give TP1 and the low-timeframe
 // setups (book p.44: "let TP1 be a 5-minute zone")
 if not na(plL)
-    addSwing(false, plL, false, bar_index - pivotLtf, pivotLtf, atr, bodyHiL, bodyLoL, hiRunL, loRunL, bar_index * 8 + 0, engBullTL, engBullBL, momBodyL, false)
+    addSwing(false, plL, false, bar_index - pivotLtf, pivotLtf, atr, bodyHiL, bodyLoL, hiRunL, loRunL, bar_index * 8 + 0, engBullTL, engBullBL, momBodyL, false, stLoL, stBodyHiL)
 if not na(phL)
-    addSwing(false, phL, true,  bar_index - pivotLtf, pivotLtf, atr, bodyHiL, bodyLoL, hiRunL, loRunL, bar_index * 8 + 1, engBearTL, engBearBL, momBodyL, false)
+    addSwing(false, phL, true,  bar_index - pivotLtf, pivotLtf, atr, bodyHiL, bodyLoL, hiRunL, loRunL, bar_index * 8 + 1, engBearTL, engBearBL, momBodyL, false, stBodyLoL, stHiL)
 
 // the LINE CHART's own zones — closes only, on the chart timeframe (image 31)
 if lineZones and not na(plLc)
-    addSwing(false, plLc, false, bar_index - pivotLtf, pivotLtf, atr, bodyHiL, bodyLoL, hiRunLc, loRunLc, bar_index * 8 + 4, na, na, 0.0, true)
+    addSwing(false, plLc, false, bar_index - pivotLtf, pivotLtf, atr, bodyHiL, bodyLoL, hiRunLc, loRunLc, bar_index * 8 + 4, na, na, 0.0, true, na, na)
 if lineZones and not na(phLc)
-    addSwing(false, phLc, true,  bar_index - pivotLtf, pivotLtf, atr, bodyHiL, bodyLoL, hiRunLc, loRunLc, bar_index * 8 + 5, na, na, 0.0, true)
+    addSwing(false, phLc, true,  bar_index - pivotLtf, pivotLtf, atr, bodyHiL, bodyLoL, hiRunLc, loRunLc, bar_index * 8 + 5, na, na, 0.0, true, na, na)
 
 // analysis timeframe: the few big zones that set the trend and TP2
 htfBack = htfBackSeg
 if newPLh and not na(atrH)
-    addSwing(true, plH, false, htfBarNo, htfBack, atrA, bodyHiH, bodyLoH, hiRunH, loRunH, bar_index * 8 + 2, engBullTH, engBullBH, momBodyH, false)
+    addSwing(true, plH, false, htfBarNo, htfBack, atrA, bodyHiH, bodyLoH, hiRunH, loRunH, bar_index * 8 + 2, engBullTH, engBullBH, momBodyH, false, stLoH, stBodyHiH)
 if newPHh and not na(atrH)
-    addSwing(true, phH, true,  htfBarNo, htfBack, atrA, bodyHiH, bodyLoH, hiRunH, loRunH, bar_index * 8 + 3, engBearTH, engBearBH, momBodyH, false)
+    addSwing(true, phH, true,  htfBarNo, htfBack, atrA, bodyHiH, bodyLoH, hiRunH, loRunH, bar_index * 8 + 3, engBearTH, engBearBH, momBodyH, false, stBodyLoH, stHiH)
 
 // ...and the line chart of the analysis timeframe
 newPHlc = lineZones and not na(phLcH) and (na(phLcH[1]) or phLcH != phLcH[1])
 newPLlc = lineZones and not na(plLcH) and (na(plLcH[1]) or plLcH != plLcH[1])
 if newPLlc and not na(atrH)
-    addSwing(true, plLcH, false, htfBarNo, htfBack, atrA, bodyHiH, bodyLoH, hiRunLcH, loRunLcH, bar_index * 8 + 6, na, na, 0.0, true)
+    addSwing(true, plLcH, false, htfBarNo, htfBack, atrA, bodyHiH, bodyLoH, hiRunLcH, loRunLcH, bar_index * 8 + 6, na, na, 0.0, true, na, na)
 if newPHlc and not na(atrH)
-    addSwing(true, phLcH, true,  htfBarNo, htfBack, atrA, bodyHiH, bodyLoH, hiRunLcH, loRunLcH, bar_index * 8 + 7, na, na, 0.0, true)
+    addSwing(true, phLcH, true,  htfBarNo, htfBack, atrA, bodyHiH, bodyLoH, hiRunLcH, loRunLcH, bar_index * 8 + 7, na, na, 0.0, true, na, na)
 
 // The limit-order model needs no confirmation candle: the book puts the order
 // ON the zone before price arrives, and the fill IS the entry. The old
