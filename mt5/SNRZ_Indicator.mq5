@@ -14,7 +14,7 @@
 //|   • One position at a time with SL / TP1 / TP2 / TP3 drawn       |
 //+------------------------------------------------------------------+
 #property copyright   "SNRZ (Zindan The Gold Chaser) — indicator port"
-#property version     "9.99"
+#property version     "10.00"
 #property description "SNRZ: chart zones AND analysis zones together (book p.41/p.44), one trade at a time"
 #property indicator_chart_window
 #property indicator_buffers 4
@@ -70,6 +70,7 @@ input int    InpPairLookback = 20;    // ...searching the last N swings
 input bool   InpLineZones    = true;  // Draw LINE-CHART zones too (images 31/12/13)
 input bool   InpFlipNeedsPullback = true; // A broken level trades at the PULLBACK swing, not the old band
 input bool   InpLineSingleLevels = true; // On a line chart every peak is an R and every trough an S
+input bool   InpEngulfFullCandle = true; // The engulf zone is the WHOLE candle: body + wick
 input bool   InpEngulfZones  = true;  // Method 5: draw a zone from the ENGULF pair (images 27/28)
 input bool   InpMomentumZones= true;  // A single MOMENTUM candle is a zone too (image 43)
 input double InpMomBodyATR   = 0.8;   // ..."momentum" = body at least this many ATR
@@ -558,8 +559,9 @@ void EngulfPair(const double &o[], const double &h[], const double &l[],
       if(!(b2h >= b1h && b2l <= b1l && b2h > b2l))
          continue;
       int si = (h[i1] - l[i1]) <= (h[i2] - l[i2]) ? i1 : i2;
-      outTop = MathMax(o[si], c[si]);
-      outBot = MathMin(o[si], c[si]);
+      // the zone is that WHOLE candle - body together with its wick
+      outTop = InpEngulfFullCandle ? h[si] : MathMax(o[si], c[si]);
+      outBot = InpEngulfFullCandle ? l[si] : MathMin(o[si], c[si]);
       return;
      }
   }
@@ -581,8 +583,8 @@ void EngulfPairRates(const MqlRates &r[], const int p, const bool isHigh,
       if(!(b2h >= b1h && b2l <= b1l && b2h > b2l))
          continue;
       int si = (r[i1].high - r[i1].low) <= (r[i2].high - r[i2].low) ? i1 : i2;
-      outTop = MathMax(r[si].open, r[si].close);
-      outBot = MathMin(r[si].open, r[si].close);
+      outTop = InpEngulfFullCandle ? r[si].high : MathMax(r[si].open, r[si].close);
+      outBot = InpEngulfFullCandle ? r[si].low  : MathMin(r[si].open, r[si].close);
       return;
      }
   }

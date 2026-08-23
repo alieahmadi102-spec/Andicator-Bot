@@ -207,6 +207,7 @@ class Config:
     # happened; a limit left on the old band would simply never fill.
     flip_needs_pullback: bool = True
     engulf_zones: bool = True    # p24 method 5, drawn per images 27/28
+    engulf_full_candle: bool = True  # ...and the zone is the WHOLE candle
     momentum_zones: bool = True  # image 43: one momentum candle IS a zone
     momentum_body_atr: float = 0.8   # ...and this is how big "momentum" is
     # p39: zones are marked on W/D/4H/1H; the low timeframes only MONITOR.
@@ -435,8 +436,12 @@ class SnrzEngine:
                 continue                       # c2 must really engulf c1
             # "whichever is SHORTER" — by full range, wick included
             short = c1 if (c1.high - c1.low) <= (c2.high - c2.low) else c2
-            top = max(short.open, short.close)
-            bot = min(short.open, short.close)
+            # ...and the zone is that WHOLE candle: "کل کندل بدنه با سایه میشه
+            # زون" — body together with its wick, not the body alone. Taking
+            # only the body cut the zone off at exactly the end the market
+            # reacts from.
+            top = short.high if cfg.engulf_full_candle else max(short.open, short.close)
+            bot = short.low if cfg.engulf_full_candle else min(short.open, short.close)
             if top - bot <= 0:
                 continue
             role = Role.RESISTANCE if is_high else Role.SUPPORT
