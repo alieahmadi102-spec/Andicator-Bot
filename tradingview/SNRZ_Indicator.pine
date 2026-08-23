@@ -31,11 +31,12 @@
 //                  TP3 = the one beyond. 1R/2R/3R when no zone sits there.
 //  SCALP vs SWING (book): M5/M15 = SCALP · H1/H4/Daily = SWING.
 // ═══════════════════════════════════════════════════════════════════════════
-indicator("SNRZ Strategy [Zindan] v9", "SNRZ v10.1", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500)
+indicator("SNRZ Strategy [Zindan] v9", "SNRZ v10.2", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500)
 
 // ───────────────────────────── Inputs ──────────────────────────────────────
 grpZ  = "Zones (SNRZ)"
 htfIn         = input.timeframe("", "Analysis timeframe (empty = AUTO, one rung up)", group = grpZ, tooltip = "کتاب: زون را روی تایم بالاتر می‌زنی و تأیید را روی چارت می‌گیری. هر دو دسته زون هم‌زمان رسم می‌شوند: زون‌های خودِ چارت (تارگت اول) و زون‌های تایم بالاتر (تارگت دوم).")
+htfSkipRung   = input.bool(false, "تایمِ تحلیل دو پله بالاتر باشد (جدولِ SKIP کتاب)", group = grpZ, tooltip = "جدولِ خودِ کتاب: Weekly/Daily(SKIP)/4H — یعنی تایمِ تحلیل دو پله بالاتر از چارت است و یک پله عمداً رد می‌شود. روی ۸۳ روز XAUUSD واقعی این خوانش واضح بدتر شد: روی M5 که تایمِ محبوبِ کاپیتان است، +۰٫۱۰R افتاد به +۰٫۰۲R. پس پیش‌فرض خاموش است تا کاپیتان تأیید کند.")
 pivotLtf      = input.int(5,    "Pivot length — chart zones",              minval = 2,  group = grpZ, tooltip = "کوچک‌تر = زون بیشتر روی خود چارت = سیگنال بیشتر در تایم‌های پایین.")
 pivotHtf      = input.int(8,    "Pivot length — analysis zones",           minval = 2,  group = grpZ)
 maxZonesLtf   = input.int(14,    "Max chart zones",                         minval = 2,  maxval = 30, group = grpZ)
@@ -119,7 +120,16 @@ atr = ta.atr(14)
 // analysis timeframe is one rung up the book's own ladder {15m, 1H, 4H, D, W}
 // so the stop stays in proportion to the chart being traded.
 chartMin = timeframe.in_seconds(timeframe.period) / 60
-autoHtf  = chartMin <= 5 ? "15" : chartMin <= 30 ? "60" : chartMin <= 60 ? "240" : chartMin <= 240 ? "D" : chartMin <= 1440 ? "W" : "M"
+// The book's own TimeFrames table reads Analysis / SKIP / Confirmation:
+//   Weekly · Daily(SKIP) · 4H   |   Daily · 4H(SKIP) · 1H
+//   4H · 1H(SKIP) · 30m         |   1H · 30m(SKIP) · 15m
+// so the analysis timeframe sits TWO rungs above the chart, with one rung
+// deliberately skipped. Measured on 83 days of real XAUUSD that reading is
+// clearly worse — on M5, the captain's own favourite, +0.10R falls to +0.02R
+// — so the one-rung ladder stays the default and the skip is a switch.
+autoOne  = chartMin <= 5 ? "15" : chartMin <= 30 ? "60" : chartMin <= 60 ? "240" : chartMin <= 240 ? "D" : chartMin <= 1440 ? "W" : "M"
+autoSkip = chartMin <= 5 ? "30" : chartMin <= 15 ? "60" : chartMin <= 30 ? "240" : chartMin <= 60 ? "D" : "W"
+autoHtf  = htfSkipRung ? autoSkip : autoOne
 htfTF    = htfIn == "" ? autoHtf : htfIn
 htfMin   = timeframe.in_seconds(htfTF) / 60
 tfRatio  = math.max(1.0, htfMin / math.max(chartMin, 1.0))
@@ -1059,7 +1069,7 @@ if showPanel and barstate.islast
             nRun += 1
     posTxt = nOrd + nRun == 0 ? "— no setup right now —" :
              str.tostring(nOrd) + " limit waiting · " + str.tostring(nRun) + " running"
-    table.cell(info, 0, 0, "⚜  SNRZ v10.1 —  ZiNDAN", text_color = colGold, text_size = size.normal)
+    table.cell(info, 0, 0, "⚜  SNRZ v10.2 —  ZiNDAN", text_color = colGold, text_size = size.normal)
     table.cell(info, 0, 1, "The Gold Chaser", text_color = color.new(colGold, 35), text_size = size.tiny)
     table.cell(info, 0, 2, trendTxt, text_color = trendCol, text_size = size.small)
     table.cell(info, 0, 3, "Zones: " + str.tostring(liveLtf) + " @ " + timeframe.period + "  +  " + str.tostring(liveHtf) + " @ " + htfTF, text_color = color.new(color.white, 20), text_size = size.small)
