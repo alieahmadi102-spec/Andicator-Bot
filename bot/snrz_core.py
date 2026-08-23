@@ -189,6 +189,11 @@ class Config:
     pair_tol_atr: float = 0.5    # "a similar price" = within this many ATR
     pair_max_gap: int = 150      # ...and no further apart than this many bars
     pair_lookback: int = 20      # how many earlier swings to try to pair with
+    # Image 31: "use a Line Chart to see and mark the zones better", and
+    # images 12/13 print the same chart as candles AND as a line with the level
+    # sitting on the CLOSE level. A line-chart zone is drawn from repeated
+    # CLOSES, so it finds levels a wick pivot cannot see.
+    line_zones: bool = True
     engulf_zones: bool = True    # p24 method 5, drawn per images 27/28
     momentum_zones: bool = True  # image 43: one momentum candle IS a zone
     momentum_body_atr: float = 0.8   # ...and this is how big "momentum" is
@@ -311,6 +316,11 @@ class SnrzEngine:
         # confirmed swing points per set, for pairing them into zones (p24)
         self.swings_ltf: List[Swing] = []
         self.swings_htf: List[Swing] = []
+        # the LINE CHART's own swings — closes only, kept apart so a close
+        # pivot can never pair with a wick pivot (that would be two different
+        # charts glued together)
+        self.swings_line_ltf: List[Swing] = []
+        self.swings_line_htf: List[Swing] = []
 
     # ── indicators ─────────────────────────────────────────────────────────
     def _atr(self) -> Optional[float]:
@@ -456,10 +466,20 @@ class SnrzEngine:
                                    atr, idx, htf, src="mom", valid=False)
 
     def _pivot_zones(self, series: List[Candle], n: int, atr: float,
-                     idx: int, htf: bool, track_trend: bool):
+                     idx: int, htf: bool, track_trend: bool,
+                     use_close: bool = False):
         """One pivot pass over a candle series. Runs on the chart candles and
         on the aggregated analysis candles, because the book marks zones on
         both (p41).
+
+        With use_close it reads the series as a LINE CHART: only closes, no
+        wicks at all. Image 31 tells the reader to use a line chart "to see
+        and mark the zones better", and images 12/13 show why — the same chart
+        is printed twice, candles and line, and the level sits on the CLOSE
+        level while the wicks poke through it (4,737.99 support with wicks to
+        4,735; 4,800.51 resistance with wicks to 4,801). A level that price
+        keeps CLOSING at is invisible to a high/low pivot when each spike
+        stops somewhere different.
 
         A confirmed swing does NOT become a zone on its own. Book p24 gives
         five ways to draw one and four of them pair TWO swing points at a
@@ -474,8 +494,12 @@ class SnrzEngine:
             return
         window = series[p - n: p + n + 1]
         pc = series[p]
-        is_ph = all(w.high < pc.high for i, w in enumerate(window) if i != n)
-        is_pl = all(w.low > pc.low for i, w in enumerate(window) if i != n)
+        if use_close:
+            is_ph = all(w.close < pc.close for i, w in enumerate(window) if i != n)
+            is_pl = all(w.close > pc.close for i, w in enumerate(window) if i != n)
+        else:
+            is_ph = all(w.high < pc.high for i, w in enumerate(window) if i != n)
+            is_pl = all(w.low > pc.low for i, w in enumerate(window) if i != n)
         if not (is_ph or is_pl):
             return
 
@@ -491,18 +515,22 @@ class SnrzEngine:
                 self.c_prev_low, self.c_low = self.c_low, pc.low
 
         cfg = self.cfg
-        swings = self.swings_htf if htf else self.swings_ltf
+        if use_close:
+            swings = self.swings_line_htf if htf else self.swings_line_ltf
+        else:
+            swings = self.swings_htf if htf else self.swings_ltf
         big = atr * cfg.big_move_atr
         run = series[p: j + 1]
-        hi_run = max(w.high for w in run)
-        lo_run = min(w.low for w in run)
+        # a line chart has no wicks, so its movements are measured close to close
+        hi_run = max((w.close if use_close else w.high) for w in run)
+        lo_run = min((w.close if use_close else w.low) for w in run)
 
         for is_high in (True, False):
             if is_high and not is_ph:
                 continue
             if not is_high and not is_pl:
                 continue
-            price = pc.high if is_high else pc.low
+            price = pc.close if use_close else (pc.high if is_high else pc.low)
             sw = Swing(price, is_high, p)
 
             if not cfg.pair_zones:
@@ -595,7 +623,8 @@ class SnrzEngine:
                     continue
             # two touches already define it, so it is born VALID (p35: first
             # movement + second movement). The entry is the RETURN to it.
-            self._add_zone(top, bot, role, atr, idx, htf, src=src, valid=True)
+            self._add_zone(top, bot, role, atr, idx, htf,
+                           src=("line " + src) if use_close else src, valid=True)
 
     def _push_htf(self, c: Candle) -> bool:
         """Aggregate chart candles into analysis candles. Returns True on the
@@ -929,11 +958,18 @@ class SnrzEngine:
         # so both passes run. Only the analysis pass feeds the trend.
         self._pivot_zones(self.candles, self.cfg.pivot_ltf, atr, idx,
                           htf=False, track_trend=False)
+        if self.cfg.line_zones:
+            self._pivot_zones(self.candles, self.cfg.pivot_ltf, atr, idx,
+                              htf=False, track_trend=False, use_close=True)
         if self._push_htf(c):
             atr_h = self._htf_atr()
             if atr_h and atr_h > 0:
                 self._pivot_zones(self.htf_candles, self.cfg.pivot_htf, atr_h,
                                   idx, htf=True, track_trend=True)
+                if self.cfg.line_zones:
+                    self._pivot_zones(self.htf_candles, self.cfg.pivot_htf,
+                                      atr_h, idx, htf=True, track_trend=False,
+                                      use_close=True)
                 self._update_trend(self.htf_candles[-1], atr_h, idx)
         self._fill_orders(c, idx)
         self._update_trades(c, idx)

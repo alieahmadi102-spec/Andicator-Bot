@@ -14,7 +14,7 @@
 //|   • One position at a time with SL / TP1 / TP2 / TP3 drawn       |
 //+------------------------------------------------------------------+
 #property copyright   "SNRZ (Zindan The Gold Chaser) — indicator port"
-#property version     "9.80"
+#property version     "9.90"
 #property description "SNRZ: chart zones AND analysis zones together (book p.41/p.44), one trade at a time"
 #property indicator_chart_window
 #property indicator_buffers 4
@@ -67,6 +67,7 @@ input bool   InpPairZones     = true;  // Draw a zone only from TWO swings (p24:
 input double InpPairTolATR   = 0.50;  // ..."similar price" = closer than (ATR x)
 input int    InpPairMaxGap   = 150;   // ...and the two swings closer than N bars
 input int    InpPairLookback = 20;    // ...searching the last N swings
+input bool   InpLineZones    = true;  // Draw LINE-CHART zones too (images 31/12/13)
 input bool   InpEngulfZones  = true;  // Method 5: draw a zone from the ENGULF pair (images 27/28)
 input bool   InpMomentumZones= true;  // A single MOMENTUM candle is a zone too (image 43)
 input double InpMomBodyATR   = 0.8;   // ..."momentum" = body at least this many ATR
@@ -459,25 +460,29 @@ struct SSwing
    double price;
    bool   isHigh;
    int    bar;        // chart bar (or analysis bar for the HTF set)
+   bool   line;       // a LINE-CHART swing: a pivot of CLOSES, no wicks
   };
 SSwing g_swLtf[], g_swHtf[];
 
-void PushSwing(const bool htf, const double price, const bool isHigh, const int bar)
+void PushSwing(const bool htf, const double price, const bool isHigh,
+               const int bar, const bool line)
   {
    int n;
    if(htf)
      {
       n = ArraySize(g_swHtf);
       ArrayResize(g_swHtf, n + 1);
-      g_swHtf[n].price = price; g_swHtf[n].isHigh = isHigh; g_swHtf[n].bar = bar;
-      if(ArraySize(g_swHtf) > 40) ArrayRemove(g_swHtf, 0, 1);
+      g_swHtf[n].price = price; g_swHtf[n].isHigh = isHigh;
+      g_swHtf[n].bar = bar;     g_swHtf[n].line = line;
+      if(ArraySize(g_swHtf) > 60) ArrayRemove(g_swHtf, 0, 1);
      }
    else
      {
       n = ArraySize(g_swLtf);
       ArrayResize(g_swLtf, n + 1);
-      g_swLtf[n].price = price; g_swLtf[n].isHigh = isHigh; g_swLtf[n].bar = bar;
-      if(ArraySize(g_swLtf) > 40) ArrayRemove(g_swLtf, 0, 1);
+      g_swLtf[n].price = price; g_swLtf[n].isHigh = isHigh;
+      g_swLtf[n].bar = bar;     g_swLtf[n].line = line;
+      if(ArraySize(g_swLtf) > 60) ArrayRemove(g_swLtf, 0, 1);
      }
   }
 
@@ -488,13 +493,14 @@ void PushSwing(const bool htf, const double price, const bool isHigh, const int 
 //| one: the extreme price reached between the mate swing and this    |
 //| one. They read the same bar-index space the swings are stored in. |
 //+------------------------------------------------------------------+
-int FindMate(const bool htf, const double price, const int bar, const double atr);
+int FindMate(const bool htf, const double price, const int bar, const double atr, const bool line);
 
 void MateSeg(const bool htf, const double price, const int bar, const double atr,
-             const double &hi[], const double &lo[], double &outHi, double &outLo)
+             const double &hi[], const double &lo[], double &outHi, double &outLo,
+             const bool line = false)
   {
    outHi = -DBL_MAX; outLo = DBL_MAX;
-   int mi = FindMate(htf, price, bar, atr);
+   int mi = FindMate(htf, price, bar, atr, line);
    if(mi < 0) return;
    int mb = htf ? g_swHtf[mi].bar : g_swLtf[mi].bar;
    if(mb < 0 || mb > bar) return;
@@ -507,10 +513,11 @@ void MateSeg(const bool htf, const double price, const int bar, const double atr
   }
 
 void MateSegRates(const double price, const int bar, const double atr,
-                  const MqlRates &r[], double &outHi, double &outLo)
+                  const MqlRates &r[], double &outHi, double &outLo,
+                  const bool line = false)
   {
    outHi = -DBL_MAX; outLo = DBL_MAX;
-   int mi = FindMate(true, price, bar, atr);
+   int mi = FindMate(true, price, bar, atr, line);
    if(mi < 0) return;
    int mb = g_swHtf[mi].bar;
    if(mb < 0 || mb > bar) return;
@@ -578,7 +585,7 @@ void EngulfPairRates(const MqlRates &r[], const int p, const bool isHigh,
   }
 
 // index of the newest earlier swing at a similar price, or -1
-int FindMate(const bool htf, const double price, const int bar, const double atr)
+int FindMate(const bool htf, const double price, const int bar, const double atr, const bool line)
   {
    double tol = atr * InpPairTolATR;
    int n = htf ? ArraySize(g_swHtf) : ArraySize(g_swLtf);
@@ -587,7 +594,10 @@ int FindMate(const bool htf, const double price, const int bar, const double atr
      {
       int    sb = htf ? g_swHtf[i].bar   : g_swLtf[i].bar;
       double sp = htf ? g_swHtf[i].price : g_swLtf[i].price;
-      if(bar - sb <= InpPairMaxGap && MathAbs(sp - price) <= tol)
+      bool   sl = htf ? g_swHtf[i].line  : g_swLtf[i].line;
+      // a CLOSE pivot may only pair with another close pivot - mixing the two
+      // would glue a line chart onto a candle chart
+      if(sl == line && bar - sb <= InpPairMaxGap && MathAbs(sp - price) <= tol)
          return i;
      }
    return -1;
@@ -676,9 +686,10 @@ void AddSwingZone(const bool htf, const double price, const bool isHigh,
                   const double hiRun, const double loRun,
                   const double refClose, const datetime t1, const datetime t2,
                   const double firstHi, const double firstLo,
-                  const double engTop, const double engBot, const double momBody)
+                  const double engTop, const double engBot, const double momBody,
+                  const bool line = false)
   {
-   int mi = InpPairZones ? FindMate(htf, price, bar, atr) : -1;
+   int mi = InpPairZones ? FindMate(htf, price, bar, atr, line) : -1;
    double matePrice = 0.0;
    bool   mateHigh  = false;
    if(mi >= 0)
@@ -686,7 +697,7 @@ void AddSwingZone(const bool htf, const double price, const bool isHigh,
       matePrice = htf ? g_swHtf[mi].price  : g_swLtf[mi].price;
       mateHigh  = htf ? g_swHtf[mi].isHigh : g_swLtf[mi].isHigh;
      }
-   PushSwing(htf, price, isHigh, bar);
+   PushSwing(htf, price, isHigh, bar, line);
 
    // A GAP mate is the OPPOSITE kind of swing at a DIFFERENT price, so the
    // same-price search above can never find one - it needs its own pass.
@@ -702,7 +713,8 @@ void AddSwingZone(const bool htf, const double price, const bool isHigh,
          bool   kh = htf ? g_swHtf[k].isHigh : g_swLtf[k].isHigh;
          int    kb = htf ? g_swHtf[k].bar    : g_swLtf[k].bar;
          double kd = MathAbs(kp - price);
-         if(bar - kb <= InpPairMaxGap && kh != isHigh && kd >= glo && kd <= ghi)
+         bool kl = htf ? g_swHtf[k].line : g_swLtf[k].line;
+         if(kl == line && bar - kb <= InpPairMaxGap && kh != isHigh && kd >= glo && kd <= ghi)
            {
             gi = k;
             break;
@@ -721,6 +733,11 @@ void AddSwingZone(const bool htf, const double price, const bool isHigh,
          AddZone(gt, gb, grole, bornH, atr, t1, t2, htf, true);
       return;
      }
+
+   if(mi < 0 && line)
+      // A line chart has no bodies and no wicks, so it has no engulf and no
+      // momentum candle either. Its zones come from repeated CLOSES only.
+      return;
 
    if(mi < 0)
      {
@@ -964,6 +981,33 @@ void ProcessHtfBar(const int j, const MqlRates &htf[], const double &atrH[], con
                       hiRun, loRun, htf[j].close, htf[p].time, htf[j].time,
                       fHi, fLo, eT, eB, MathAbs(htf[p].close - htf[p].open));
         }
+
+      //--- and the line chart of the ANALYSIS timeframe
+      if(InpLineZones)
+        {
+         bool lPH = true, lPL = true;
+         for(int k = p - InpPivotHtf; k <= p + InpPivotHtf; k++)
+           {
+            if(k == p) continue;
+            if(htf[k].close >= htf[p].close) lPH = false;
+            if(htf[k].close <= htf[p].close) lPL = false;
+            if(!lPH && !lPL) break;
+           }
+         if(lPH || lPL)
+           {
+            double hiRunL = htf[p].close, loRunL = htf[p].close;
+            for(int k = p; k <= j; k++)
+              {
+               hiRunL = MathMax(hiRunL, htf[k].close);
+               loRunL = MathMin(loRunL, htf[k].close);
+              }
+            double lHi = 0.0, lLo = 0.0;
+            MateSegRates(htf[p].close, p, atr, htf, lHi, lLo, true);
+            AddSwingZone(true, htf[p].close, lPH, p, j, atr, bodyHiH, bodyLoH,
+                         hiRunL, loRunL, htf[j].close, htf[p].time, htf[j].time,
+                         lHi, lLo, 0.0, 1.0, 0.0, true);
+           }
+        }
      }
 
    // Book: a close beyond the last confirmed swing IS the Break of Structure,
@@ -1123,6 +1167,46 @@ int OnCalculate(const int rates_total,
             AddSwingZone(false, low[pc], false, pc, bar, atr, bodyHiC, bodyLoC,
                          hiRunC, loRunC, close[bar], time[pc], time[bar],
                          fHiC, fLoC, eTC, eBC, MathAbs(close[pc] - open[pc]));
+           }
+
+         //--- the LINE CHART's own zones: pivots of CLOSES, no wicks at all.
+         //    Image 31 says to use a line chart to mark the zones better, and
+         //    images 12/13 print the same chart twice with the level sitting
+         //    on the CLOSE level while the wicks poke through it.
+         if(InpLineZones)
+           {
+            bool lPH = true, lPL = true;
+            for(int k = pc - InpPivotLtf; k <= pc + InpPivotLtf; k++)
+              {
+               if(k == pc) continue;
+               if(close[k] >= close[pc]) lPH = false;
+               if(close[k] <= close[pc]) lPL = false;
+               if(!lPH && !lPL) break;
+              }
+            if(lPH || lPL)
+              {
+               double hiRunL = close[pc], loRunL = close[pc];
+               for(int k = pc; k <= bar; k++)
+                 {
+                  hiRunL = MathMax(hiRunL, close[k]);
+                  loRunL = MathMin(loRunL, close[k]);
+                 }
+               double lHi = 0.0, lLo = 0.0;
+               if(lPH)
+                 {
+                  MateSeg(false, close[pc], pc, atr, high, low, lHi, lLo, true);
+                  AddSwingZone(false, close[pc], true, pc, bar, atr, bodyHiC, bodyLoC,
+                               hiRunL, loRunL, close[bar], time[pc], time[bar],
+                               lHi, lLo, 0.0, 1.0, 0.0, true);
+                 }
+               if(lPL)
+                 {
+                  MateSeg(false, close[pc], pc, atr, high, low, lHi, lLo, true);
+                  AddSwingZone(false, close[pc], false, pc, bar, atr, bodyHiC, bodyLoC,
+                               hiRunL, loRunL, close[bar], time[pc], time[bar],
+                               lHi, lLo, 0.0, 1.0, 0.0, true);
+                 }
+              }
            }
         }
 
