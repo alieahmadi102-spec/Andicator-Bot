@@ -154,9 +154,12 @@ class Config:
     # first zone target is reached: that zone can be far away and the trade
     # would ride all the way back to the stop before it ever got protected.
     be_at_r: float = 1.0
-    min_sl_atr: float = 2.5     # a floor against noise, NOT a way to buy a
-                                # win rate. A stop so wide it can never be hit
-                                # turns every open loser into a fake 'win'.
+    # The stop sits behind the WICK, on the liquidity — and nothing else may
+    # widen it. This floor used to be 2.5 ATR, which set the stop on 97-100%
+    # of trades instead of the wick: the median wick sits 1.3 ATR away, so my
+    # floor was silently doubling every stop. Measured on 83 days of real
+    # XAUUSD, dropping it moved the median from -0.038R to +0.057R.
+    min_sl_atr: float = 0.0
     max_open: int = 3           # how many zones may carry a live order/trade
     min_rr: float = 1.0         # the next zone must be at least this many R away
     # Master class image 54 — the setups ranked by strength, "the market

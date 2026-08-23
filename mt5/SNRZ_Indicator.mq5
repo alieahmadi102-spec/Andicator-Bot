@@ -14,7 +14,7 @@
 //|   • One position at a time with SL / TP1 / TP2 / TP3 drawn       |
 //+------------------------------------------------------------------+
 #property copyright   "SNRZ (Zindan The Gold Chaser) — indicator port"
-#property version     "9.90"
+#property version     "9.95"
 #property description "SNRZ: chart zones AND analysis zones together (book p.41/p.44), one trade at a time"
 #property indicator_chart_window
 #property indicator_buffers 4
@@ -102,7 +102,7 @@ input int    InpRangeBars    = 10;    // Range lockout (analysis-TF bars since o
 input int    InpMaxOpen      = 3;     // How many zones may carry a live order/trade at once
 input double InpMinRR        = 1.0;   // The next zone must be at least this many R away
 input int    InpMaxTradeBars = 60;   // Close an open trade after N chart bars
-input double InpMinSlATR     = 2.5;   // Minimum stop distance (ATR x) — the book puts the stop ON the liquidity
+input double InpMinSlATR     = 0.0;   // Minimum stop distance (ATR x) - 0 = the WICK decides, nothing widens it
 input double InpTpMaxR       = 6.0;   // Max R for TP1/TP2 (farther zone -> TP3)
 input bool   InpEntryAtZone   = true;  // Entry = LIMIT order on the zone (p41/p42)
 input bool   InpEntryEdge     = true;  // ...at the near EDGE of the zone, not its middle
