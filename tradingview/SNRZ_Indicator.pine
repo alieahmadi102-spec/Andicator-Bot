@@ -36,6 +36,7 @@ indicator("SNRZ Strategy [Zindan] v9", "SNRZ v10.2", overlay = true, max_boxes_c
 // ───────────────────────────── Inputs ──────────────────────────────────────
 grpZ  = "Zones (SNRZ)"
 htfIn         = input.timeframe("", "Analysis timeframe (empty = AUTO, one rung up)", group = grpZ, tooltip = "کتاب: زون را روی تایم بالاتر می‌زنی و تأیید را روی چارت می‌گیری. هر دو دسته زون هم‌زمان رسم می‌شوند: زون‌های خودِ چارت (تارگت اول) و زون‌های تایم بالاتر (تارگت دوم).")
+refineHtf     = input.bool(true, "زونِ تایمِ تحلیل را با ساختارِ چارت کوچک کن", group = grpZ, tooltip = "لایه‌ی میانیِ کاپیتان: زون را روی ۱ ساعته می‌زنی، به ۱۵ دقیقه می‌روی و **داخلِ** آن زونِ کوچک‌تر می‌کشی، بعد روی ۵ دقیقه تأیید می‌گیری. پس زونِ تحلیل با لبه‌ی پهنِ خودش ترید نمی‌شود — اول با ساختارِ چارتِ داخلش تنگ می‌شود. یک بار اتفاق می‌افتد، روی دومین سوئینگِ داخلی، و فقط تا وقتی زون دست‌نخورده است و اردری رویش نیست.")
 htfSkipRung   = input.bool(false, "تایمِ تحلیل دو پله بالاتر باشد (جدولِ SKIP کتاب)", group = grpZ, tooltip = "جدولِ خودِ کتاب: Weekly/Daily(SKIP)/4H — یعنی تایمِ تحلیل دو پله بالاتر از چارت است و یک پله عمداً رد می‌شود. روی ۸۳ روز XAUUSD واقعی این خوانش واضح بدتر شد: روی M5 که تایمِ محبوبِ کاپیتان است، +۰٫۱۰R افتاد به +۰٫۰۲R. پس پیش‌فرض خاموش است تا کاپیتان تأیید کند.")
 pivotLtf      = input.int(5,    "Pivot length — chart zones",              minval = 2,  group = grpZ, tooltip = "کوچک‌تر = زون بیشتر روی خود چارت = سیگنال بیشتر در تایم‌های پایین.")
 pivotHtf      = input.int(8,    "Pivot length — analysis zones",           minval = 2,  group = grpZ)
@@ -282,6 +283,10 @@ type Zone
     int   bornBar
     bool  far        //  too far from price to be worth drawing (still a target)
     int   awaitPull  //  broke on this bar, waiting for the pullback swing
+    float inLo       //  the chart swings seen INSIDE this analysis zone,
+    float inHi       //  and how many — the captain's middle timeframe
+    int   inN
+    bool  refined
     box   bx
     line  mid
 
@@ -351,7 +356,7 @@ newZone(float _top, float _bot, int _role, bool _htf, int _uid, float _atr, int 
     bx = box.new(x1, t, bar_index + 10, b, border_color = color.new(color.gray, 60), bgcolor = colSup)
     md = line.new(x1, (t + b) / 2, bar_index + 10, (t + b) / 2, style = line.style_dashed, color = color.new(color.gray, 55))
     // a paired zone already HAS its two movements (p35), so it is born VALID
-    Zone.new(t, b, _role, _paired ? 1 : 0, 0, 0, 0, 0, _uid, _htf, false, false, false, _paired, 0, false, -1, 0, bar_index, false, -1, bx, md)
+    Zone.new(t, b, _role, _paired ? 1 : 0, 0, 0, 0, 0, _uid, _htf, false, false, false, _paired, 0, false, -1, 0, bar_index, false, -1, 0.0, 0.0, 0, false, bx, md)
 
 // Overlap is checked WITHIN a set only — a small chart zone is expected to sit
 // inside a big analysis zone. An exhausted zone reserves nothing: the book says
@@ -723,6 +728,42 @@ liveCount() =>
         if o.stat == -9 or o.stat == 0
             n += 1
     n
+
+// The captain's middle timeframe, in code. He marks a zone on the 1-hour,
+// drops to the 15-minute and draws a SMALLER zone INSIDE it, then confirms on
+// the 5-minute. So when chart swings print inside an analysis zone, that zone
+// is re-drawn as the band those swings bracket — the same "band between two
+// points" rule as everywhere else in SNRZ, one level down. It happens once, on
+// the second inner swing, and only while the zone is untouched and carries no
+// order: moving a band an order already rests on would move the trade after
+// the fact.
+refineInner(float _price, float _atr) =>
+    if refineHtf and not na(_price) and array.size(zones) > 0
+        for i = 0 to array.size(zones) - 1
+            Zone z = array.get(zones, i)
+            if z.htf and not z.dead and not z.refined and z.touches == 0 and _price >= z.bot and _price <= z.top and not hasOrder(z.uid)
+                z.inLo := z.inN == 0 ? _price : math.min(z.inLo, _price)
+                z.inHi := z.inN == 0 ? _price : math.max(z.inHi, _price)
+                z.inN  := z.inN + 1
+                if z.inN >= 2
+                    float t = z.inHi
+                    float b = z.inLo
+                    mn = _atr * minZoneATR
+                    if t - b < mn
+                        m = (t + b) / 2
+                        t := m + mn / 2
+                        b := m - mn / 2
+                    if t - b < z.top - z.bot
+                        z.top := t
+                        z.bot := b
+                    z.refined := true
+
+// the chart swings of THIS bar, offered to the analysis zones they fall inside
+refineInner(plL, atr)
+refineInner(phL, atr)
+if lineZones
+    refineInner(plLc, atr)
+    refineInner(phLc, atr)
 
 // Master class image 44 names exactly which zones may BE a target:
 // "V.S, V.R, PO2 Fresh, PO2 Inversion, False breakout area". A plain untested

@@ -70,6 +70,10 @@ class Zone:
     pend_bar: int = -1          # bar a still-unconfirmed break happened on
     pend_dir: int = 0           # +1 broke up · -1 broke down
     far: bool = False           # too far from price to be worth drawing
+    in_lo: float = 0.0          # the chart swings seen INSIDE this analysis
+    in_hi: float = 0.0          # zone, and how many — the refinement layer
+    in_n: int = 0
+    refined: bool = False
     await_pull: int = -1        # broke on this bar and is waiting for the
                                 # pullback swing that becomes the real level
 
@@ -134,6 +138,7 @@ class Config:
     need_big_move: bool = True  # (kept: the pullback re-anchor still reads it)
     breakout_pct: float = 75.0
     min_zone_atr: float = 0.15
+    max_zone_atr_htf: float = 0.4   # ...and the analysis zones have their own
     max_zone_atr: float = 0.4   # a zone 1 ATR tall is a region, not a zone —
                                 # on H4 that drew 287-dollar bands across the chart
     atr_len: int = 14
@@ -223,6 +228,11 @@ class Config:
     # Area — a GOOD zone. Only a break that HOLDS inverts the zone.
     fba_bars: int = 3            # bars a break must hold before it inverts
     # p14: the small zone must sit inside the big one
+    # The captain's middle layer: mark the zones on the 1-hour, drop to the
+    # 15-minute and draw SMALLER zones INSIDE them, then confirm on the
+    # 5-minute. So an analysis zone is not traded at its own wide edge — it is
+    # first TIGHTENED to the chart-timeframe structure standing inside it.
+    refine_htf: bool = True
     require_nested: bool = False   # as a GATE: measured much worse
     nested_bonus: bool = True      # ...as a PREFERENCE instead
     order_expiry_bars: int = 10   # a limit order that never fills must expire —
@@ -389,7 +399,10 @@ class SnrzEngine:
 
     def _add_zone(self, top: float, bot: float, role: Role, atr: float,
                   idx: int, htf: bool, src: str = "pivot", valid: bool = False):
-        mn, mx = atr * self.cfg.min_zone_atr, atr * self.cfg.max_zone_atr
+        # The captain draws the ANALYSIS zone wide and then tightens it on the
+        # middle timeframe, so the two sets do not share one cap.
+        cap = self.cfg.max_zone_atr_htf if htf else self.cfg.max_zone_atr
+        mn, mx = atr * self.cfg.min_zone_atr, atr * cap
         if top - bot < mn:
             mid = (top + bot) / 2
             top, bot = mid + mn / 2, mid - mn / 2
@@ -590,6 +603,8 @@ class SnrzEngine:
             sw = Swing(price, is_high, p)
             if cfg.flip_needs_pullback:
                 self._reanchor_flipped(price, is_high, atr, idx, htf)
+            if cfg.refine_htf and not htf:
+                self._refine_inner(price, atr)
 
             if not cfg.pair_zones:
                 # the old behaviour: one pivot, one zone
@@ -869,6 +884,42 @@ class SnrzEngine:
         if is_high:
             return max(w.high for w in recent) >= max(w.high for w in window)
         return min(w.low for w in recent) <= min(w.low for w in window)
+
+    def _refine_inner(self, price: float, atr: float):
+        """The captain's middle timeframe, in code.
+
+        He marks a zone on the 1-hour, then drops to the 15-minute and draws a
+        SMALLER zone inside it. So when chart-timeframe swings print INSIDE an
+        analysis zone, that zone is re-drawn as the band those swings bracket —
+        the same "band between two points" rule as everywhere else in SNRZ,
+        applied one level down.
+
+        It happens once, on the second inner swing, and only while the zone is
+        untouched and carries no order: moving a band an order is already
+        resting on would move the trade after the fact."""
+        cfg = self.cfg
+        for z in self.zones:
+            if not z.htf or z.dead or z.refined or z.touches > 0:
+                continue
+            if not (z.bot <= price <= z.top):
+                continue
+            if self._has_order_or_trade(z.uid):
+                continue
+            z.in_lo = price if z.in_n == 0 else min(z.in_lo, price)
+            z.in_hi = price if z.in_n == 0 else max(z.in_hi, price)
+            z.in_n += 1
+            if z.in_n < 2:
+                continue                      # one point is not a band
+            top, bot = z.in_hi, z.in_lo
+            mn = atr * cfg.min_zone_atr
+            if top - bot < mn:                # keep it a zone, not a hair
+                mid = (top + bot) / 2.0
+                top, bot = mid + mn / 2.0, mid - mn / 2.0
+            if top - bot >= z.top - z.bot:
+                z.refined = True              # no tighter than it already was
+                continue
+            z.top, z.bot, z.refined = top, bot, True
+            z.src = z.src + " ref"
 
     def _nested(self, z: "Zone") -> bool:
         """p14: the small zone sits INSIDE the big one."""

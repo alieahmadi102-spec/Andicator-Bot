@@ -14,7 +14,7 @@
 //|   • One position at a time with SL / TP1 / TP2 / TP3 drawn       |
 //+------------------------------------------------------------------+
 #property copyright   "SNRZ (Zindan The Gold Chaser) — indicator port"
-#property version     "10.10"
+#property version     "10.40"
 #property description "SNRZ: chart zones AND analysis zones together (book p.41/p.44), one trade at a time"
 #property indicator_chart_window
 #property indicator_buffers 4
@@ -68,6 +68,7 @@ input bool   InpPairZones     = true;  // Draw a zone only from TWO swings (p24:
 input double InpPairTolATR   = 0.50;  // ..."similar price" = closer than (ATR x)
 input int    InpPairMaxGap   = 150;   // ...and the two swings closer than N bars
 input int    InpPairLookback = 20;    // ...searching the last N swings
+input bool   InpRefineHtf    = true;  // Tighten an analysis zone to the chart structure inside it
 input bool   InpLineZones    = true;  // Draw LINE-CHART zones too (images 31/12/13)
 input bool   InpFlipNeedsPullback = true; // A broken level trades at the PULLBACK swing, not the old band
 input bool   InpLineSingleLevels = true; // On a line chart every peak is an R and every trough an S
@@ -160,6 +161,10 @@ struct SZone
    bool     paired;    // drawn from TWO swings (p24) — born valid, needs 1 touch
    bool     far;       // too far from price to draw — still a valid target
    int      awaitPull; // broke on this bar, waiting for the pullback swing
+   double   inLo;      // the chart swings seen INSIDE this analysis zone,
+   double   inHi;      // and how many - the captain's middle timeframe
+   int      inN;
+   bool     refined;
    int      falseBreaks; // how many times broken and respected again
    bool     fba;       // TWO of those = a False Breakout Area
    int      pendBar;   // chart bar an unconfirmed 75% break happened on
@@ -650,6 +655,8 @@ void AddZone(double top, double bot, const int role, const int bornH, const doub
    g_zones[n].paired     = paired;
    g_zones[n].far        = false;
    g_zones[n].awaitPull  = -1;
+   g_zones[n].inLo = 0.0;  g_zones[n].inHi = 0.0;
+   g_zones[n].inN  = 0;    g_zones[n].refined = false;
    g_zones[n].falseBreaks = 0;
    g_zones[n].fba        = false;
    g_zones[n].pendBar    = -1;
@@ -726,6 +733,51 @@ void ReanchorFlipped(const double price, const bool isHigh, const double atr,
       g_zones[i].top = price + half;
       g_zones[i].bot = price - half;
       g_zones[i].awaitPull = -1;
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| The captain's middle timeframe, in code. He marks a zone on the  |
+//| 1-hour, drops to the 15-minute and draws a SMALLER zone INSIDE   |
+//| it, then confirms on the 5-minute. So when chart swings print    |
+//| inside an analysis zone, that zone is re-drawn as the band those |
+//| swings bracket - the same "band between two points" rule as the  |
+//| rest of SNRZ, one level down. Once only, on the second inner     |
+//| swing, and only while the zone is untouched and carries no order.|
+//+------------------------------------------------------------------+
+void RefineInner(const double price, const double atr)
+  {
+   if(!InpRefineHtf)
+      return;
+   for(int i = 0; i < ArraySize(g_zones); i++)
+     {
+      if(!g_zones[i].htf || g_zones[i].dead || g_zones[i].refined)
+         continue;
+      if(g_zones[i].touches > 0)
+         continue;
+      if(price < g_zones[i].bot || price > g_zones[i].top)
+         continue;
+      if(HasOrder(g_zones[i].id))
+         continue;
+      g_zones[i].inLo = (g_zones[i].inN == 0) ? price : MathMin(g_zones[i].inLo, price);
+      g_zones[i].inHi = (g_zones[i].inN == 0) ? price : MathMax(g_zones[i].inHi, price);
+      g_zones[i].inN++;
+      if(g_zones[i].inN < 2)
+         continue;
+      double t = g_zones[i].inHi, b = g_zones[i].inLo;
+      double mn = atr * InpMinZoneATR;
+      if(t - b < mn)
+        {
+         double m = (t + b) / 2.0;
+         t = m + mn / 2.0;
+         b = m - mn / 2.0;
+        }
+      if(t - b < g_zones[i].top - g_zones[i].bot)
+        {
+         g_zones[i].top = t;
+         g_zones[i].bot = b;
+        }
+      g_zones[i].refined = true;
      }
   }
 
@@ -1219,6 +1271,7 @@ int OnCalculate(const int rates_total,
            {
             g_cPrevHigh = g_cHigh;  g_cHigh = high[pc];
             ReanchorFlipped(high[pc], true, atr, false, pc, high, low);
+            RefineInner(high[pc], atr);
             MateSeg(false, high[pc], pc, atr, high, low, fHiC, fLoC);
             EngulfPair(open, high, low, close, pc, true, rates_total, eTC, eBC);
             AddSwingZone(false, high[pc], true, pc, bar, atr, bodyHiC, bodyLoC,
@@ -1229,6 +1282,7 @@ int OnCalculate(const int rates_total,
            {
             g_cPrevLow = g_cLow;    g_cLow = low[pc];
             ReanchorFlipped(low[pc], false, atr, false, pc, high, low);
+            RefineInner(low[pc], atr);
             MateSeg(false, low[pc], pc, atr, high, low, fHiC, fLoC);
             EngulfPair(open, high, low, close, pc, false, rates_total, eTC, eBC);
             AddSwingZone(false, low[pc], false, pc, bar, atr, bodyHiC, bodyLoC,
@@ -1259,6 +1313,7 @@ int OnCalculate(const int rates_total,
                   loRunL = MathMin(loRunL, close[k]);
                  }
                double lHi = 0.0, lLo = 0.0;
+               RefineInner(close[pc], atr);   // the line swing counts too
                if(lPH)
                  {
                   MateSeg(false, close[pc], pc, atr, high, low, lHi, lLo, true);
