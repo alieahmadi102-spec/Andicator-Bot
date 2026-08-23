@@ -14,7 +14,7 @@
 //|   • One position at a time with SL / TP1 / TP2 / TP3 drawn       |
 //+------------------------------------------------------------------+
 #property copyright   "SNRZ (Zindan The Gold Chaser) — indicator port"
-#property version     "9.96"
+#property version     "9.97"
 #property description "SNRZ: chart zones AND analysis zones together (book p.41/p.44), one trade at a time"
 #property indicator_chart_window
 #property indicator_buffers 4
@@ -68,6 +68,7 @@ input double InpPairTolATR   = 0.50;  // ..."similar price" = closer than (ATR x
 input int    InpPairMaxGap   = 150;   // ...and the two swings closer than N bars
 input int    InpPairLookback = 20;    // ...searching the last N swings
 input bool   InpLineZones    = true;  // Draw LINE-CHART zones too (images 31/12/13)
+input bool   InpFlipNeedsPullback = true; // A broken level trades at the PULLBACK swing, not the old band
 input bool   InpLineSingleLevels = true; // On a line chart every peak is an R and every trough an S
 input bool   InpEngulfZones  = true;  // Method 5: draw a zone from the ENGULF pair (images 27/28)
 input bool   InpMomentumZones= true;  // A single MOMENTUM candle is a zone too (image 43)
@@ -156,6 +157,7 @@ struct SZone
    bool     inZonePrev;
    bool     paired;    // drawn from TWO swings (p24) — born valid, needs 1 touch
    bool     far;       // too far from price to draw — still a valid target
+   int      awaitPull; // broke on this bar, waiting for the pullback swing
    int      falseBreaks; // how many times broken and respected again
    bool     fba;       // TWO of those = a False Breakout Area
    int      pendBar;   // chart bar an unconfirmed 75% break happened on
@@ -644,6 +646,7 @@ void AddZone(double top, double bot, const int role, const int bornH, const doub
    g_zones[n].inZonePrev = false;
    g_zones[n].paired     = paired;
    g_zones[n].far        = false;
+   g_zones[n].awaitPull  = -1;
    g_zones[n].falseBreaks = 0;
    g_zones[n].fba        = false;
    g_zones[n].pendBar    = -1;
@@ -678,6 +681,51 @@ void AddZone(double top, double bot, const int role, const int bornH, const doub
       RemoveZoneAt(victim);
      }
   }
+//+------------------------------------------------------------------+
+//| A broken level only becomes tradable where the PULLBACK turns.   |
+//| The captain's 30m chart: an R at 4,433.9 breaks upward, price    |
+//| runs to 4,530, then pulls back and prints an S at ~4,460. That S |
+//| - not the old band, which price never revisits - is the buy. So  |
+//| a flipped zone waits for the first swing of the matching kind on |
+//| the correct side of the break and MOVES onto it, keeping its id  |
+//| and wasValid so it is still named I.VR / RBS as before.          |
+//+------------------------------------------------------------------+
+void ReanchorFlipped(const double price, const bool isHigh, const double atr,
+                     const bool htf, const int bar,
+                     const double &hi[], const double &lo[])
+  {
+   if(!InpFlipNeedsPullback)
+      return;
+   for(int i = 0; i < ArraySize(g_zones); i++)
+     {
+      if(g_zones[i].awaitPull < 0 || g_zones[i].dead || g_zones[i].htf != htf)
+         continue;
+      if(bar <= g_zones[i].awaitPull)
+         continue;
+      bool wantLow = (g_zones[i].role == 1);
+      if(wantLow == isHigh)
+         continue;
+      // a pullback that cuts back through the old level is a failed break,
+      // which the false-breakout path handles instead
+      if(wantLow  && price < g_zones[i].bot) continue;
+      if(!wantLow && price > g_zones[i].top) continue;
+      // ...and the retracement must follow a real move away from the level
+      if(InpNeedBigMove)
+        {
+         double ext = wantLow ? hi[g_zones[i].awaitPull] : lo[g_zones[i].awaitPull];
+         for(int k = g_zones[i].awaitPull; k <= bar; k++)
+            ext = wantLow ? MathMax(ext, hi[k]) : MathMin(ext, lo[k]);
+         double gone = wantLow ? (ext - g_zones[i].top) : (g_zones[i].bot - ext);
+         if(gone < atr * InpBigMoveATR)
+            continue;
+        }
+      double half = MathMax(atr * InpMinZoneATR, _Point) / 2.0;
+      g_zones[i].top = price + half;
+      g_zones[i].bot = price - half;
+      g_zones[i].awaitPull = -1;
+     }
+  }
+
 //+------------------------------------------------------------------+
 //| One confirmed swing -> at most one zone, drawn with its mate      |
 //+------------------------------------------------------------------+
@@ -1162,6 +1210,7 @@ int OnCalculate(const int rates_total,
          if(isPH)
            {
             g_cPrevHigh = g_cHigh;  g_cHigh = high[pc];
+            ReanchorFlipped(high[pc], true, atr, false, pc, high, low);
             MateSeg(false, high[pc], pc, atr, high, low, fHiC, fLoC);
             EngulfPair(open, high, low, close, pc, true, rates_total, eTC, eBC);
             AddSwingZone(false, high[pc], true, pc, bar, atr, bodyHiC, bodyLoC,
@@ -1171,6 +1220,7 @@ int OnCalculate(const int rates_total,
          if(isPL)
            {
             g_cPrevLow = g_cLow;    g_cLow = low[pc];
+            ReanchorFlipped(low[pc], false, atr, false, pc, high, low);
             MateSeg(false, low[pc], pc, atr, high, low, fHiC, fLoC);
             EngulfPair(open, high, low, close, pc, false, rates_total, eTC, eBC);
             AddSwingZone(false, low[pc], false, pc, bar, atr, bodyHiC, bodyLoC,
@@ -1391,6 +1441,7 @@ int OnCalculate(const int rates_total,
                   g_zones[i].wasValid = (g_zones[i].state == 1);
                   g_zones[i].role  = -1;
                   g_zones[i].state = 2;
+                  g_zones[i].awaitPull = InpFlipNeedsPullback ? bar : -1;
                   g_zones[i].touches  = 0;
                   g_zones[i].sigTouch = 0;
                   g_zones[i].srr      = false;
@@ -1421,6 +1472,7 @@ int OnCalculate(const int rates_total,
                // RETURN to it is already the entry — it does not need a third.
                int needT = g_zones[i].paired ? 1 : 2;
                bool tradable = !g_zones[i].dead && g_zones[i].pendDir == 0 &&
+                               g_zones[i].awaitPull < 0 &&
                                ((g_zones[i].state == 1 && g_zones[i].touches >= needT) ||
                                 (g_zones[i].srr && g_zones[i].touches >= 1) ||
                                 (g_zones[i].state == 2 && g_zones[i].touches >= 1 && g_zones[i].touches <= 2)) &&
@@ -1491,6 +1543,7 @@ int OnCalculate(const int rates_total,
                   g_zones[i].wasValid = (g_zones[i].state == 1);
                   g_zones[i].role  = 1;
                   g_zones[i].state = 2;
+                  g_zones[i].awaitPull = InpFlipNeedsPullback ? bar : -1;
                   g_zones[i].touches  = 0;
                   g_zones[i].sigTouch = 0;
                   g_zones[i].srr      = false;
@@ -1519,6 +1572,7 @@ int OnCalculate(const int rates_total,
                // RETURN to it is already the entry — it does not need a third.
                int needT = g_zones[i].paired ? 1 : 2;
                bool tradable = !g_zones[i].dead && g_zones[i].pendDir == 0 &&
+                               g_zones[i].awaitPull < 0 &&
                                ((g_zones[i].state == 1 && g_zones[i].touches >= needT) ||
                                 (g_zones[i].srr && g_zones[i].touches >= 1) ||
                                 (g_zones[i].state == 2 && g_zones[i].touches >= 1 && g_zones[i].touches <= 2)) &&

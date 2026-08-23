@@ -70,6 +70,8 @@ class Zone:
     pend_bar: int = -1          # bar a still-unconfirmed break happened on
     pend_dir: int = 0           # +1 broke up · -1 broke down
     far: bool = False           # too far from price to be worth drawing
+    await_pull: int = -1        # broke on this bar and is waiting for the
+                                # pullback swing that becomes the real level
 
     @property
     def kind(self) -> str:
@@ -199,6 +201,13 @@ class Config:
     line_zones: bool = True
     # ...and on a line chart EVERY peak is an R and every trough an S
     line_single_levels: bool = True
+    # The captain's 30m chart of an RBS: an R at 4,433.9 breaks upward, price
+    # runs to 4,530 and pulls back to make an S at ~4,460 — ABOVE the broken
+    # level, which price never returns to. "When an R breaks and on the way
+    # back an S low forms, that is where we buy." So the level to trade is the
+    # NEW swing the pullback makes, not the old band sitting where the break
+    # happened; a limit left on the old band would simply never fill.
+    flip_needs_pullback: bool = True
     engulf_zones: bool = True    # p24 method 5, drawn per images 27/28
     momentum_zones: bool = True  # image 43: one momentum candle IS a zone
     momentum_body_atr: float = 0.8   # ...and this is how big "momentum" is
@@ -470,6 +479,50 @@ class SnrzEngine:
                                    Role.RESISTANCE if is_high else Role.SUPPORT,
                                    atr, idx, htf, src="mom", valid=False)
 
+    def _reanchor_flipped(self, price: float, is_high: bool, atr: float,
+                          idx: int, htf: bool):
+        """A broken level only becomes tradable where the PULLBACK turns.
+
+        The captain's 30m chart: an R at 4,433.9 breaks upward, price runs to
+        4,530, then pulls back and prints an S at ~4,460. That S — not the old
+        4,433.9 band, which price never revisits — is the buy. So when a zone
+        flips, it waits here until the first swing of the matching kind prints
+        on the correct side of the break, and then MOVES to it.
+
+        The zone keeps its uid and its was_valid flag, so it is still named
+        I.VR / RBS exactly as before; only the price it sits at changes."""
+        for z in self.zones:
+            if z.await_pull < 0 or z.dead or z.htf != htf:
+                continue
+            if idx <= z.await_pull:
+                continue
+            # a broken resistance is now support: it wants the pullback LOW
+            want_low = z.role == Role.SUPPORT
+            if want_low == is_high:
+                continue
+            # a pullback that cuts back through the old level is a failed
+            # break, not a pullback — the false-breakout path handles that
+            if want_low and price < z.bot:
+                continue
+            if (not want_low) and price > z.top:
+                continue
+            # On the captain's chart the break ran from 4,433.9 to 4,530 BEFORE
+            # the pullback printed its S. So the swing we re-anchor to is the
+            # turn of a real retracement, not the first twitch after the break:
+            # price must have travelled a Big Movement away first.
+            if self.cfg.need_big_move:
+                run = self.candles[z.await_pull: idx + 1]
+                if run:
+                    gone = (max(w.high for w in run) - z.top) if want_low \
+                        else (z.bot - min(w.low for w in run))
+                    if gone < atr * self.cfg.big_move_atr:
+                        continue
+            half = max(atr * self.cfg.min_zone_atr, 1e-9) / 2.0
+            z.top, z.bot = price + half, price - half
+            z.born_index = idx
+            z.await_pull = -1
+            z.src = z.src + " pull"
+
     def _pivot_zones(self, series: List[Candle], n: int, atr: float,
                      idx: int, htf: bool, track_trend: bool,
                      use_close: bool = False):
@@ -537,6 +590,8 @@ class SnrzEngine:
                 continue
             price = pc.close if use_close else (pc.high if is_high else pc.low)
             sw = Swing(price, is_high, p)
+            if cfg.flip_needs_pullback:
+                self._reanchor_flipped(price, is_high, atr, idx, htf)
 
             if not cfg.pair_zones:
                 # the old behaviour: one pivot, one zone
@@ -1062,6 +1117,7 @@ class SnrzEngine:
                     elif idx - z.pend_bar >= cfg.fba_bars:
                         z.was_valid = z.state == State.VALID
                         z.role, z.state = Role.RESISTANCE, State.INVERTED
+                        z.await_pull = idx if cfg.flip_needs_pullback else -1
                         z.touches = z.sig_touch = 0
                         z.srr = z.fba = False
                         z.false_breaks = 0
@@ -1080,7 +1136,11 @@ class SnrzEngine:
                     # a paired zone already has its two touches by
                     # construction (p24/p35), so the RETURN to it is the entry
                     need = 1 if z.src != "pivot" else 2
-                    tradable = (not z.dead) and z.pend_dir == 0 and (
+                    # await_pull >= 0 means the level broke but the pullback
+                    # has not printed its swing yet, so there is nothing to
+                    # trade at any price. The old band is not the level.
+                    tradable = (not z.dead) and z.pend_dir == 0 \
+                        and z.await_pull < 0 and (
                         (z.state == State.VALID and z.touches >= need) or
                         (z.srr and z.touches >= 1) or
                         (z.state == State.INVERTED and 1 <= z.touches <= 2))
@@ -1125,6 +1185,7 @@ class SnrzEngine:
                     elif idx - z.pend_bar >= cfg.fba_bars:
                         z.was_valid = z.state == State.VALID
                         z.role, z.state = Role.SUPPORT, State.INVERTED
+                        z.await_pull = idx if cfg.flip_needs_pullback else -1
                         z.touches = z.sig_touch = 0
                         z.srr = z.fba = False
                         z.false_breaks = 0
@@ -1143,7 +1204,11 @@ class SnrzEngine:
                     # a paired zone already has its two touches by
                     # construction (p24/p35), so the RETURN to it is the entry
                     need = 1 if z.src != "pivot" else 2
-                    tradable = (not z.dead) and z.pend_dir == 0 and (
+                    # await_pull >= 0 means the level broke but the pullback
+                    # has not printed its swing yet, so there is nothing to
+                    # trade at any price. The old band is not the level.
+                    tradable = (not z.dead) and z.pend_dir == 0 \
+                        and z.await_pull < 0 and (
                         (z.state == State.VALID and z.touches >= need) or
                         (z.srr and z.touches >= 1) or
                         (z.state == State.INVERTED and 1 <= z.touches <= 2))

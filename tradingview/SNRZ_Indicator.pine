@@ -31,7 +31,7 @@
 //                  TP3 = the one beyond. 1R/2R/3R when no zone sits there.
 //  SCALP vs SWING (book): M5/M15 = SCALP · H1/H4/Daily = SWING.
 // ═══════════════════════════════════════════════════════════════════════════
-indicator("SNRZ Strategy [Zindan] v9", "SNRZ v9.96", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500)
+indicator("SNRZ Strategy [Zindan] v9", "SNRZ v9.97", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500)
 
 // ───────────────────────────── Inputs ──────────────────────────────────────
 grpZ  = "Zones (SNRZ)"
@@ -60,6 +60,7 @@ gapMinATR     = input.float(0.6, "…دو سطح حداقل این‌قدر فا
 gapMaxATR     = input.float(2.5, "…و حداکثر این‌قدر (ATR ×)",              minval = 0.5, step = 0.5, group = grpZ)
 gapHtfOnly    = input.bool(true, "GAP فقط روی تایم تحلیل (کتاب: H1/H4/D/W)", group = grpZ)
 lineZones     = input.bool(true, "زون از LINE CHART هم بکش (عکس ۳۱ · ۱۲ · ۱۳)", group = grpZ, tooltip = "عکس ۳۱: «بۆ جوانتر تێگەشتن و باشتر دیاریکردنی زۆنەکان Line Chart بەکاربهێنە». عکس‌های ۱۲ و ۱۳ همان چارت را دو بار چاپ کرده‌اند — کندلی و لاین — و خط دقیقاً روی سطحِ **کلوز** است در حالی که سایه‌ها از آن رد شده‌اند. سطحی که قیمت مدام روی آن بسته می‌شود، برای پیوتِ سایه نامرئی است.")
+flipNeedsPullback = input.bool(true, "سطحِ شکسته‌شده روی سوئینگِ برگشت بنشیند", group = grpZ, tooltip = "چارت ۳۰ دقیقه‌ای کاپیتان: یک R روی ۴٬۴۳۳٫۹ می‌شکند، قیمت تا ۴٬۵۳۰ می‌رود و در برگشت یک S روی ~۴٬۴۶۰ می‌سازد — **بالاتر** از سطحِ شکسته‌شده که قیمت هرگز به آن برنگشت. پس سطحِ ترید همان سوئینگِ تازه‌ی برگشت است، نه بندِ قدیمی؛ لیمیتی که روی بندِ قدیمی بماند اصلاً پر نمی‌شود.")
 lineSingleLevels = input.bool(true, "…و روی لاین چارت هر قله R و هر دره S است", group = grpZ, tooltip = "چارت ۱۵ دقیقه‌ای خودِ کاپیتان: تک‌تکِ سوئینگ‌ها برچسب R یا S دارند — بدون فیلترِ اندازه و بدون شرطِ سقفِ بالاتر (R دومِ آن چارت پایین‌تر از R اول است). این‌ها زونِ ساده‌ی FRESH هستند: نه ورودی می‌دهند (۳۹) نه تارگت می‌شوند (۴۴) تا وقتی برخورد دومشان را بگیرند — ولی SBR/RBS دقیقاً از شکستنِ همین سطح‌های ساده ساخته می‌شوند.")
 engulfZones   = input.bool(true, "روش پنجم: زون از ENGULF (عکس ۲۷/۲۸)",     group = grpZ, tooltip = "«لەو شوێنەوەی کە دوستی کردووە بە بەرز بوون و کاندڵێک پێش خۆی کامیان کوورتر بوون ئەوە دیاری ئەکەین» — جفتِ انگالف لازم است و بدنه‌ی کندلِ کوتاه‌تر همان زون است.")
 momentumZones = input.bool(true, "کندل مومنتوم هم یک زون است (عکس ۴۳)",     group = grpZ, tooltip = "عکس ۴۳: یک کندل مومنتومِ تنها خودش زون است — «در ۸۰٪ مواقع بازار از آن تکرار می‌کند». این تنها چیزی است که کتاب روی یک سوئینگِ بی‌جفت می‌کشد.")
@@ -267,6 +268,7 @@ type Zone
     int   pendDir    //  +1 broke up · -1 broke down · 0 nothing pending
     int   bornBar
     bool  far        //  too far from price to be worth drawing (still a target)
+    int   awaitPull  //  broke on this bar, waiting for the pullback swing
     box   bx
     line  mid
 
@@ -336,7 +338,7 @@ newZone(float _top, float _bot, int _role, bool _htf, int _uid, float _atr, int 
     bx = box.new(x1, t, bar_index + 10, b, border_color = color.new(color.gray, 60), bgcolor = colSup)
     md = line.new(x1, (t + b) / 2, bar_index + 10, (t + b) / 2, style = line.style_dashed, color = color.new(color.gray, 55))
     // a paired zone already HAS its two movements (p35), so it is born VALID
-    Zone.new(t, b, _role, _paired ? 1 : 0, 0, 0, 0, 0, _uid, _htf, false, false, false, _paired, 0, false, -1, 0, bar_index, false, bx, md)
+    Zone.new(t, b, _role, _paired ? 1 : 0, 0, 0, 0, 0, _uid, _htf, false, false, false, _paired, 0, false, -1, 0, bar_index, false, -1, bx, md)
 
 // Overlap is checked WITHIN a set only — a small chart zone is expected to sit
 // inside a big analysis zone. An exhausted zone reserves nothing: the book says
@@ -486,8 +488,35 @@ extendSeg(bool _htf, int _back) =>
             array.set(sH, i, math.max(array.get(sH, i), h))
             array.set(sL, i, math.min(array.get(sL, i), l))
 
+// A broken level only becomes tradable where the PULLBACK turns. The captain's
+// 30m chart: an R at 4,433.9 breaks upward, price runs to 4,530, then pulls
+// back and prints an S at ~4,460. That S — not the old band, which price never
+// revisits — is the buy. So a flipped zone waits here for the first swing of
+// the matching kind on the correct side of the break, and MOVES onto it. The
+// zone keeps its uid and wasValid, so it is still named I.VR / RBS as before.
+reanchorFlipped(float _price, bool _isHigh, float _atr, bool _htf) =>
+    if flipNeedsPullback and array.size(zones) > 0
+        for i = 0 to array.size(zones) - 1
+            Zone z = array.get(zones, i)
+            if z.awaitPull >= 0 and not z.dead and z.htf == _htf and bar_index > z.awaitPull
+                wantLow = z.role == 1
+                if wantLow != _isHigh
+                    // a pullback that cuts back through the old level is a
+                    // failed break, which the false-breakout path handles
+                    ok = wantLow ? _price >= z.bot : _price <= z.top
+                    // and the retracement must follow a real move away
+                    span = bar_index - z.awaitPull
+                    gone = wantLow ? ta.highest(high, span) - z.top : z.bot - ta.lowest(low, span)
+                    if ok and (not needBigMove or gone >= _atr * bigMoveMult)
+                        half = math.max(_atr * minZoneATR, syminfo.mintick) / 2
+                        z.top := _price + half
+                        z.bot := _price - half
+                        z.bornBar := bar_index
+                        z.awaitPull := -1
+
 // one swing -> at most one zone, drawn with its mate when pairing is on
 addSwing(bool _htf, float _price, bool _isHigh, int _bar, int _back, float _atr, float _bodyHi, float _bodyLo, float _hiRun, float _loRun, int _uid, float _engT, float _engB, float _momBody, bool _line) =>
+    reanchorFlipped(_price, _isHigh, _atr, _htf)
     mate = findMate(_htf, _price, _bar, _atr, _line)
     mi   = pairZones ? mate : -1
     // an if-block, NOT a ternary: Pine evaluates both sides of `?:`, so an
@@ -767,6 +796,7 @@ for z in zones
                 z.wasValid := z.state == 1
                 z.role  := -1
                 z.state := 2
+                z.awaitPull := flipNeedsPullback ? bar_index : -1
                 z.touches := 0
                 z.sigTouch := 0
                 z.srr := false
@@ -788,7 +818,7 @@ for z in zones
             // p24/p35: a paired zone was drawn FROM two touches, so the
             // RETURN to it is already the entry — it does not need a third.
             need = z.paired ? 1 : 2
-            tradable = not z.dead and z.pendDir == 0 and ((z.state == 1 and z.touches >= need) or (z.srr and z.touches >= 1) or (z.state == 2 and z.touches >= 1 and z.touches <= 2)) and (not entriesHtfOnly or z.htf) and (not requireNested or nested(z))
+            tradable = not z.dead and z.pendDir == 0 and z.awaitPull < 0 and ((z.state == 1 and z.touches >= need) or (z.srr and z.touches >= 1) or (z.state == 2 and z.touches >= 1 and z.touches <= 2)) and (not entriesHtfOnly or z.htf) and (not requireNested or nested(z))
             okTrend  = (not useTrendFilter or trendUp or trendUnknown or (allowCounterInv and z.state == 2)) and not sweptHigh
             // one order per zone, placed while price is still ABOVE it, and
             // aimed at the NEXT zone up. No confirmation candle is waited for:
@@ -831,6 +861,7 @@ for z in zones
                 z.wasValid := z.state == 1
                 z.role  := 1
                 z.state := 2
+                z.awaitPull := flipNeedsPullback ? bar_index : -1
                 z.touches := 0
                 z.sigTouch := 0
                 z.srr := false
@@ -852,7 +883,7 @@ for z in zones
             // p24/p35: a paired zone was drawn FROM two touches, so the
             // RETURN to it is already the entry — it does not need a third.
             need = z.paired ? 1 : 2
-            tradable = not z.dead and z.pendDir == 0 and ((z.state == 1 and z.touches >= need) or (z.srr and z.touches >= 1) or (z.state == 2 and z.touches >= 1 and z.touches <= 2)) and (not entriesHtfOnly or z.htf) and (not requireNested or nested(z))
+            tradable = not z.dead and z.pendDir == 0 and z.awaitPull < 0 and ((z.state == 1 and z.touches >= need) or (z.srr and z.touches >= 1) or (z.state == 2 and z.touches >= 1 and z.touches <= 2)) and (not entriesHtfOnly or z.htf) and (not requireNested or nested(z))
             okTrend  = (not useTrendFilter or trendDown or trendUnknown or (allowCounterInv and z.state == 2)) and not sweptLow
             if tradable and okTrend and canFire and not hasOrder(z.uid) and close < z.bot
                 entry = z.bot
@@ -1021,7 +1052,7 @@ if showPanel and barstate.islast
             nRun += 1
     posTxt = nOrd + nRun == 0 ? "— no setup right now —" :
              str.tostring(nOrd) + " limit waiting · " + str.tostring(nRun) + " running"
-    table.cell(info, 0, 0, "⚜  SNRZ v9.96 —  ZiNDAN", text_color = colGold, text_size = size.normal)
+    table.cell(info, 0, 0, "⚜  SNRZ v9.97 —  ZiNDAN", text_color = colGold, text_size = size.normal)
     table.cell(info, 0, 1, "The Gold Chaser", text_color = color.new(colGold, 35), text_size = size.tiny)
     table.cell(info, 0, 2, trendTxt, text_color = trendCol, text_size = size.small)
     table.cell(info, 0, 3, "Zones: " + str.tostring(liveLtf) + " @ " + timeframe.period + "  +  " + str.tostring(liveHtf) + " @ " + htfTF, text_color = color.new(color.white, 20), text_size = size.small)
