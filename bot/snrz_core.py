@@ -197,6 +197,8 @@ class Config:
     # sitting on the CLOSE level. A line-chart zone is drawn from repeated
     # CLOSES, so it finds levels a wick pivot cannot see.
     line_zones: bool = True
+    # ...and on a line chart EVERY peak is an R and every trough an S
+    line_single_levels: bool = True
     engulf_zones: bool = True    # p24 method 5, drawn per images 27/28
     momentum_zones: bool = True  # image 43: one momentum candle IS a zone
     momentum_body_atr: float = 0.8   # ...and this is how big "momentum" is
@@ -575,6 +577,31 @@ class SnrzEngine:
                 if gmate is not None and self._gap_zone(
                         sw, gmate, price, is_high, atr, idx, htf, series[j].close):
                     continue
+            if mate is None and use_close:
+                # The captain's own 15m line chart, tagged by hand: EVERY swing
+                # that makes a peak carries an R and every swing that makes a
+                # trough carries an S. No size filter and no higher-high rule —
+                # on that chart the second R sits BELOW the first one. So an
+                # unpaired line swing is still a level: a plain FRESH S/R,
+                # which image 39 will not enter and image 44 will not aim at
+                # until it earns its second touch.
+                #
+                # This matters past the drawing. SBR/RBS are what a PLAIN
+                # support or resistance becomes when it breaks, so without
+                # these levels the line chart could never produce one.
+                #
+                # (Until now this branch did not exist at all: a line swing
+                # fell through to the engulf/momentum code below and drew its
+                # zone from the CANDLE's body — geometry a line chart does not
+                # even have.)
+                if cfg.line_single_levels:
+                    role = Role.RESISTANCE if is_high else Role.SUPPORT
+                    if not self._overlaps(price, price, htf):
+                        self._add_zone(price, price, role, atr, idx, htf,
+                                       src="line R" if is_high else "line S",
+                                       valid=False)
+                continue
+
             if mate is None:
                 # p24, the FIFTH way to draw a zone: "when there is no S/R pair
                 # to draw from, draw it from the ENGULF" — and images 27/28 say

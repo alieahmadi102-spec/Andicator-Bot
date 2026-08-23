@@ -31,7 +31,7 @@
 //                  TP3 = the one beyond. 1R/2R/3R when no zone sits there.
 //  SCALP vs SWING (book): M5/M15 = SCALP · H1/H4/Daily = SWING.
 // ═══════════════════════════════════════════════════════════════════════════
-indicator("SNRZ Strategy [Zindan] v9", "SNRZ v9.95", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500)
+indicator("SNRZ Strategy [Zindan] v9", "SNRZ v9.96", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500)
 
 // ───────────────────────────── Inputs ──────────────────────────────────────
 grpZ  = "Zones (SNRZ)"
@@ -60,6 +60,7 @@ gapMinATR     = input.float(0.6, "…دو سطح حداقل این‌قدر فا
 gapMaxATR     = input.float(2.5, "…و حداکثر این‌قدر (ATR ×)",              minval = 0.5, step = 0.5, group = grpZ)
 gapHtfOnly    = input.bool(true, "GAP فقط روی تایم تحلیل (کتاب: H1/H4/D/W)", group = grpZ)
 lineZones     = input.bool(true, "زون از LINE CHART هم بکش (عکس ۳۱ · ۱۲ · ۱۳)", group = grpZ, tooltip = "عکس ۳۱: «بۆ جوانتر تێگەشتن و باشتر دیاریکردنی زۆنەکان Line Chart بەکاربهێنە». عکس‌های ۱۲ و ۱۳ همان چارت را دو بار چاپ کرده‌اند — کندلی و لاین — و خط دقیقاً روی سطحِ **کلوز** است در حالی که سایه‌ها از آن رد شده‌اند. سطحی که قیمت مدام روی آن بسته می‌شود، برای پیوتِ سایه نامرئی است.")
+lineSingleLevels = input.bool(true, "…و روی لاین چارت هر قله R و هر دره S است", group = grpZ, tooltip = "چارت ۱۵ دقیقه‌ای خودِ کاپیتان: تک‌تکِ سوئینگ‌ها برچسب R یا S دارند — بدون فیلترِ اندازه و بدون شرطِ سقفِ بالاتر (R دومِ آن چارت پایین‌تر از R اول است). این‌ها زونِ ساده‌ی FRESH هستند: نه ورودی می‌دهند (۳۹) نه تارگت می‌شوند (۴۴) تا وقتی برخورد دومشان را بگیرند — ولی SBR/RBS دقیقاً از شکستنِ همین سطح‌های ساده ساخته می‌شوند.")
 engulfZones   = input.bool(true, "روش پنجم: زون از ENGULF (عکس ۲۷/۲۸)",     group = grpZ, tooltip = "«لەو شوێنەوەی کە دوستی کردووە بە بەرز بوون و کاندڵێک پێش خۆی کامیان کوورتر بوون ئەوە دیاری ئەکەین» — جفتِ انگالف لازم است و بدنه‌ی کندلِ کوتاه‌تر همان زون است.")
 momentumZones = input.bool(true, "کندل مومنتوم هم یک زون است (عکس ۴۳)",     group = grpZ, tooltip = "عکس ۴۳: یک کندل مومنتومِ تنها خودش زون است — «در ۸۰٪ مواقع بازار از آن تکرار می‌کند». این تنها چیزی است که کتاب روی یک سوئینگِ بی‌جفت می‌کشد.")
 momBodyATR    = input.float(0.8, "…«مومنتوم» یعنی بدنه ≥ ATR ×",            minval = 0.1, step = 0.1, group = grpZ)
@@ -552,9 +553,15 @@ addSwing(bool _htf, float _price, bool _isHigh, int _bar, int _back, float _atr,
         if not overlaps(t, b, _htf) and okBig and okFst
             array.push(zones, newZone(t, b, role, _htf, _uid, _atr, _back, true))
     else if _line
-        // A line chart has no bodies and no wicks, so it has no engulf and no
-        // momentum candle either. Its zones come from repeated CLOSES only.
-        na
+        // The captain's own 15m line chart, tagged by hand: EVERY swing that
+        // makes a peak carries an R and every swing that makes a trough an S.
+        // No size filter and no higher-high rule — on that chart the second R
+        // sits BELOW the first. So an unpaired line swing is still a level: a
+        // plain FRESH S/R, which image 39 will not enter and image 44 will not
+        // aim at until it earns its second touch. It matters past the drawing:
+        // SBR/RBS are what a PLAIN level becomes when it breaks.
+        if lineSingleLevels and not overlaps(_price, _price, _htf)
+            array.push(zones, newZone(_price, _price, _isHigh ? -1 : 1, _htf, _uid, _atr, _back, false))
     else
         // p24 method 5, and ONLY the two things the book actually draws on a
         // single swing: the ENGULF pair (images 27/28, shorter candle) and the
@@ -1014,7 +1021,7 @@ if showPanel and barstate.islast
             nRun += 1
     posTxt = nOrd + nRun == 0 ? "— no setup right now —" :
              str.tostring(nOrd) + " limit waiting · " + str.tostring(nRun) + " running"
-    table.cell(info, 0, 0, "⚜  SNRZ v9.95 —  ZiNDAN", text_color = colGold, text_size = size.normal)
+    table.cell(info, 0, 0, "⚜  SNRZ v9.96 —  ZiNDAN", text_color = colGold, text_size = size.normal)
     table.cell(info, 0, 1, "The Gold Chaser", text_color = color.new(colGold, 35), text_size = size.tiny)
     table.cell(info, 0, 2, trendTxt, text_color = trendCol, text_size = size.small)
     table.cell(info, 0, 3, "Zones: " + str.tostring(liveLtf) + " @ " + timeframe.period + "  +  " + str.tostring(liveHtf) + " @ " + htfTF, text_color = color.new(color.white, 20), text_size = size.small)

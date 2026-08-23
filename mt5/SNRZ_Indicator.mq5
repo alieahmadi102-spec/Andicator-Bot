@@ -14,7 +14,7 @@
 //|   • One position at a time with SL / TP1 / TP2 / TP3 drawn       |
 //+------------------------------------------------------------------+
 #property copyright   "SNRZ (Zindan The Gold Chaser) — indicator port"
-#property version     "9.95"
+#property version     "9.96"
 #property description "SNRZ: chart zones AND analysis zones together (book p.41/p.44), one trade at a time"
 #property indicator_chart_window
 #property indicator_buffers 4
@@ -68,6 +68,7 @@ input double InpPairTolATR   = 0.50;  // ..."similar price" = closer than (ATR x
 input int    InpPairMaxGap   = 150;   // ...and the two swings closer than N bars
 input int    InpPairLookback = 20;    // ...searching the last N swings
 input bool   InpLineZones    = true;  // Draw LINE-CHART zones too (images 31/12/13)
+input bool   InpLineSingleLevels = true; // On a line chart every peak is an R and every trough an S
 input bool   InpEngulfZones  = true;  // Method 5: draw a zone from the ENGULF pair (images 27/28)
 input bool   InpMomentumZones= true;  // A single MOMENTUM candle is a zone too (image 43)
 input double InpMomBodyATR   = 0.8;   // ..."momentum" = body at least this many ATR
@@ -735,9 +736,17 @@ void AddSwingZone(const bool htf, const double price, const bool isHigh,
      }
 
    if(mi < 0 && line)
-      // A line chart has no bodies and no wicks, so it has no engulf and no
-      // momentum candle either. Its zones come from repeated CLOSES only.
+     {
+      // The captain's own 15m line chart, tagged by hand: EVERY swing that
+      // makes a peak carries an R and every swing that makes a trough an S.
+      // No size filter, no higher-high rule. These are plain FRESH levels -
+      // not entries (image 39) and not targets (image 44) until they earn a
+      // second touch - but SBR/RBS are exactly what a PLAIN level becomes
+      // when it breaks, so the line chart needs them.
+      if(InpLineSingleLevels && !Overlaps(price, price, htf))
+         AddZone(price, price, isHigh ? -1 : 1, bornH, atr, t1, t2, htf, false);
       return;
+     }
 
    if(mi < 0)
      {
