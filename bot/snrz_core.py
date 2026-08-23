@@ -1130,7 +1130,13 @@ class SnrzEngine:
                     tradable = (not z.dead) and z.pend_dir == 0 \
                         and z.await_pull < 0 and (
                         (z.state == State.VALID and z.touches >= need) or
-                        (z.srr and z.touches >= 1) or
+                        # SRR/RSS: "a support that has broken TWO resistances,
+                        # and when it pulls back to it we place the order on
+                        # it". The order is armed while price is AWAY from the
+                        # zone, so the pullback IS the fill — demanding a touch
+                        # first threw away exactly the pullback the captain's
+                        # chart marks with an arrow, and waited for a second.
+                        z.srr or
                         (z.state == State.INVERTED and 1 <= z.touches <= 2))
                     if cfg.entries_htf_only and not z.htf:
                         tradable = False        # p39: entries only from W/D/4H/1H
@@ -1196,7 +1202,13 @@ class SnrzEngine:
                     tradable = (not z.dead) and z.pend_dir == 0 \
                         and z.await_pull < 0 and (
                         (z.state == State.VALID and z.touches >= need) or
-                        (z.srr and z.touches >= 1) or
+                        # SRR/RSS: "a support that has broken TWO resistances,
+                        # and when it pulls back to it we place the order on
+                        # it". The order is armed while price is AWAY from the
+                        # zone, so the pullback IS the fill — demanding a touch
+                        # first threw away exactly the pullback the captain's
+                        # chart marks with an arrow, and waited for a second.
+                        z.srr or
                         (z.state == State.INVERTED and 1 <= z.touches <= 2))
                     if cfg.entries_htf_only and not z.htf:
                         tradable = False        # p39: entries only from W/D/4H/1H
@@ -1242,11 +1254,11 @@ class SnrzEngine:
             for z in self.zones:
                 if z.state == State.INVERTED or z.dead:
                     continue
-                if broke_resistance and z.role == Role.SUPPORT and z.touches == 0 and c.close > z.top:
+                if broke_resistance and z.role == Role.SUPPORT and c.close > z.top:
                     z.opp_breaks += 1
                     if z.opp_breaks >= 2:
                         z.srr = True
-                if broke_support and z.role == Role.RESISTANCE and z.touches == 0 and c.close < z.bot:
+                if broke_support and z.role == Role.RESISTANCE and c.close < z.bot:
                     z.opp_breaks += 1
                     if z.opp_breaks >= 2:
                         z.srr = True

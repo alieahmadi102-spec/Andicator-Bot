@@ -31,7 +31,7 @@
 //                  TP3 = the one beyond. 1R/2R/3R when no zone sits there.
 //  SCALP vs SWING (book): M5/M15 = SCALP · H1/H4/Daily = SWING.
 // ═══════════════════════════════════════════════════════════════════════════
-indicator("SNRZ Strategy [Zindan] v9", "SNRZ v9.97", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500)
+indicator("SNRZ Strategy [Zindan] v9", "SNRZ v9.99", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500)
 
 // ───────────────────────────── Inputs ──────────────────────────────────────
 grpZ  = "Zones (SNRZ)"
@@ -818,7 +818,7 @@ for z in zones
             // p24/p35: a paired zone was drawn FROM two touches, so the
             // RETURN to it is already the entry — it does not need a third.
             need = z.paired ? 1 : 2
-            tradable = not z.dead and z.pendDir == 0 and z.awaitPull < 0 and ((z.state == 1 and z.touches >= need) or (z.srr and z.touches >= 1) or (z.state == 2 and z.touches >= 1 and z.touches <= 2)) and (not entriesHtfOnly or z.htf) and (not requireNested or nested(z))
+            tradable = not z.dead and z.pendDir == 0 and z.awaitPull < 0 and ((z.state == 1 and z.touches >= need) or z.srr or (z.state == 2 and z.touches >= 1 and z.touches <= 2)) and (not entriesHtfOnly or z.htf) and (not requireNested or nested(z))
             okTrend  = (not useTrendFilter or trendUp or trendUnknown or (allowCounterInv and z.state == 2)) and not sweptHigh
             // one order per zone, placed while price is still ABOVE it, and
             // aimed at the NEXT zone up. No confirmation candle is waited for:
@@ -883,7 +883,7 @@ for z in zones
             // p24/p35: a paired zone was drawn FROM two touches, so the
             // RETURN to it is already the entry — it does not need a third.
             need = z.paired ? 1 : 2
-            tradable = not z.dead and z.pendDir == 0 and z.awaitPull < 0 and ((z.state == 1 and z.touches >= need) or (z.srr and z.touches >= 1) or (z.state == 2 and z.touches >= 1 and z.touches <= 2)) and (not entriesHtfOnly or z.htf) and (not requireNested or nested(z))
+            tradable = not z.dead and z.pendDir == 0 and z.awaitPull < 0 and ((z.state == 1 and z.touches >= need) or z.srr or (z.state == 2 and z.touches >= 1 and z.touches <= 2)) and (not entriesHtfOnly or z.htf) and (not requireNested or nested(z))
             okTrend  = (not useTrendFilter or trendDown or trendUnknown or (allowCounterInv and z.state == 2)) and not sweptLow
             if tradable and okTrend and canFire and not hasOrder(z.uid) and close < z.bot
                 entry = z.bot
@@ -910,11 +910,11 @@ if brokeResistanceNow or brokeSupportNow
     for z in zones
         if z.state == 2 or z.dead
             continue
-        if brokeResistanceNow and z.role == 1 and z.touches == 0 and close > z.top
+        if brokeResistanceNow and z.role == 1 and close > z.top
             z.oppBreaks := z.oppBreaks + 1
             if z.oppBreaks >= 2
                 z.srr := true
-        if brokeSupportNow and z.role == -1 and z.touches == 0 and close < z.bot
+        if brokeSupportNow and z.role == -1 and close < z.bot
             z.oppBreaks := z.oppBreaks + 1
             if z.oppBreaks >= 2
                 z.srr := true
@@ -1052,7 +1052,7 @@ if showPanel and barstate.islast
             nRun += 1
     posTxt = nOrd + nRun == 0 ? "— no setup right now —" :
              str.tostring(nOrd) + " limit waiting · " + str.tostring(nRun) + " running"
-    table.cell(info, 0, 0, "⚜  SNRZ v9.97 —  ZiNDAN", text_color = colGold, text_size = size.normal)
+    table.cell(info, 0, 0, "⚜  SNRZ v9.99 —  ZiNDAN", text_color = colGold, text_size = size.normal)
     table.cell(info, 0, 1, "The Gold Chaser", text_color = color.new(colGold, 35), text_size = size.tiny)
     table.cell(info, 0, 2, trendTxt, text_color = trendCol, text_size = size.small)
     table.cell(info, 0, 3, "Zones: " + str.tostring(liveLtf) + " @ " + timeframe.period + "  +  " + str.tostring(liveHtf) + " @ " + htfTF, text_color = color.new(color.white, 20), text_size = size.small)

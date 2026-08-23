@@ -14,7 +14,7 @@
 //|   • One position at a time with SL / TP1 / TP2 / TP3 drawn       |
 //+------------------------------------------------------------------+
 #property copyright   "SNRZ (Zindan The Gold Chaser) — indicator port"
-#property version     "9.97"
+#property version     "9.99"
 #property description "SNRZ: chart zones AND analysis zones together (book p.41/p.44), one trade at a time"
 #property indicator_chart_window
 #property indicator_buffers 4
@@ -1474,7 +1474,7 @@ int OnCalculate(const int rates_total,
                bool tradable = !g_zones[i].dead && g_zones[i].pendDir == 0 &&
                                g_zones[i].awaitPull < 0 &&
                                ((g_zones[i].state == 1 && g_zones[i].touches >= needT) ||
-                                (g_zones[i].srr && g_zones[i].touches >= 1) ||
+                                g_zones[i].srr ||
                                 (g_zones[i].state == 2 && g_zones[i].touches >= 1 && g_zones[i].touches <= 2)) &&
                                (!InpEntriesHtfOnly || g_zones[i].htf) &&
                                (!InpRequireNested  || ZoneNested(i));
@@ -1574,7 +1574,7 @@ int OnCalculate(const int rates_total,
                bool tradable = !g_zones[i].dead && g_zones[i].pendDir == 0 &&
                                g_zones[i].awaitPull < 0 &&
                                ((g_zones[i].state == 1 && g_zones[i].touches >= needT) ||
-                                (g_zones[i].srr && g_zones[i].touches >= 1) ||
+                                g_zones[i].srr ||
                                 (g_zones[i].state == 2 && g_zones[i].touches >= 1 && g_zones[i].touches <= 2)) &&
                                (!InpEntriesHtfOnly || g_zones[i].htf) &&
                                (!InpRequireNested  || ZoneNested(i));
@@ -1625,13 +1625,13 @@ int OnCalculate(const int rates_total,
            {
             if(g_zones[i].state == 2 || g_zones[i].dead)
                continue;
-            if(brokeResistanceNow && g_zones[i].role == 1 && g_zones[i].touches == 0 && c > g_zones[i].top)
+            if(brokeResistanceNow && g_zones[i].role == 1 && c > g_zones[i].top)
               {
                g_zones[i].oppBreaks++;
                if(g_zones[i].oppBreaks >= 2)
                   g_zones[i].srr = true;
               }
-            if(brokeSupportNow && g_zones[i].role == -1 && g_zones[i].touches == 0 && c < g_zones[i].bot)
+            if(brokeSupportNow && g_zones[i].role == -1 && c < g_zones[i].bot)
               {
                g_zones[i].oppBreaks++;
                if(g_zones[i].oppBreaks >= 2)
