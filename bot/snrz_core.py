@@ -237,7 +237,12 @@ class Config:
     # 15-minute and draw SMALLER zones INSIDE them, then confirm on the
     # 5-minute. So an analysis zone is not traded at its own wide edge — it is
     # first TIGHTENED to the chart-timeframe structure standing inside it.
-    refine_htf: bool = True
+    # OFF: the captain's screenshots show the H4 box staying exactly as drawn
+    # with a SEPARATE 15M box inside it — he never shrinks the big one. And the
+    # chart zone already places its own order at its own tight edge, so
+    # shrinking the analysis zone adds nothing to the entry while spoiling the
+    # H4 zone's job as context and as a target.
+    refine_htf: bool = False
     require_nested: bool = False   # as a GATE: measured much worse
     nested_bonus: bool = True      # ...as a PREFERENCE instead
     order_expiry_bars: int = 10   # a limit order that never fills must expire —

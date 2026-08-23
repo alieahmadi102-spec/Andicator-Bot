@@ -14,7 +14,7 @@
 //|   • One position at a time with SL / TP1 / TP2 / TP3 drawn       |
 //+------------------------------------------------------------------+
 #property copyright   "SNRZ (Zindan The Gold Chaser) — indicator port"
-#property version     "10.50"
+#property version     "10.60"
 #property description "SNRZ: chart zones AND analysis zones together (book p.41/p.44), one trade at a time"
 #property indicator_chart_window
 #property indicator_buffers 4
@@ -71,7 +71,7 @@ input int    InpPairLookback = 20;    // ...searching the last N swings
 input bool   InpStructZone   = true;  // Draw the analysis zone from the STRUCTURE of the turn
 input int    InpStructBars   = 3;     // ...how many candles either side of the pivot count as the turn
 input double InpMaxZoneATRHtf= 1.0;   // Analysis-zone height cap (ATR x) - a sanity bound only
-input bool   InpRefineHtf    = true;  // Tighten an analysis zone to the chart structure inside it
+input bool   InpRefineHtf    = false;  // Tighten an analysis zone to the chart structure inside it
 input bool   InpLineZones    = true;  // Draw LINE-CHART zones too (images 31/12/13)
 input bool   InpFlipNeedsPullback = true; // A broken level trades at the PULLBACK swing, not the old band
 input bool   InpLineSingleLevels = true; // On a line chart every peak is an R and every trough an S
