@@ -223,7 +223,8 @@ class Config:
     # Area — a GOOD zone. Only a break that HOLDS inverts the zone.
     fba_bars: int = 3            # bars a break must hold before it inverts
     # p14: the small zone must sit inside the big one
-    require_nested: bool = False
+    require_nested: bool = False   # as a GATE: measured much worse
+    nested_bonus: bool = True      # ...as a PREFERENCE instead
     order_expiry_bars: int = 10   # a limit order that never fills must expire —
                                   # while it rests it blocks every new signal
 
@@ -788,7 +789,23 @@ class SnrzEngine:
         return True
 
     def _rank(self, z: "Zone") -> int:
-        """Image 54's strength order, lower = stronger."""
+        """Image 54's strength order, lower = stronger.
+
+        On top of that order, a chart zone that sits inside an analysis zone
+        gets a bonus. That is the captain's own routine: mark the zones on the
+        1-hour, drop to the 15-minute and draw SMALLER zones INSIDE them, then
+        go to the 5-minute to confirm and trade. Requiring it outright was
+        tried and throws away 64% of the setups without improving the rest —
+        because he REFINES a big zone by eye while the engine draws both
+        independently and can only check whether they happened to coincide.
+        As a preference rather than a gate it costs nothing and puts his
+        refined zones at the front of the queue for the open-order slots."""
+        base = self._rank_book(z)
+        if self.cfg.nested_bonus and not z.htf and self._nested(z):
+            return base - 1
+        return base
+
+    def _rank_book(self, z: "Zone") -> int:
         inv = z.state == State.INVERTED
         if inv and z.touches == 1 and z.was_valid:
             return 3                                   # PO2 inversion
