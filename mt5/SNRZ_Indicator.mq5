@@ -14,7 +14,7 @@
 //|   • One position at a time with SL / TP1 / TP2 / TP3 drawn       |
 //+------------------------------------------------------------------+
 #property copyright   "SNRZ (Zindan The Gold Chaser) — indicator port"
-#property version     "10.00"
+#property version     "10.10"
 #property description "SNRZ: chart zones AND analysis zones together (book p.41/p.44), one trade at a time"
 #property indicator_chart_window
 #property indicator_buffers 4
@@ -53,8 +53,9 @@ input double InpBigMoveATR   = 1.2;   // "Big Movement" >= ATR x
 // First Movement and a Second Movement - and if EACH of the movements is a
 // BIG MOVEMENT, the market respects that zone MORE." The pairing path never
 // checked this, so zones were born VALID off swings the market barely reacted to.
+enum ENUM_BIGMOVE { BIGMOVE_EITHER, BIGMOVE_BOTH, BIGMOVE_OFF };
+input ENUM_BIGMOVE InpBigMoveRule = BIGMOVE_EITHER; // Big movement: either one / both / never reject
 input bool   InpNeedBigMove  = true;  // A paired zone must have a big movement too
-input bool   InpNeedFirstMove = true;  // ...and its FIRST movement must be big too (image 35)
 input double InpBreakoutPct  = 75.0;  // Breakout rule (%) — the 75% rule
 input double InpMinZoneATR   = 0.15;  // Min zone height (ATR x)
 input double InpMaxZoneATR   = 0.40;  // Max zone height (ATR x)
@@ -840,9 +841,14 @@ void AddSwingZone(const bool htf, const double price, const bool isHigh,
    double bigA  = atr * InpBigMoveATR;
    double away  = (role == 1) ? (hiRun - t) : (b - loRun);
    double first = (role == 1) ? (firstHi - t) : (b - firstLo);
-   bool okBig = (!InpNeedBigMove   || away  >= bigA);
-   bool okFst = (!InpNeedFirstMove || (firstHi > -DBL_MAX && first >= bigA));
-   if(!Overlaps(t, b, htf) && okBig && okFst)
+   // "if ONE of them, the first movement or the second, is bigger, it is
+   // BETTER" - one, not both, and better, not required.
+   bool bigAway  = (away >= bigA);
+   bool bigFirst = (firstHi > -DBL_MAX && first >= bigA);
+   bool okBig = (InpBigMoveRule == BIGMOVE_OFF) ? true
+                : (InpBigMoveRule == BIGMOVE_BOTH ? (bigAway && bigFirst)
+                                                  : (bigAway || bigFirst));
+   if(!Overlaps(t, b, htf) && okBig)
       AddZone(t, b, role, bornH, atr, t1, t2, htf, true);
   }
 //+------------------------------------------------------------------+

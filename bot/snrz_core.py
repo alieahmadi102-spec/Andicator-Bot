@@ -127,8 +127,11 @@ class Config:
     pivot_len: int = 10         # (kept for compatibility)
     max_zones: int = 6
     big_move_atr: float = 1.2
-    need_big_move: bool = True  # image 36: the move AWAY must be big
-    need_first_move: bool = True  # image 35: the FIRST movement too
+    # "if ONE of them, the first movement or the second, is bigger, it is
+    # BETTER" — the captain's own words. "both" = the old, stricter reading;
+    # "either" = at least one of the two; "off" = never reject on size.
+    big_move_rule: str = "either"
+    need_big_move: bool = True  # (kept: the pullback re-anchor still reads it)
     breakout_pct: float = 75.0
     min_zone_atr: float = 0.15
     max_zone_atr: float = 0.4   # a zone 1 ATR tall is a region, not a zone —
@@ -684,22 +687,23 @@ class SnrzEngine:
             # if EACH of the movements is a BIG MOVEMENT, the market respects
             # that zone MORE." The paired path never checked that, so a zone
             # was born VALID off two swings the market had barely reacted to.
-            if cfg.need_big_move:
-                away = (hi_run - top) if role == Role.SUPPORT else (bot - lo_run)
-                if away < big:
+            # A valid zone has a FIRST movement and a SECOND one. On how big
+            # they must be, the captain's own words: "if ONE of them, the first
+            # or the second, is bigger, it is BETTER" — one, not both, and
+            # better, not required. The code used to reject any zone unless
+            # BOTH cleared 1.2 ATR, which is stricter than the rule twice over.
+            seg = series[mate.index: p + 1]
+            first = (max(w.high for w in seg) - top) if role == Role.SUPPORT \
+                else (bot - min(w.low for w in seg))
+            away = (hi_run - top) if role == Role.SUPPORT else (bot - lo_run)
+            if cfg.big_move_rule == "both":
+                if first < big or away < big:
                     continue
-            if cfg.need_first_move:
-                # Image 35: a valid zone has a FIRST movement AND a second one,
-                # "and the more each of the movements is momentum, the more the
-                # market respects that zone". Only the run after the second
-                # touch was measured; the stretch BETWEEN the two touches — the
-                # first movement — was never checked, so a zone counted as
-                # valid off a first touch the market had merely drifted from.
-                seg = series[mate.index: p + 1]
-                first = (max(w.high for w in seg) - top) if role == Role.SUPPORT \
-                    else (bot - min(w.low for w in seg))
-                if first < big:
+            elif cfg.big_move_rule == "either":
+                if first < big and away < big:
                     continue
+            # "off": the movements never reject a zone, they only feed the
+            # strength ranking of image 54
             # two touches already define it, so it is born VALID (p35: first
             # movement + second movement). The entry is the RETURN to it.
             self._add_zone(top, bot, role, atr, idx, htf,

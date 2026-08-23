@@ -31,7 +31,7 @@
 //                  TP3 = the one beyond. 1R/2R/3R when no zone sits there.
 //  SCALP vs SWING (book): M5/M15 = SCALP · H1/H4/Daily = SWING.
 // ═══════════════════════════════════════════════════════════════════════════
-indicator("SNRZ Strategy [Zindan] v9", "SNRZ v10.0", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500)
+indicator("SNRZ Strategy [Zindan] v9", "SNRZ v10.1", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500)
 
 // ───────────────────────────── Inputs ──────────────────────────────────────
 grpZ  = "Zones (SNRZ)"
@@ -41,8 +41,8 @@ pivotHtf      = input.int(8,    "Pivot length — analysis zones",           min
 maxZonesLtf   = input.int(14,    "Max chart zones",                         minval = 2,  maxval = 30, group = grpZ)
 maxZonesHtf   = input.int(8,    "Max analysis zones",                      minval = 1,  maxval = 15, group = grpZ)
 bigMoveMult   = input.float(1.2,"Big Movement ≥ ATR ×",                    minval = 0.1, step = 0.1, group = grpZ)
+bigMoveRule   = input.string("either", "حرکتِ بزرگ: کدام‌شان لازم است؟", options = ["either", "both", "off"], group = grpZ, tooltip = "«اگر حرکتِ اول یا دوم، **یکی‌ش** بزرگ‌تر باشد **بهتر** است» — یکی، نه هر دو؛ و بهتر، نه شرط.  either = دست‌کم یکی · both = خوانشِ سخت‌گیرانه‌ی قبلی · off = هیچ‌وقت زون را رد نکن، فقط در رتبه‌بندیِ عکس ۵۴ اثر بگذارد.")
 needBigMove   = input.bool(true, "زون جفت‌شده هم باید حرکت بزرگ داشته باشد",  group = grpZ, tooltip = "عکس ۳۶: «تفاوتش با ساپورت معمولی فقط این است که First Movement و Second Movement دارد — و اگر **هرکدام** از حرکت‌ها یک **Big Movement** باشد، بازار خودبه‌خود به آن زون **بیشتر احترام** می‌گذارد.» مسیر جفت‌سازی این را چک نمی‌کرد، پس زون از دو سوئینگی ساخته می‌شد که بازار به‌سختی به آن‌ها واکنش نشان داده بود.")
-needFirstMove = input.bool(true, "…و حرکتِ اولش هم باید بزرگ باشد",          group = grpZ, tooltip = "عکس ۳۵: زون معتبر یک First Movement دارد و یک Second Movement — «هرچه هرکدام از حرکت‌ها مومنتوم‌تر باشد، بازار بیشتر به آن زون احترام می‌گذارد». تا اینجا فقط حرکتِ بعد از لمس دوم اندازه گرفته می‌شد؛ فاصله‌ی بین دو لمس — یعنی حرکت اول — هیچ‌وقت چک نمی‌شد.")
 breakoutPct   = input.float(75, "Breakout rule (%)",                       minval = 50, maxval = 100, group = grpZ)
 minZoneATR    = input.float(0.15,"Min zone height (ATR ×)",                minval = 0.05, step = 0.05, group = grpZ)
 maxZoneATR    = input.float(0.4, "Max zone height (ATR ×)",                minval = 0.1,  step = 0.05, group = grpZ, tooltip = "زون به ارتفاع یک ATR دیگر زون نیست، یک ناحیه است — روی ۴ ساعته باندهای ۲۸۷ دلاری روی کل چارت می‌کشید.")
@@ -578,11 +578,15 @@ addSwing(bool _htf, float _price, bool _isHigh, int _bar, int _back, float _atr,
         // image 36: the move AWAY must be big, or the market has no reason to
         // respect the zone — and image 35: so must the FIRST movement, the one
         // between the two touches.
+        // "if ONE of them, the first movement or the second, is bigger, it is
+        // BETTER" — one, not both, and better, not required. This used to
+        // reject any zone unless BOTH cleared the threshold.
         away  = role == 1 ? _hiRun - t : b - _loRun
         first = role == 1 ? mateSegHi - t : b - mateSegLo
-        okBig = not needBigMove or away >= _atr * bigMoveMult
-        okFst = not needFirstMove or (not na(first) and first >= _atr * bigMoveMult)
-        if not overlaps(t, b, _htf) and okBig and okFst
+        bigA  = away >= _atr * bigMoveMult
+        bigF  = not na(first) and first >= _atr * bigMoveMult
+        okBig = bigMoveRule == "off" ? true : bigMoveRule == "both" ? (bigA and bigF) : (bigA or bigF)
+        if not overlaps(t, b, _htf) and okBig
             array.push(zones, newZone(t, b, role, _htf, _uid, _atr, _back, true))
     else if _line
         // The captain's own 15m line chart, tagged by hand: EVERY swing that
@@ -1055,7 +1059,7 @@ if showPanel and barstate.islast
             nRun += 1
     posTxt = nOrd + nRun == 0 ? "— no setup right now —" :
              str.tostring(nOrd) + " limit waiting · " + str.tostring(nRun) + " running"
-    table.cell(info, 0, 0, "⚜  SNRZ v10.0 —  ZiNDAN", text_color = colGold, text_size = size.normal)
+    table.cell(info, 0, 0, "⚜  SNRZ v10.1 —  ZiNDAN", text_color = colGold, text_size = size.normal)
     table.cell(info, 0, 1, "The Gold Chaser", text_color = color.new(colGold, 35), text_size = size.tiny)
     table.cell(info, 0, 2, trendTxt, text_color = trendCol, text_size = size.small)
     table.cell(info, 0, 3, "Zones: " + str.tostring(liveLtf) + " @ " + timeframe.period + "  +  " + str.tostring(liveHtf) + " @ " + htfTF, text_color = color.new(color.white, 20), text_size = size.small)
