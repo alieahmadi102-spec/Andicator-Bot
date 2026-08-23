@@ -136,8 +136,6 @@ class Config:
     atr_len: int = 14
     trend_filter: bool = True
     allow_counter_inv: bool = False  # "Trend is King" — inversion zones obey it too
-    need_confirm: bool = True
-    need_reject: bool = True    # confirmation candle must close outside the zone
     range_bars: int = 10        # both sides of structure broken this recently = range
     max_touches: int = 3
     # Far zones are HIDDEN, not deleted: the level a trade is aiming at is
@@ -377,15 +375,6 @@ class SnrzEngine:
         return outside / length * 100.0 >= self.cfg.breakout_pct
 
     # ── confirmation candles (SNRZ style) ──────────────────────────────────
-    def _confirm(self, c: Candle, p: Candle) -> tuple[bool, bool]:
-        bull_engulf = c.bull and p.bear and c.close >= p.open
-        bear_engulf = c.bear and p.bull and c.close <= p.open
-        rng = c.high - c.low
-        bull_pin = rng > 0 and (min(c.open, c.close) - c.low) >= 0.6 * rng and c.close >= c.open
-        bear_pin = rng > 0 and (c.high - max(c.open, c.close)) >= 0.6 * rng and c.close <= c.open
-        return bull_engulf or bull_pin, bear_engulf or bear_pin
-
-    # ── zone creation from pivots ──────────────────────────────────────────
     def _overlaps(self, top: float, bot: float, htf: bool) -> bool:
         # Checked WITHIN a set only: a small chart zone is expected to sit
         # inside a big analysis zone. An exhausted zone reserves nothing —
@@ -1078,7 +1067,6 @@ class SnrzEngine:
                 continue
             kept.append(z)
         self.zones = kept
-        bull_conf, bear_conf = self._confirm(c, self.candles[idx - 1])
         # book, confirmation list: "a small Break of Structure in the trade
         # direction" — without it a sell fires in the middle of a rally just
         # because one candle poked the zone
@@ -1155,8 +1143,6 @@ class SnrzEngine:
                     # liquidity grab, the mirror of the sell-side rule
                     if cfg.sweep_guard and self._fresh_extreme(idx, True):
                         ok_trend = False
-                    ok_conf = (not cfg.need_confirm) or bull_conf
-                    reject_ok = c.close > z.top if cfg.need_reject else c.close > z.bot
                     if tradable and ok_trend and can_fire \
                             and not self._has_order_or_trade(z.uid) \
                             and c.close > z.top:      # price is ABOVE the zone
@@ -1224,8 +1210,6 @@ class SnrzEngine:
                     # reversal. This is what sold the 3942 bottom.
                     if cfg.sweep_guard and self._fresh_extreme(idx, False):
                         ok_trend = False
-                    ok_conf = (not cfg.need_confirm) or bear_conf
-                    reject_ok = c.close < z.bot if cfg.need_reject else c.close < z.top
                     if tradable and ok_trend and can_fire \
                             and not self._has_order_or_trade(z.uid) \
                             and c.close < z.bot:      # price is BELOW the zone

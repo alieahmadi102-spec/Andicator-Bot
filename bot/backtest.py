@@ -191,7 +191,6 @@ def main() -> None:
         ("micro-BOS over 4 bars", Config(micro_bos_len=4)),
         ("no break-even", Config(break_even=False)),
         ("keep stopped-out zones", Config(kill_on_stop=False)),
-        ("no rejection close", Config(need_reject=False)),
     ]
     books = [synthetic(s) for s in range(1, 13)]
     for label, cfg in sets:
