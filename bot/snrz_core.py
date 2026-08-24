@@ -184,6 +184,21 @@ class Config:
     # first zone target is reached: that zone can be far away and the trade
     # would ride all the way back to the stop before it ever got protected.
     be_at_r: float = 1.0
+    # HOW the position is taken off.
+    #
+    #   "scale"   the book's plan: half at TP1, a quarter at TP2, a quarter at
+    #             TP3. Needs at least four lot-steps to divide, so an account
+    #             whose minimum lot is also its only lot cannot run it.
+    #   "ratchet" ONE position, no splitting. The stop climbs behind the
+    #             targets instead: to entry once 1R is paid, to TP1 once TP2 is
+    #             reached, to TP2 once TP3 is reached, and the whole thing
+    #             comes off at TP3. This is the closest a single 0.01 lot can
+    #             get to scaling out — it banks nothing early, but it stops
+    #             giving back what it has already won.
+    exit_policy: str = "scale"
+    # ...and which target finally closes a single position. Only read in
+    # "ratchet" mode, where there is one position and therefore one exit.
+    final_tp: int = 3
     # The stop sits behind the WICK, on the liquidity — and nothing else may
     # widen it. This floor used to be 2.5 ATR, which set the stop on 97-100%
     # of trades instead of the wick: the median wick sits 1.3 ATR away, so my
@@ -1182,6 +1197,13 @@ class SnrzEngine:
                else (rest[0] if rest else tp1))
         beyond = [x for x in rest if (x > tp2 if is_buy else x < tp2)]
         tp3 = beyond[0] if beyond else tp2
+        # A single position has one exit, so the further targets collapse onto
+        # whichever one is meant to close it.
+        if cfg.exit_policy == "ratchet":
+            if cfg.final_tp <= 1:
+                tp2 = tp3 = tp1
+            elif cfg.final_tp == 2:
+                tp3 = tp2
         return entry, sl, tp1, tp2, tp3
 
     def _has_order_or_trade(self, uid: int) -> bool:
@@ -1244,6 +1266,17 @@ class SnrzEngine:
                     p.stat = p.peak = 2
                 elif c.low <= p.tp1 and p.stat < 1:
                     p.stat = p.peak = 1
+            # The ratchet: one position, and the stop walks up behind the
+            # targets it has already passed. Runs BEFORE the break-even block
+            # so the higher lock wins when both would fire on one bar.
+            if self.cfg.exit_policy == "ratchet" and not p.closed and not entry_bar:
+                lock = None
+                if p.peak >= 2:
+                    lock = p.tp2 if p.peak >= 3 else p.tp1
+                if lock is not None:
+                    better = lock > p.sl if p.side == "buy" else lock < p.sl
+                    if better:
+                        p.sl, p.be = lock, True
             # image 41: the red 1:1 line is where the stop goes to entry and
             # money comes off — not the first zone target
             if self.cfg.break_even and not p.closed and not p.be and not entry_bar:
