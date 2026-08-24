@@ -445,14 +445,21 @@ def main():
                          f"Market Watch — some brokers use XAUUSD.fix / .zero.")
 
     acc = mt5.account_info()
+    # DEMO or REAL is decided by the account MetaTrader is logged into, NOT by
+    # which launcher was double-clicked. Those are two independent switches and
+    # confusing them is the one mistake that costs real money, so the banner
+    # says which is which every single time.
+    modes = {0: "DEMO", 1: "CONTEST", 2: "REAL MONEY"}
+    kind = modes.get(getattr(acc, "trade_mode", 0), "UNKNOWN")
     print(f"MT5 connected: account {acc.login} ({acc.server}), "
           f"balance {acc.balance} {acc.currency}")
+    print(f"account type: *** {kind} ***")
     if not DRY_RUN and not getattr(acc, "trade_allowed", True):
         raise SystemExit("this account cannot trade (trade_allowed is false) — "
                          "on the terminal side that is usually the Algo Trading "
                          "button being off.")
     print(f"symbol {SYMBOL} · chart TF {TIMEFRAME_MIN}m · risk {RISK_PCT}% "
-          f"· mode {'DRY RUN (no orders sent)' if DRY_RUN else '*** LIVE ORDERS ***'}")
+          f"· {'DRY RUN — nothing is sent' if DRY_RUN else 'SENDING ORDERS'}")
     if not DRY_RUN:
         info = mt5.symbol_info(SYMBOL)
         print(f"\n  contract {info.trade_contract_size} · volume "
@@ -461,8 +468,15 @@ def main():
         print(f"  the book's exit needs at least {4 * info.volume_step} lots so "
               f"it can be split half / quarter / quarter — every single-exit "
               f"plan measured NEGATIVE.")
-        input("\n*** REAL ORDERS WILL BE SENT *** Press Enter to go on, "
-              "or Ctrl+C to stop: ")
+        if kind == "REAL MONEY":
+            print("\n" + "!" * 60)
+            print("  ORDERS WILL BE SENT TO A REAL-MONEY ACCOUNT.")
+            print("  Losses here are your own money, not demo money.")
+            print("!" * 60)
+        else:
+            print(f"\n  Orders will be sent, but this is a {kind} account — "
+                  f"nothing here is real money.")
+        input("\nPress Enter to go on, or Ctrl+C to stop: ")
         resting, holding = broker_state(SYMBOL)
         if resting or holding:
             print(f"  note: this bot already has {len(resting)} order(s) and "
