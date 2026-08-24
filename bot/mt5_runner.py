@@ -36,7 +36,15 @@ RISK_PCT = 1.0              # max 1% risk per trade (book rule)
 # news-time widening is what turns a small stop into a losing trade before the
 # market has moved at all.
 MAX_SPREAD_R = 0.10
-MAGIC = 20260819
+# Every order this bot sends is stamped with a magic number, and that stamp is
+# how it tells its own trades from everything else on the account. It used to
+# be ONE number for every timeframe -- which is fine for one bot and wrong the
+# moment two run together, as five did here (1m, 5m, 15m, 30m, 1h). Each would
+# have seen the other four's orders as its own: moving their stops, skipping
+# its own order as a duplicate of theirs, and reporting their results as its.
+# The timeframe is added so each bot owns exactly its own trades.
+MAGIC_BASE = 20260819
+MAGIC = MAGIC_BASE          # read_args() adds the timeframe
 ORDER_EXPIRY_BARS = 40      # same as Config.order_expiry_bars in snrz_core
 
 # Nothing is sent to the broker while this is True. Turn it off only after you
@@ -336,6 +344,20 @@ def broker_state(symbol: str):
     return orders, positions
 
 
+def family_exposure(symbol: str):
+    """What every SNRZ bot on this account is holding, not just this one.
+
+    Each timeframe now has its own magic and manages only its own trades, which
+    stops them fighting -- but it does not stop the RISK adding up. Five bots
+    each willing to hold three positions at 1% is fifteen positions and 15% of
+    the account at once. That has to be visible."""
+    lo, hi = MAGIC_BASE, MAGIC_BASE + 10080
+    pos = [p for p in (mt5.positions_get(symbol=symbol) or [])
+           if lo <= p.magic <= hi]
+    others = [p for p in pos if p.magic != MAGIC]
+    return pos, others
+
+
 def bot_ledger(symbol: str, days: int = 30):
     """Every deal THIS bot has closed, and what they came to.
 
@@ -432,7 +454,7 @@ def read_args():
         python mt5_runner.py --tf 5             # 5-minute chart
         python mt5_runner.py --tf 5 --live      # ...and send real orders
     """
-    global SYMBOL, TIMEFRAME_MIN, RISK_PCT, DRY_RUN
+    global SYMBOL, TIMEFRAME_MIN, RISK_PCT, DRY_RUN, MAGIC
     args = sys.argv[1:]
     i = 0
     while i < len(args):
@@ -456,6 +478,7 @@ def read_args():
         else:
             raise SystemExit(f"{a} needs a value   (try --help)")
         i += 1
+    MAGIC = MAGIC_BASE + TIMEFRAME_MIN
 
 
 def main():
@@ -482,6 +505,17 @@ def main():
     print(f"MT5 connected: account {acc.login} ({acc.server}), "
           f"balance {acc.balance} {acc.currency}")
     print(f"account type: *** {kind} ***")
+    try:
+        allpos, others = family_exposure(SYMBOL)
+        if others:
+            tfs = sorted({p.magic - MAGIC_BASE for p in others})
+            print(f"NOTE: other SNRZ bots are already holding "
+                  f"{len(others)} position(s) on {SYMBOL} "
+                  f"(timeframes {', '.join(str(t) + 'm' for t in tfs)}). "
+                  f"Each bot risks its own {RISK_PCT}% per trade, so the "
+                  f"account carries all of them AT ONCE.")
+    except Exception:
+        pass
     if not DRY_RUN and not getattr(acc, "trade_allowed", True):
         raise SystemExit("this account cannot trade (trade_allowed is false) — "
                          "on the terminal side that is usually the Algo Trading "
