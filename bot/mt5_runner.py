@@ -171,7 +171,11 @@ def main():
               "or Ctrl+C to stop: ")
 
     tf = mt5_timeframe(TIMEFRAME_MIN)
-    engine = SnrzEngine(Config())
+    # the analysis timeframe follows the captain's ladder from the chart we run
+    # on — two rungs up, the middle one skipped
+    engine = SnrzEngine(Config(chart_minutes=TIMEFRAME_MIN))
+    print(f"zones marked on {SnrzEngine.analysis_minutes(TIMEFRAME_MIN)}m, "
+          f"refined and traded on {TIMEFRAME_MIN}m")
 
     # warm up with history
     rates = mt5.copy_rates_from_pos(SYMBOL, tf, 1, 1000)

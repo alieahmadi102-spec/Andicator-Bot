@@ -14,7 +14,7 @@
 //|   • One position at a time with SL / TP1 / TP2 / TP3 drawn       |
 //+------------------------------------------------------------------+
 #property copyright   "SNRZ (Zindan The Gold Chaser) — indicator port"
-#property version     "10.60"
+#property version     "10.70"
 #property description "SNRZ: chart zones AND analysis zones together (book p.41/p.44), one trade at a time"
 #property indicator_chart_window
 #property indicator_buffers 4
@@ -295,12 +295,15 @@ ENUM_TIMEFRAMES AnalysisTF()
   {
    if(InpZoneTF != PERIOD_CURRENT)
       return InpZoneTF;
+   // The captain's ladder, two rungs up with the middle one skipped:
+   //   1m -> 15m,  5m -> 30m,  15m -> 1H,  30m -> 4H,  1H -> D,  4H -> W
    int m = PeriodSeconds(_Period) / 60;
-   if(m <= 5)    return PERIOD_M15;
-   if(m <= 30)   return PERIOD_H1;
-   if(m <= 60)   return PERIOD_H4;
-   if(m <= 240)  return PERIOD_D1;
-   if(m <= 1440) return PERIOD_W1;
+   if(m <= 1)    return PERIOD_M15;
+   if(m <= 5)    return PERIOD_M30;
+   if(m <= 15)   return PERIOD_H1;
+   if(m <= 30)   return PERIOD_H4;
+   if(m <= 60)   return PERIOD_D1;
+   if(m <= 240)  return PERIOD_W1;
    return PERIOD_MN1;
   }
 //+------------------------------------------------------------------+

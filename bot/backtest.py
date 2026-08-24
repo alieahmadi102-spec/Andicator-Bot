@@ -86,6 +86,20 @@ def realized_r(p) -> float:
     return paid
 
 
+TF_MINUTES = {"M1": 1, "M5": 5, "M15": 15, "M30": 30,
+              "H1": 60, "H4": 240, "Daily": 1440, "D1": 1440}
+
+
+def minutes_from_name(path: str) -> int:
+    """XAUUSDM15.csv -> 15, so the analysis timeframe can follow the captain's
+    ladder instead of a fixed multiplier."""
+    stem = path.replace("\\", "/").split("/")[-1].rsplit(".", 1)[0]
+    for tag in sorted(TF_MINUTES, key=len, reverse=True):
+        if stem.endswith(tag):
+            return TF_MINUTES[tag]
+    return 0
+
+
 def run(candles: Iterable[Candle], cfg: Config) -> Report:
     eng = SnrzEngine(cfg)
     rep = Report()
@@ -182,7 +196,8 @@ def main() -> None:
     args = sys.argv[1:]
     if args and args[0] != "--synthetic":
         rows = read_csv(args[0])
-        print(run(rows, Config()).line(args[0]))
+        cfg = Config(chart_minutes=minutes_from_name(args[0]))
+        print(run(rows, cfg).line(args[0]))
         return
 
     sets = [

@@ -40,7 +40,7 @@ structZone    = input.bool(true, "زونِ تایمِ تحلیل از **ساخت
 structBars    = input.int(3, "…چند کندل هر طرفِ پیوت جزو چرخش است", minval = 1, maxval = 10, group = grpZ)
 maxZoneATRHtf = input.float(1.0, "سقفِ ارتفاعِ زونِ تایمِ تحلیل (ATR ×)", minval = 0.1, step = 0.1, group = grpZ, tooltip = "زونِ تحلیل شکلش را از ساختار می‌گیرد، پس این عدد فقط یک حدِ ایمنی است نه شکل‌دهنده.")
 refineHtf     = input.bool(false, "زونِ تایمِ تحلیل را کوچک کن (پیش‌فرض: نه)", group = grpZ, tooltip = "اسکرین‌شات‌های خودِ کاپیتان نشان می‌دهند باکسِ H4 **دست‌نخورده** می‌ماند و یک باکسِ **جدا** ی ۱۵ دقیقه داخلش کشیده می‌شود. ضمناً زونِ چارت از قبل اردرِ خودش را روی لبه‌ی تنگِ خودش می‌گذارد، پس کوچک‌کردنِ زونِ تحلیل چیزی به ورود اضافه نمی‌کند و فقط نقشِ H4 را به‌عنوان زمینه و تارگت خراب می‌کند."
-htfSkipRung   = input.bool(false, "تایمِ تحلیل دو پله بالاتر باشد (جدولِ SKIP کتاب)", group = grpZ, tooltip = "جدولِ خودِ کتاب: Weekly/Daily(SKIP)/4H — یعنی تایمِ تحلیل دو پله بالاتر از چارت است و یک پله عمداً رد می‌شود. روی ۸۳ روز XAUUSD واقعی این خوانش واضح بدتر شد: روی M5 که تایمِ محبوبِ کاپیتان است، +۰٫۱۰R افتاد به +۰٫۰۲R. پس پیش‌فرض خاموش است تا کاپیتان تأیید کند.")
+htfSkipRung   = input.bool(true, "تایمِ تحلیل دو پله بالاتر (نردبانِ کاپیتان)", group = grpZ, tooltip = "قانونِ خودِ کاپیتان با سه مثال: «۱ ساعته زون مشخص می‌شود، می‌رود روی ۱۵ دقیقه: زون کوچک‌تر + تأیید + ورود» · «۳۰ دقیقه ⇒ ۵ دقیقه» · «۱۵ دقیقه ⇒ ۱ دقیقه». هر سه **دو پله** پایین‌ترند — همان ستونِ SKIP جدولِ کتاب.\n\nروی ۸۳ روز XAUUSD: H1 برای اولین بار مثبت شد (−۰٫۱۱ ⇒ **+۰٫۱۵**) و M30 کمی بهتر، ولی M5 از +۰٫۱۱ به +۰٫۰۲ و M15 از +۰٫۰۸ به −۰٫۰۱ افتاد. روشن است چون قانونِ کاپیتان است، نه چون عدد بهتر شد — خاموشش کنی به ضریبِ ثابتِ ۳ برمی‌گردد.")
 pivotLtf      = input.int(5,    "Pivot length — chart zones",              minval = 2,  group = grpZ, tooltip = "کوچک‌تر = زون بیشتر روی خود چارت = سیگنال بیشتر در تایم‌های پایین.")
 pivotHtf      = input.int(8,    "Pivot length — analysis zones",           minval = 2,  group = grpZ)
 maxZonesLtf   = input.int(14,    "Max chart zones",                         minval = 2,  maxval = 30, group = grpZ)
@@ -132,7 +132,7 @@ chartMin = timeframe.in_seconds(timeframe.period) / 60
 // clearly worse — on M5, the captain's own favourite, +0.10R falls to +0.02R
 // — so the one-rung ladder stays the default and the skip is a switch.
 autoOne  = chartMin <= 5 ? "15" : chartMin <= 30 ? "60" : chartMin <= 60 ? "240" : chartMin <= 240 ? "D" : chartMin <= 1440 ? "W" : "M"
-autoSkip = chartMin <= 5 ? "30" : chartMin <= 15 ? "60" : chartMin <= 30 ? "240" : chartMin <= 60 ? "D" : "W"
+autoSkip = chartMin <= 1 ? "15" : chartMin <= 5 ? "30" : chartMin <= 15 ? "60" : chartMin <= 30 ? "240" : chartMin <= 60 ? "D" : "W"
 autoHtf  = htfSkipRung ? autoSkip : autoOne
 htfTF    = htfIn == "" ? autoHtf : htfIn
 htfMin   = timeframe.in_seconds(htfTF) / 60

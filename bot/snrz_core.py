@@ -118,6 +118,16 @@ class Config:
     # chart itself at the same time — TP1 comes from a chart-timeframe zone,
     # TP2 from an analysis-timeframe one. htf_mult says how many chart candles
     # make one analysis candle (5m chart -> 15m analysis = 3).
+    # The captain's pairing, in his own words and three worked examples:
+    #   1H  -> the zone is marked, go to 15m: refine, confirm, enter
+    #   30m -> ...go straight to 5m
+    #   15m -> ...go straight to 1m
+    # Every one of them is TWO rungs of the standard ladder, with the middle
+    # rung deliberately skipped — the SKIP column of the book's TimeFrames
+    # table. Set chart_minutes and the analysis timeframe follows from it;
+    # leave it 0 and htf_mult is used as given.
+    chart_minutes: int = 0
+    htf_rungs: int = 2
     htf_mult: int = 3
     pivot_ltf: int = 5          # smaller -> more chart zones -> more signals
     pivot_htf: int = 8
@@ -320,8 +330,22 @@ class Position:
 
 
 class SnrzEngine:
+    TF_LADDER = (1, 5, 15, 30, 60, 240, 1440, 10080)
+
+    @staticmethod
+    def analysis_minutes(chart_minutes: int, rungs: int = 2) -> int:
+        """Two rungs up the standard ladder, skipping the one between."""
+        rung = SnrzEngine.TF_LADDER
+        i = 0
+        while i < len(rung) - 1 and rung[i] < chart_minutes:
+            i += 1
+        return rung[min(i + rungs, len(rung) - 1)]
+
     def __init__(self, cfg: Config | None = None):
         self.cfg = cfg or Config()
+        if self.cfg.chart_minutes > 0:
+            up = self.analysis_minutes(self.cfg.chart_minutes, self.cfg.htf_rungs)
+            self.cfg.htf_mult = max(2, round(up / self.cfg.chart_minutes))
         self.candles: List[Candle] = []
         self.zones: List[Zone] = []
         self.signals: List[Signal] = []
