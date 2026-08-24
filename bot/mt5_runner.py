@@ -18,7 +18,7 @@ try:
 except ImportError:  # keeps the repo importable on non-Windows dev machines
     mt5 = None
 
-from snrz_core import Candle, Config, SnrzEngine
+from snrz_core import Candle, Config, Signal, SnrzEngine
 
 SYMBOL = "XAUUSD"
 # The CHART timeframe — the one the bot watches and trades on. The ANALYSIS
@@ -351,6 +351,34 @@ def bot_ledger(symbol: str, days: int = 30):
     return mine, closing, pnl
 
 
+def sync_orders(engine, symbol: str, tf_minutes: int):
+    """Send any order the engine is holding that the broker does not have.
+
+    place() only ever ran for signals returned on a NEW bar. The warm-up feeds
+    1000 candles and throws its signals away -- correctly, they are history --
+    but the ORDERS the engine built from the last few of them stay in
+    engine.orders, live and unfilled and sitting right at the current price.
+    Nothing sent them anywhere, so the bot printed
+
+        limit orders resting: 2
+          BUY I.VR @ 4640.90 ...
+
+    while the terminal's Trade tab was empty. This closes that gap, and
+    because it runs every bar it also retries an order whose send failed."""
+    if DRY_RUN or not engine.orders:
+        return
+    resting, holding = broker_state(symbol)
+    for o in list(engine.orders):
+        here = any(o.side == ("buy" if r.type in (mt5.ORDER_TYPE_BUY_LIMIT,
+                                                  mt5.ORDER_TYPE_BUY) else "sell")
+                   and abs(r.price_open - o.entry) < 1e-6 for r in resting)
+        if here or any(abs(p.price_open - o.entry) < 1e-6 for p in holding):
+            continue
+        print(f"  syncing to broker: {o.side.upper()} {o.zone} @ {o.entry:.2f}")
+        place(Signal(o.bar, o.side, "PO2" if o.po2 else "limit", o.zone,
+                     o.entry, o.sl, o.tp1, o.tp2, o.tp3), symbol, tf_minutes)
+
+
 def show_state(engine):
     """What the engine is actually holding right now. Without this the bot
     printed one line and then sat silent for an hour, which looks broken even
@@ -518,6 +546,9 @@ def main():
         print(f"(could not read the trade history: {e})")
 
     show_state(engine)
+    # Orders the warm-up left resting are live setups at today's prices, so
+    # they belong at the broker before the first new bar arrives.
+    sync_orders(engine, SYMBOL, TIMEFRAME_MIN)
     print(f"\nwatching for the next closed {TIMEFRAME_MIN}m bar — on this timeframe "
           f"that is one check every {TIMEFRAME_MIN} minutes, so silence is normal.")
     print("Ctrl+C to stop.\n")
@@ -576,6 +607,7 @@ def main():
                     print("  already resting at the broker — not duplicated")
                     continue
             place(sig, SYMBOL, TIMEFRAME_MIN)
+        sync_orders(engine, SYMBOL, TIMEFRAME_MIN)
         if sigs:
             show_state(engine)
 
