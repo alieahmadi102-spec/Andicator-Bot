@@ -9,6 +9,7 @@ Requirements (Windows, or Linux+Wine):
 from __future__ import annotations
 
 import math
+import sys
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -201,7 +202,42 @@ def show_state(engine):
                   f"SL {t.sl:9.2f}  TP1 {t.tp1:9.2f}")
 
 
+def read_args():
+    """Command-line overrides, so running on a different timeframe does not mean
+    editing this file. Every one of these has a sane default above.
+
+        python mt5_runner.py                    # H1, dry run
+        python mt5_runner.py --tf 5             # 5-minute chart
+        python mt5_runner.py --tf 5 --live      # ...and send real orders
+    """
+    global SYMBOL, TIMEFRAME_MIN, RISK_PCT, DRY_RUN
+    args = sys.argv[1:]
+    i = 0
+    while i < len(args):
+        a = args[i]
+        if a == "--live":
+            DRY_RUN = False
+        elif a in ("-h", "--help"):
+            print(read_args.__doc__)
+            raise SystemExit(0)
+        elif i + 1 < len(args):
+            v = args[i + 1]
+            if a == "--tf":
+                TIMEFRAME_MIN = int(v)
+            elif a == "--symbol":
+                SYMBOL = v
+            elif a == "--risk":
+                RISK_PCT = float(v)
+            else:
+                raise SystemExit(f"unknown option: {a}   (try --help)")
+            i += 1
+        else:
+            raise SystemExit(f"{a} needs a value   (try --help)")
+        i += 1
+
+
 def main():
+    read_args()
     if mt5 is None:
         raise SystemExit("MetaTrader5 package not installed (Windows only): pip install MetaTrader5")
     if not mt5.initialize():
