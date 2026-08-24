@@ -16,10 +16,11 @@ from snrz_core import Candle, Config, SnrzEngine
 
 EXCHANGE = "binance"
 SYMBOL = "BTC/USDT"
-# Feed the engine the ANALYSIS timeframe — the book draws zones on 1H/4H/D and
-# only monitors below. (The indicators pick this automatically from the chart;
-# here it is explicit. Separate lower-TF confirmation is the next step.)
+# The CHART timeframe — the one the bot trades on. The analysis timeframe is
+# derived from it by the captain's ladder (two rungs up, middle one skipped),
+# the same way mt5_runner and both indicators do it.
 TIMEFRAME = "1h"
+TIMEFRAME_MIN = 60
 RISK_PCT = 1.0
 DRY_RUN = True              # True = فقط سیگنال چاپ می‌شود، سفارشی ارسال نمی‌شود
 
@@ -29,7 +30,12 @@ def main():
         "enableRateLimit": True,
         # "apiKey": "...", "secret": "...",
     })
-    engine = SnrzEngine(Config())
+    # was SnrzEngine(Config()) — with no chart_minutes the engine fell back to
+    # a flat htf_mult of 3 instead of following the ladder, so this runner was
+    # marking zones on a different timeframe than mt5_runner and the indicators.
+    engine = SnrzEngine(Config(chart_minutes=TIMEFRAME_MIN))
+    print(f"zones marked on {SnrzEngine.analysis_minutes(TIMEFRAME_MIN)}m, "
+          f"refined and traded on {TIMEFRAME_MIN}m")
 
     ohlcv = ex.fetch_ohlcv(SYMBOL, TIMEFRAME, limit=1000)
     for t, o, h, l, c, _ in ohlcv[:-1]:          # last row may be unclosed
