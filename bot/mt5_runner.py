@@ -24,6 +24,13 @@ SYMBOL = "XAUUSD"
 # below. M15 is a confirmation timeframe, not a zone timeframe.
 TIMEFRAME_MIN = 60
 RISK_PCT = 1.0              # max 1% risk per trade (book rule)
+# The spread must not eat more than this share of a trade's risk. The account's
+# own Market Watch shows 14 (bid 4646.88 / ask 4647.02 at 2 digits = 14 cents),
+# so 0.10 asks for a stop of at least $1.40 in normal conditions. The point of
+# the guard is the abnormal ones: this broker quotes a FLOATING spread, and the
+# news-time widening is what turns a small stop into a losing trade before the
+# market has moved at all.
+MAX_SPREAD_R = 0.10
 MAGIC = 20260819
 ORDER_EXPIRY_BARS = 40      # same as Config.order_expiry_bars in snrz_core
 
@@ -85,10 +92,29 @@ def place(signal, symbol: str, tf_minutes: int):
     The order expires the same way it does in the backtest."""
     tick = mt5.symbol_info_tick(symbol)
     market = tick.ask if signal.side == "buy" else tick.bid
-    volume, info = lots_for_risk(symbol, abs(signal.price - signal.sl), RISK_PCT)
+    sl_distance = abs(signal.price - signal.sl)
+
+    # The spread is paid once, at entry, so in R it is spread / stop distance.
+    # Measured on 83 days of XAUUSD at this account's own 14 cents, that is
+    # 0.3% of the risk on H4 and 6.5% on M1 — the same spread costs twenty
+    # times more on the fast chart, which is why the fast timeframes stop being
+    # profitable long before the slow ones do. The live spread FLOATS, so it is
+    # read here rather than assumed, and the trade is refused when it eats too
+    # much of the risk.
+    spread = max(0.0, tick.ask - tick.bid)
+    spread_r = spread / sl_distance if sl_distance > 0 else 1.0
+    if spread_r > MAX_SPREAD_R:
+        print(f"  SKIPPED — spread is {spread:.2f}, which is "
+              f"{100 * spread_r:.0f}% of the {sl_distance:.2f} stop "
+              f"(limit {100 * MAX_SPREAD_R:.0f}%). Every trade would start "
+              f"that far behind.")
+        return
+
+    volume, info = lots_for_risk(symbol, sl_distance, RISK_PCT)
     if volume is None:
         print(f"  SKIPPED — {info}")
         return
+    print(f"  spread {spread:.2f} = {100 * spread_r:.1f}% of the stop")
     expiry = datetime.now(timezone.utc) + timedelta(
         minutes=tf_minutes * ORDER_EXPIRY_BARS)
 

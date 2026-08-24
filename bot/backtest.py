@@ -3,8 +3,9 @@ SNRZ backtester — replays candles through snrz_core and reports how the setups
 actually resolved, so a rule change can be judged on numbers instead of on the
 look of one screenshot.
 
-    python bot/backtest.py candles.csv          # columns: time,open,high,low,close
-    python bot/backtest.py --synthetic          # built-in random-walk sanity run
+    python bot/backtest.py candles.csv                 # time,open,high,low,close
+    python bot/backtest.py candles.csv --spread 0.14   # charge the real spread
+    python bot/backtest.py --synthetic                 # random-walk sanity run
 
 Outcomes follow the indicator: TP1/TP2/TP3 reached, stopped out, or closed at
 break-even after TP1 paid 1:1 (the book's Zero Float rule).
@@ -60,21 +61,28 @@ class Report:
                 f"win={self.win_rate:5.1f}%  E={self.expectancy_r:+.2f}R")
 
 
-def realized_r(p) -> float:
+def realized_r(p, spread: float = 0.0) -> float:
     """What one finished setup actually paid, in units of its own initial risk.
 
     The book's plan (image 41): money comes off at the 1:1 line and the stop
     goes to entry there, then the rest rides to the zone targets — a quarter
-    at TP2 and a quarter at TP3."""
+    at TP2 and a quarter at TP3.
+
+    `spread` is the broker's bid/ask gap in price units. A round trip crosses
+    it once — in at the ask, out at the bid for a buy — so the whole position
+    pays it once, at entry, whatever the trade later does. In R that is
+    spread / risk, which is why the same 14-cent spread is nothing on an H4
+    stop and a large bite on an M1 one."""
     risk = p.risk0            # break-even overwrites p.sl, so never derive it
     if risk <= 0:
         return 0.0
+    cost = spread / risk if spread > 0 else 0.0
     sign = 1.0 if p.side == "buy" else -1.0
     r1 = sign * (p.tp1 - p.entry) / risk
     r2 = sign * (p.tp2 - p.entry) / risk
     r3 = sign * (p.tp3 - p.entry) / risk
     if p.stat == -1:
-        return -1.0                          # stopped before the 1:1 line
+        return -1.0 - cost                   # stopped before the 1:1 line
     # Image 41: at the 1:1 red line money comes off and the stop goes to
     # entry. p.peak is how far the trade actually got before it ended, which
     # p.stat forgets once the break-even stop closes it.
@@ -83,7 +91,7 @@ def realized_r(p) -> float:
         paid += 0.25 * r2
     if p.peak >= 3:
         paid += 0.25 * r3
-    return paid
+    return paid - cost
 
 
 TF_MINUTES = {"M1": 1, "M5": 5, "M15": 15, "M30": 30,
@@ -100,7 +108,7 @@ def minutes_from_name(path: str) -> int:
     return 0
 
 
-def run(candles: Iterable[Candle], cfg: Config) -> Report:
+def run(candles: Iterable[Candle], cfg: Config, spread: float = 0.0) -> Report:
     eng = SnrzEngine(cfg)
     rep = Report()
     counted: set[int] = set()          # trades already tallied, by (uid, bar)
@@ -111,7 +119,7 @@ def run(candles: Iterable[Candle], cfg: Config) -> Report:
             if not p.closed or key in counted:
                 continue
             counted.add(key)
-            rep.r_total += realized_r(p)
+            rep.r_total += realized_r(p, spread)
             if p.stat == 3:
                 rep.tp3 += 1
             elif p.stat == 2:
@@ -194,10 +202,20 @@ def total(reports: List[Report]) -> Report:
 
 def main() -> None:
     args = sys.argv[1:]
+    # --spread 0.14 charges the broker's real bid/ask gap to every trade. The
+    # MT5 CSV export writes 0 in its spread column, so the number has to come
+    # from Market Watch on the live account, not from the file.
+    spread = 0.0
+    if "--spread" in args:
+        i = args.index("--spread")
+        spread = float(args[i + 1])
+        del args[i:i + 2]
+
     if args and args[0] != "--synthetic":
         rows = read_csv(args[0])
         cfg = Config(chart_minutes=minutes_from_name(args[0]))
-        print(run(rows, cfg).line(args[0]))
+        label = args[0] + (f" (spread {spread:g})" if spread else "")
+        print(run(rows, cfg, spread).line(label))
         return
 
     sets = [
@@ -209,7 +227,7 @@ def main() -> None:
     ]
     books = [synthetic(s) for s in range(1, 13)]
     for label, cfg in sets:
-        print(total([run(b, cfg) for b in books]).line(label))
+        print(total([run(b, cfg, spread) for b in books]).line(label))
     print("\nNOTE: this is a random walk — it has no real support or resistance,")
     print("so an S/R strategy cannot show an edge on it. Use it to check that a")
     print("rule change does not starve the strategy, and export real XAUUSD")
