@@ -1578,8 +1578,34 @@ class SnrzEngine:
         # image 54: when more zones qualify than there are slots, the
         # STRONGEST setups take them — not whichever was created first
         cand.sort(key=lambda t: t[0])
-        for rank, uid, side, kind, po2, lv in cand[:max(0, cfg.max_open - live)]:
+        # ONE order per price. Zones stack on the same band -- the live run
+        # showed "(x5 on this band)" -- and each one used to arm its own order,
+        # so three zones sharing a price produced
+        #     BUY RBS  @ 4650.38  SL 4648.97
+        #     BUY I.VR @ 4650.38  SL 4648.97
+        #     BUY I.VR @ 4650.38  SL 4648.97
+        # which is one idea at three times the intended size and three times
+        # the risk. The strongest zone keeps the price (cand is already sorted
+        # by rank) and the rest are dropped.
+        #
+        # I measured this before and found it cost money to suppress, then read
+        # duplicate ORDERS as rare from that same measurement. Both readings
+        # were made with the analysis timeframe on. single_tf leaves one set of
+        # zones on one chart, stacking is far more common, and this is what it
+        # produces.
+        taken = {(o.side, round(o.entry, 5)) for o in self.orders}
+        taken |= {(t.side, round(t.entry, 5))
+                  for t in self.trades if not t.closed}
+        room = max(0, cfg.max_open - live)
+        for rank, uid, side, kind, po2, lv in cand:
+            if room <= 0:
+                break
             entry, sl, tp1, tp2, tp3 = lv
+            key = (side, round(entry, 5))
+            if key in taken:
+                continue
+            taken.add(key)
+            room -= 1
             out.append(Signal(idx, side, "PO2" if po2 else "limit",
                               kind, entry, sl, tp1, tp2, tp3))
             self.orders.append(PendingOrder(idx, side, kind, po2, uid,

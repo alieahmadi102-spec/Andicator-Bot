@@ -401,7 +401,7 @@ def sync_orders(engine, symbol: str, tf_minutes: int):
                      o.entry, o.sl, o.tp1, o.tp2, o.tp3), symbol, tf_minutes)
 
 
-def show_state(engine):
+def show_state(engine, symbol: str = None):
     """What the engine is actually holding right now. Without this the bot
     printed one line and then sat silent for an hour, which looks broken even
     though it is working."""
@@ -435,6 +435,29 @@ def show_state(engine):
                   f"SL {o.sl:9.2f}  TP1 {o.tp1:9.2f} (next zone)")
     else:
         print("limit orders resting: none — no zone currently qualifies")
+    # What the BROKER has, next to what the bot thinks it has. These two used
+    # to be reported separately and it was never obvious which one was real --
+    # "limit orders resting: 2" with an empty Trade tab looks identical to
+    # "limit orders resting: 2" with both sitting at the broker.
+    if symbol and not DRY_RUN:
+        try:
+            resting, holding = broker_state(symbol)
+            print(f"AT THE BROKER: {len(resting)} order(s), "
+                  f"{len(holding)} position(s)"
+                  + ("   <- nothing sent yet" if not resting and not holding
+                     and engine.orders else ""))
+            for r in resting:
+                print(f"   order    #{r.ticket} {r.volume_current} lots "
+                      f"@ {r.price_open}  SL {r.sl}  TP {r.tp}")
+            for h in holding:
+                print(f"   POSITION #{h.ticket} {h.volume} lots "
+                      f"@ {h.price_open}  SL {h.sl}  TP {h.tp}  "
+                      f"P/L {h.profit:+.2f}")
+        except Exception as e:
+            print(f"(could not read the broker's side: {e})")
+    elif symbol and DRY_RUN:
+        print("AT THE BROKER: nothing — this is a DRY RUN, use LIVE_*.bat to send")
+
     open_trades = [t for t in engine.trades if not t.closed]
     if open_trades:
         print(f"trades running: {len(open_trades)}")
@@ -579,7 +602,7 @@ def main():
     except Exception as e:
         print(f"(could not read the trade history: {e})")
 
-    show_state(engine)
+    show_state(engine, SYMBOL)
     # Orders the warm-up left resting are live setups at today's prices, so
     # they belong at the broker before the first new bar arrives.
     sync_orders(engine, SYMBOL, TIMEFRAME_MIN)
@@ -643,7 +666,7 @@ def main():
             place(sig, SYMBOL, TIMEFRAME_MIN)
         sync_orders(engine, SYMBOL, TIMEFRAME_MIN)
         if sigs:
-            show_state(engine)
+            show_state(engine, SYMBOL)
 
 
 if __name__ == "__main__":
