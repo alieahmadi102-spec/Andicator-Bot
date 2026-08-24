@@ -70,10 +70,9 @@ class Zone:
     pend_bar: int = -1          # bar a still-unconfirmed break happened on
     pend_dir: int = 0           # +1 broke up · -1 broke down
     far: bool = False           # too far from price to be worth drawing
-    in_lo: float = 0.0          # the chart swings seen INSIDE this analysis
-    in_hi: float = 0.0          # zone, and how many — the refinement layer
-    in_n: int = 0
-    refined: bool = False
+    refined: bool = False       # the analysis band was redrawn from the chart
+    raw_top: float = 0.0        # the band as the ANALYSIS timeframe drew it,
+    raw_bot: float = 0.0        # kept only so the chart can still show it
     await_pull: int = -1        # broke on this bar and is waiting for the
                                 # pullback swing that becomes the real level
 
@@ -151,7 +150,6 @@ class Config:
     # The analysis zone is drawn from the STRUCTURE of the turn, so its cap is
     # a sanity bound rather than a shape — the shape comes from the candles.
     htf_struct_zone: bool = True
-    refine_max_touch: int = 0   # refining is still allowed up to this touch
     htf_struct_bars: int = 3
     max_zone_atr_htf: float = 1.0   # ...and the analysis zones have their own
     max_zone_atr: float = 0.4   # a zone 1 ATR tall is a region, not a zone —
@@ -247,12 +245,17 @@ class Config:
     # 15-minute and draw SMALLER zones INSIDE them, then confirm on the
     # 5-minute. So an analysis zone is not traded at its own wide edge — it is
     # first TIGHTENED to the chart-timeframe structure standing inside it.
-    # OFF: the captain's screenshots show the H4 box staying exactly as drawn
-    # with a SEPARATE 15M box inside it — he never shrinks the big one. And the
-    # chart zone already places its own order at its own tight edge, so
-    # shrinking the analysis zone adds nothing to the entry while spoiling the
-    # H4 zone's job as context and as a target.
-    refine_htf: bool = False
+    # ON, and it is the captain's own rule, not an optimisation:
+    #   «در یک دقیقه اون زون ۱۵ دقیقه برداشته میشه، روی زونی که یک دقیقه
+    #    مشخص کرده حساب میشه، و وقتی قیمت پول‌بک زد معامله انجام میشه»
+    # On the entry chart the analysis band is LIFTED and the tight band the
+    # entry chart drew inside it is what the trade uses. The wide band is not
+    # deleted — raw_top/raw_bot keep it for the drawing and for context — but
+    # the order, the stop and the touches all belong to the tight one.
+    # I had this OFF before because the screenshots show the big box unchanged;
+    # they do, ON ITS OWN CHART. Both are true: the box stays drawn where the
+    # analysis timeframe put it, and the trade is taken off the smaller one.
+    refine_htf: bool = True
     require_nested: bool = False   # as a GATE: measured much worse
     nested_bonus: bool = True      # ...as a PREFERENCE instead
     order_expiry_bars: int = 10   # a limit order that never fills must expire —
@@ -445,11 +448,17 @@ class SnrzEngine:
                 top = bot + mx
             else:
                 bot = top - mx
+        raw_top, raw_bot = top, bot
+        if htf and self.cfg.refine_htf:
+            top, bot = self._refine_from_chart(top, bot, role)
         self._zone_seq += 1
         self.zones.append(Zone(top, bot, role,
                                state=State.VALID if valid else State.FRESH,
                                uid=self._zone_seq, htf=htf, born_index=idx,
-                               src=src))
+                               src=src + (" ref" if top != raw_top or bot != raw_bot
+                                          else ""),
+                               raw_top=raw_top, raw_bot=raw_bot,
+                               refined=(top != raw_top or bot != raw_bot)))
         cap = self.cfg.max_zones_htf if htf else self.cfg.max_zones_ltf
         while sum(1 for z in self.zones if z.htf == htf) > cap:
             same = [i for i, z in enumerate(self.zones) if z.htf == htf]
@@ -637,9 +646,6 @@ class SnrzEngine:
             sw = Swing(price, is_high, p)
             if cfg.flip_needs_pullback:
                 self._reanchor_flipped(price, is_high, atr, idx, htf)
-            if cfg.refine_htf and not htf:
-                self._refine_inner(price, atr)
-
             if not cfg.pair_zones:
                 # the old behaviour: one pivot, one zone
                 if is_high:
@@ -947,43 +953,61 @@ class SnrzEngine:
                 lo = min(lo, min(min(w.open, w.close) for w in seg))
         return (hi, lo) if hi > lo else (top, bot)
 
-    def _refine_inner(self, price: float, atr: float):
-        """The captain's middle timeframe, in code.
+    def _refine_from_chart(self, top: float, bot: float, role: Role):
+        """The captain's own words, in code:
 
-        He marks a zone on the 1-hour, then drops to the 15-minute and draws a
-        SMALLER zone inside it. So when chart-timeframe swings print INSIDE an
-        analysis zone, that zone is re-drawn as the band those swings bracket —
-        the same "band between two points" rule as everywhere else in SNRZ,
-        applied one level down.
+        «وقتی زون بزرگ در تایم ۱۵ دقیقه مشخص شد و به ۱ دقیقه می‌روی، آن زون
+        کوچک‌تر می‌شود چون کندل‌ها کوچک‌ترند. در یک دقیقه آن زونِ ۱۵ دقیقه
+        برداشته می‌شود و روی زونی که یک دقیقه مشخص کرده حساب می‌شود.»
 
-        It happens once, on the second inner swing, and only while the zone is
-        untouched and carries no order: moving a band an order is already
-        resting on would move the trade after the fact."""
+        The important part is WHICH candles do the redrawing. It is not price
+        coming back later — the 15-minute zone and the 1-minute zone are drawn
+        from THE SAME MINUTES, just at a finer resolution. One 15-minute candle
+        with a five-dollar lower wick is fifteen 1-minute candles, and the turn
+        itself only occupied three of them. So the chart candles that built the
+        analysis zone are re-read here, the one holding the extreme is found,
+        and the band is drawn around ITS little cluster with the ordinary SNRZ
+        geometry — wick side out to the extreme, body side in to the closes.
+
+        The wide band is not thrown away: `raw_top`/`raw_bot` keep it so the
+        chart can still outline where the analysis timeframe saw the level.
+        But the order, the stop and the touch counting all use the tight one,
+        which is what "the 15-minute zone is lifted" means for a trade."""
         cfg = self.cfg
-        for z in self.zones:
-            if not z.htf or z.dead or z.refined:
+        n = len(self.candles)
+        # The analysis pivot needs pivot_htf bars each side to be confirmed, so
+        # the turn it marks lies inside that many analysis bars of chart candles.
+        span = max(1, cfg.htf_mult) * (2 * cfg.pivot_htf + 1)
+        lo_i = max(0, n - span)
+        best, best_px = -1, None
+        for i in range(lo_i, n):
+            c = self.candles[i]
+            if c.high < bot or c.low > top:            # never visited the band
                 continue
-            if z.touches > cfg.refine_max_touch:
-                continue
-            if not (z.bot <= price <= z.top):
-                continue
-            if self._has_order_or_trade(z.uid):
-                continue
-            z.in_lo = price if z.in_n == 0 else min(z.in_lo, price)
-            z.in_hi = price if z.in_n == 0 else max(z.in_hi, price)
-            z.in_n += 1
-            if z.in_n < 2:
-                continue                      # one point is not a band
-            top, bot = z.in_hi, z.in_lo
-            mn = atr * cfg.min_zone_atr
-            if top - bot < mn:                # keep it a zone, not a hair
-                mid = (top + bot) / 2.0
-                top, bot = mid + mn / 2.0, mid - mn / 2.0
-            if top - bot >= z.top - z.bot:
-                z.refined = True              # no tighter than it already was
-                continue
-            z.top, z.bot, z.refined = top, bot, True
-            z.src = z.src + " ref"
+            px = max(bot, min(top, c.low if role == Role.SUPPORT else c.high))
+            if best_px is None or (px < best_px if role == Role.SUPPORT
+                                   else px > best_px):
+                best, best_px = i, px
+        if best < 0:
+            return top, bot
+
+        k = cfg.htf_struct_bars
+        seg = self.candles[max(0, best - k): min(n, best + k + 1)]
+        if role == Role.SUPPORT:
+            nb = max(bot, min(w.low for w in seg))
+            nt = min(top, max(max(w.open, w.close) for w in seg))
+        else:
+            nt = min(top, max(w.high for w in seg))
+            nb = max(bot, min(min(w.open, w.close) for w in seg))
+
+        atr = self._atr() or 0.0
+        mn = atr * cfg.min_zone_atr
+        if nt - nb < mn:                 # still a zone, not a hair line
+            mid = (nt + nb) / 2.0
+            nt, nb = min(top, mid + mn / 2.0), max(bot, mid - mn / 2.0)
+        if nt <= nb or nt - nb >= top - bot:
+            return top, bot              # no tighter than it already was
+        return nt, nb
 
     def _nested(self, z: "Zone") -> bool:
         """p14: the small zone sits INSIDE the big one."""

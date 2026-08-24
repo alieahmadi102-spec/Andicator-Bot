@@ -31,7 +31,7 @@
 //                  TP3 = the one beyond. 1R/2R/3R when no zone sits there.
 //  SCALP vs SWING (book): M5/M15 = SCALP · H1/H4/Daily = SWING.
 // ═══════════════════════════════════════════════════════════════════════════
-indicator("SNRZ Strategy [Zindan] v9", "SNRZ v10.2", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500)
+indicator("SNRZ Strategy [Zindan] v9", "SNRZ v10.8", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500, max_bars_back = 500)
 
 // ───────────────────────────── Inputs ──────────────────────────────────────
 grpZ  = "Zones (SNRZ)"
@@ -39,7 +39,7 @@ htfIn         = input.timeframe("", "Analysis timeframe (empty = AUTO, one rung 
 structZone    = input.bool(true, "زونِ تایمِ تحلیل از **ساختارِ چرخش** کشیده شود", group = grpZ, tooltip = "کاپیتان باکسِ ۱ ساعته را باریک نمی‌کشد — کلِ ناحیه‌ی چرخش را می‌گیرد: از نوکِ سایه تا بدنه‌ی آن‌طرف، دورِ **هر دو** نقطه‌ی جفت. همین است که به لایه‌ی ۱۵ دقیقه چیزی برای کوچک‌کردن می‌دهد.\n\nروی ۸۳ روز XAUUSD: M5 از +۰٫۱۰۴ به +۰٫۱۱۰ و H4 از +۰٫۳۳ به +۰٫۴۲ بهتر شد، ولی H1 از −۰٫۰۵ به −۰٫۱۴ بدتر. میانه تقریباً ثابت.")
 structBars    = input.int(3, "…چند کندل هر طرفِ پیوت جزو چرخش است", minval = 1, maxval = 10, group = grpZ)
 maxZoneATRHtf = input.float(1.0, "سقفِ ارتفاعِ زونِ تایمِ تحلیل (ATR ×)", minval = 0.1, step = 0.1, group = grpZ, tooltip = "زونِ تحلیل شکلش را از ساختار می‌گیرد، پس این عدد فقط یک حدِ ایمنی است نه شکل‌دهنده.")
-refineHtf     = input.bool(false, "زونِ تایمِ تحلیل را کوچک کن (پیش‌فرض: نه)", group = grpZ, tooltip = "اسکرین‌شات‌های خودِ کاپیتان نشان می‌دهند باکسِ H4 **دست‌نخورده** می‌ماند و یک باکسِ **جدا** ی ۱۵ دقیقه داخلش کشیده می‌شود. ضمناً زونِ چارت از قبل اردرِ خودش را روی لبه‌ی تنگِ خودش می‌گذارد، پس کوچک‌کردنِ زونِ تحلیل چیزی به ورود اضافه نمی‌کند و فقط نقشِ H4 را به‌عنوان زمینه و تارگت خراب می‌کند."
+refineHtf     = input.bool(true, "روی چارت، زونِ تایمِ تحلیل کوچک شود (قانونِ کاپیتان)", group = grpZ, tooltip = "«وقتی زونِ بزرگ در ۱۵ دقیقه مشخص شد و به ۱ دقیقه می‌روی، آن زون کوچک‌تر می‌شود چون کندل‌ها کوچک‌ترند. در یک دقیقه آن زونِ ۱۵ دقیقه **برداشته می‌شود** و روی زونی که یک دقیقه مشخص کرده حساب می‌شود، و وقتی قیمت پول‌بک زد معامله انجام می‌شود.»\n\nنکته این است که **کدام کندل‌ها** آن را دوباره می‌کشند: قیمتِ آینده نه — همان دقیقه‌ها با دقتِ بالاتر. یک کندلِ ۱۵ دقیقه‌ای با سایه‌ی ۵ دلاری، پانزده کندلِ ۱ دقیقه‌ای است و خودِ چرخش فقط سه‌تایش را گرفته.\n\nباکسِ پهن حذف نمی‌شود — با خطِ نقطه‌چین می‌ماند تا ببینی تایمِ تحلیل کجا سطح را دیده. ولی اردر، استاپ و شمارشِ برخورد همه مالِ باکسِ تنگ‌اند.\n\nروی ۸۳ روز XAUUSD با اسپردِ واقعی ۱۴ سنت: M5 از −۰٫۰۰۷ به **+۰٫۰۱۹** · M15 از −۰٫۰۲۲ به **+۰٫۰۰۱** · M30 از −۰٫۰۷۳ به **−۰٫۰۲۵** · M1 از −۰٫۰۹۶ به −۰٫۰۸۷. H1 و H4 عملاً ثابت (اختلافشان روی ۱۵۵ و ۵۳ معامله در حدِ نویز است).")
 htfSkipRung   = input.bool(true, "تایمِ تحلیل دو پله بالاتر (نردبانِ کاپیتان)", group = grpZ, tooltip = "قانونِ خودِ کاپیتان با سه مثال: «۱ ساعته زون مشخص می‌شود، می‌رود روی ۱۵ دقیقه: زون کوچک‌تر + تأیید + ورود» · «۳۰ دقیقه ⇒ ۵ دقیقه» · «۱۵ دقیقه ⇒ ۱ دقیقه». هر سه **دو پله** پایین‌ترند — همان ستونِ SKIP جدولِ کتاب.\n\nروی ۸۳ روز XAUUSD: H1 برای اولین بار مثبت شد (−۰٫۱۱ ⇒ **+۰٫۱۵**) و M30 کمی بهتر، ولی M5 از +۰٫۱۱ به +۰٫۰۲ و M15 از +۰٫۰۸ به −۰٫۰۱ افتاد. روشن است چون قانونِ کاپیتان است، نه چون عدد بهتر شد — خاموشش کنی به ضریبِ ثابتِ ۳ برمی‌گردد.")
 pivotLtf      = input.int(5,    "Pivot length — chart zones",              minval = 2,  group = grpZ, tooltip = "کوچک‌تر = زون بیشتر روی خود چارت = سیگنال بیشتر در تایم‌های پایین.")
 pivotHtf      = input.int(8,    "Pivot length — analysis zones",           minval = 2,  group = grpZ)
@@ -300,11 +300,11 @@ type Zone
     int   bornBar
     bool  far        //  too far from price to be worth drawing (still a target)
     int   awaitPull  //  broke on this bar, waiting for the pullback swing
-    float inLo       //  the chart swings seen INSIDE this analysis zone,
-    float inHi       //  and how many — the captain's middle timeframe
-    int   inN
+    float rawTop     //  the band as the ANALYSIS timeframe drew it, kept only
+    float rawBot     //  so the chart can still outline it once it is refined
     bool  refined
     box   bx
+    box   bxRaw      //  that outline (na while the zone was never refined)
     line  mid
 
 var zones = array.new<Zone>()
@@ -353,6 +353,63 @@ refreshZone(Zone z) =>
     box.set_text_halign(z.bx, text.align_right)
     line.set_xy2(z.mid, bar_index + 10, (z.top + z.bot) / 2)
     line.set_color(z.mid, hidden ? color.new(color.gray, 100) : color.new(c, 55))
+    // the wide analysis band the tight one was carved out of — outline only,
+    // so you can still see where the 1-hour chart saw the level
+    if not na(z.bxRaw)
+        box.set_rightbottom(z.bxRaw, bar_index + 10, z.rawBot)
+        box.set_border_color(z.bxRaw, hidden ? color.new(color.gray, 100) : color.new(c, 60))
+
+// The captain's middle layer, in code:
+//   «وقتی زون بزرگ در ۱۵ دقیقه مشخص شد و به ۱ دقیقه می‌روی، آن زون کوچک‌تر
+//    می‌شود چون کندل‌ها کوچک‌ترند. در یک دقیقه آن زونِ ۱۵ دقیقه برداشته می‌شود
+//    و روی زونی که یک دقیقه مشخص کرده حساب می‌شود.»
+// The key is WHICH candles redraw it. Not price coming back later — the
+// 15-minute zone and the 1-minute zone are drawn from THE SAME MINUTES at a
+// finer resolution. One 15-minute candle with a five-dollar wick is fifteen
+// 1-minute candles and the turn itself only used three of them. So the chart
+// candles that built this analysis band are re-read, the one holding the
+// extreme is found, and the band is redrawn around ITS little cluster with the
+// ordinary SNRZ geometry: wick side out to the extreme, body side in.
+refineFromChart(float _top, float _bot, int _role) =>
+    // the analysis pivot needs pivotHtf bars each side to confirm, so its turn
+    // lies within that many analysis bars of chart candles
+    int span = math.min(400, int(math.round(tfRatio)) * (2 * pivotHtf + 1))
+    int   best   = -1
+    float bestPx = na
+    for i = 0 to span
+        if high[i] >= _bot and low[i] <= _top
+            px = math.max(_bot, math.min(_top, _role == 1 ? low[i] : high[i]))
+            if na(bestPx) or (_role == 1 ? px < bestPx : px > bestPx)
+                best   := i
+                bestPx := px
+    float t = _top
+    float b = _bot
+    if best >= 0
+        int k  = structBars
+        int lo = math.max(0, best - k)
+        int hi = math.min(span, best + k)
+        float ex   = na          // the extreme  (wick side)
+        float body = na          // the closes   (body side)
+        for i = lo to hi
+            e = _role == 1 ? low[i] : high[i]
+            y = _role == 1 ? math.max(open[i], close[i]) : math.min(open[i], close[i])
+            ex   := na(ex)   ? e : (_role == 1 ? math.min(ex, e)     : math.max(ex, e))
+            body := na(body) ? y : (_role == 1 ? math.max(body, y)   : math.min(body, y))
+        if _role == 1
+            b := math.max(_bot, ex)
+            t := math.min(_top, body)
+        else
+            t := math.min(_top, ex)
+            b := math.max(_bot, body)
+        mn = atr * minZoneATR
+        if t - b < mn                    // still a zone, not a hair line
+            m = (t + b) / 2
+            t := math.min(_top, m + mn / 2)
+            b := math.max(_bot, m - mn / 2)
+        if t <= b or t - b >= _top - _bot
+            t := _top                    // no tighter than it already was
+            b := _bot
+    [t, b]
 
 newZone(float _top, float _bot, int _role, bool _htf, int _uid, float _atr, int _back, bool _paired) =>
     h  = _top - _bot
@@ -371,11 +428,23 @@ newZone(float _top, float _bot, int _role, bool _htf, int _uid, float _atr, int 
             t := b + mx
         else
             b := t - mx
+    float rawT = t
+    float rawB = b
+    if _htf and refineHtf
+        [rt, rb] = refineFromChart(t, b, _role)
+        t := rt
+        b := rb
+    bool wasRef = t != rawT or b != rawB
     x1 = bar_index - _back
     bx = box.new(x1, t, bar_index + 10, b, border_color = color.new(color.gray, 60), bgcolor = colSup)
+    // NOT a ternary: `?:` evaluates both branches, so box.new() would run and
+    // leak a box on every unrefined zone
+    box bxr = na
+    if wasRef
+        bxr := box.new(x1, rawT, bar_index + 10, rawB, border_color = color.new(color.gray, 60), bgcolor = color.new(color.gray, 100), border_style = line.style_dotted)
     md = line.new(x1, (t + b) / 2, bar_index + 10, (t + b) / 2, style = line.style_dashed, color = color.new(color.gray, 55))
     // a paired zone already HAS its two movements (p35), so it is born VALID
-    Zone.new(t, b, _role, _paired ? 1 : 0, 0, 0, 0, 0, _uid, _htf, false, false, false, _paired, 0, false, -1, 0, bar_index, false, -1, 0.0, 0.0, 0, false, bx, md)
+    Zone.new(t, b, _role, _paired ? 1 : 0, 0, 0, 0, 0, _uid, _htf, false, false, false, _paired, 0, false, -1, 0, bar_index, false, -1, rawT, rawB, wasRef, bx, bxr, md)
 
 // Overlap is checked WITHIN a set only — a small chart zone is expected to sit
 // inside a big analysis zone. An exhausted zone reserves nothing: the book says
@@ -391,6 +460,8 @@ overlaps(float _top, float _bot, bool _htf) =>
 killZone(int idx) =>
     Zone z = array.get(zones, idx)
     box.delete(z.bx)
+    if not na(z.bxRaw)
+        box.delete(z.bxRaw)
     line.delete(z.mid)
     array.remove(zones, idx)
 
@@ -781,34 +852,6 @@ liveCount() =>
 // the second inner swing, and only while the zone is untouched and carries no
 // order: moving a band an order already rests on would move the trade after
 // the fact.
-refineInner(float _price, float _atr) =>
-    if refineHtf and not na(_price) and array.size(zones) > 0
-        for i = 0 to array.size(zones) - 1
-            Zone z = array.get(zones, i)
-            if z.htf and not z.dead and not z.refined and z.touches == 0 and _price >= z.bot and _price <= z.top and not hasOrder(z.uid)
-                z.inLo := z.inN == 0 ? _price : math.min(z.inLo, _price)
-                z.inHi := z.inN == 0 ? _price : math.max(z.inHi, _price)
-                z.inN  := z.inN + 1
-                if z.inN >= 2
-                    float t = z.inHi
-                    float b = z.inLo
-                    mn = _atr * minZoneATR
-                    if t - b < mn
-                        m = (t + b) / 2
-                        t := m + mn / 2
-                        b := m - mn / 2
-                    if t - b < z.top - z.bot
-                        z.top := t
-                        z.bot := b
-                    z.refined := true
-
-// the chart swings of THIS bar, offered to the analysis zones they fall inside
-refineInner(plL, atr)
-refineInner(phL, atr)
-if lineZones
-    refineInner(plLc, atr)
-    refineInner(phLc, atr)
-
 // Master class image 44 names exactly which zones may BE a target:
 // "V.S, V.R, PO2 Fresh, PO2 Inversion, False breakout area". A plain untested
 // S/R, an SBR/RBS or an SRR/RSS is a place to enter FROM, not to aim AT.

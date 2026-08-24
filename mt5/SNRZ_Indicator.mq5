@@ -14,7 +14,7 @@
 //|   • One position at a time with SL / TP1 / TP2 / TP3 drawn       |
 //+------------------------------------------------------------------+
 #property copyright   "SNRZ (Zindan The Gold Chaser) — indicator port"
-#property version     "10.70"
+#property version     "10.80"
 #property description "SNRZ: chart zones AND analysis zones together (book p.41/p.44), one trade at a time"
 #property indicator_chart_window
 #property indicator_buffers 4
@@ -71,7 +71,7 @@ input int    InpPairLookback = 20;    // ...searching the last N swings
 input bool   InpStructZone   = true;  // Draw the analysis zone from the STRUCTURE of the turn
 input int    InpStructBars   = 3;     // ...how many candles either side of the pivot count as the turn
 input double InpMaxZoneATRHtf= 1.0;   // Analysis-zone height cap (ATR x) - a sanity bound only
-input bool   InpRefineHtf    = false;  // Tighten an analysis zone to the chart structure inside it
+input bool   InpRefineHtf    = true;   // On the chart, redraw the analysis zone from the chart candles (captain's rule)
 input bool   InpLineZones    = true;  // Draw LINE-CHART zones too (images 31/12/13)
 input bool   InpFlipNeedsPullback = true; // A broken level trades at the PULLBACK swing, not the old band
 input bool   InpLineSingleLevels = true; // On a line chart every peak is an R and every trough an S
@@ -164,9 +164,8 @@ struct SZone
    bool     paired;    // drawn from TWO swings (p24) — born valid, needs 1 touch
    bool     far;       // too far from price to draw — still a valid target
    int      awaitPull; // broke on this bar, waiting for the pullback swing
-   double   inLo;      // the chart swings seen INSIDE this analysis zone,
-   double   inHi;      // and how many - the captain's middle timeframe
-   int      inN;
+   double   rawTop;    // the band as the ANALYSIS timeframe drew it, kept so
+   double   rawBot;    // the chart can still outline it once it is refined
    bool     refined;
    int      falseBreaks; // how many times broken and respected again
    bool     fba;       // TWO of those = a False Breakout Area
@@ -349,6 +348,8 @@ void OnDeinit(const int reason)
 //+------------------------------------------------------------------+
 string ZoneName(const long id)     { return g_prefix + "Z_" + (string)id; }
 string ZoneLblName(const long id)  { return g_prefix + "L_" + (string)id; }
+// the wide analysis band a refined zone was carved out of - outline only
+string ZoneRawName(const long id)  { return g_prefix + "W_" + (string)id; }
 
 color ZoneColor(const SZone &z)
   {
@@ -373,6 +374,8 @@ string ZoneText(const SZone &z)
   }
 
 void DeleteZone(const SZone &z);
+void RefineFromChart(double &top, double &bot, const int role,
+                     const datetime born, const double atr);
 
 // Images 39 and 44: a zone that is still plain FRESH gives no entry and cannot
 // be a target either, so by default it stays off the chart. What the method
@@ -410,6 +413,27 @@ void DrawZone(const SZone &z, const datetime t1, const datetime t2)
    ObjectSetDouble (0, nm, OBJPROP_PRICE, 1, z.bot);
    ObjectSetInteger(0, nm, OBJPROP_COLOR, ZoneColor(z));
 
+   // where the ANALYSIS timeframe saw the level, before the chart candles
+   // redrew it. Outline only, so the tight band stays the one you read.
+   string rw = ZoneRawName(z.id);
+   if(z.refined)
+     {
+      if(ObjectFind(0, rw) < 0)
+        {
+         ObjectCreate(0, rw, OBJ_RECTANGLE, 0, t1, z.rawTop, t2, z.rawBot);
+         ObjectSetInteger(0, rw, OBJPROP_FILL, false);
+         ObjectSetInteger(0, rw, OBJPROP_BACK, true);
+         ObjectSetInteger(0, rw, OBJPROP_STYLE, STYLE_DOT);
+         ObjectSetInteger(0, rw, OBJPROP_SELECTABLE, false);
+         ObjectSetInteger(0, rw, OBJPROP_HIDDEN, true);
+        }
+      ObjectSetInteger(0, rw, OBJPROP_TIME,  0, t1);
+      ObjectSetDouble (0, rw, OBJPROP_PRICE, 0, z.rawTop);
+      ObjectSetInteger(0, rw, OBJPROP_TIME,  1, t2);
+      ObjectSetDouble (0, rw, OBJPROP_PRICE, 1, z.rawBot);
+      ObjectSetInteger(0, rw, OBJPROP_COLOR, ZoneColor(z));
+     }
+
    string ln = ZoneLblName(z.id);
    if(ObjectFind(0, ln) < 0)
      {
@@ -434,6 +458,7 @@ void DeleteZone(const SZone &z)
   {
    ObjectDelete(0, ZoneName(z.id));
    ObjectDelete(0, ZoneLblName(z.id));
+   ObjectDelete(0, ZoneRawName(z.id));
   }
 
 void RemoveZoneAt(const int idx)
@@ -646,6 +671,13 @@ void AddZone(double top, double bot, const int role, const int bornH, const doub
       if(role == 1) top = bot + mx;
       else          bot = top - mx;
      }
+   double rawTop = top, rawBot = bot;
+   bool   refined = false;
+   if(htf && InpRefineHtf)
+     {
+      RefineFromChart(top, bot, role, t2, atr);
+      refined = (top != rawTop || bot != rawBot);
+     }
    int n = ArraySize(g_zones);
    ArrayResize(g_zones, n + 1);
    g_zones[n].top        = top;
@@ -669,8 +701,9 @@ void AddZone(double top, double bot, const int role, const int bornH, const doub
    g_zones[n].paired     = paired;
    g_zones[n].far        = false;
    g_zones[n].awaitPull  = -1;
-   g_zones[n].inLo = 0.0;  g_zones[n].inHi = 0.0;
-   g_zones[n].inN  = 0;    g_zones[n].refined = false;
+   g_zones[n].rawTop = rawTop;
+   g_zones[n].rawBot = rawBot;
+   g_zones[n].refined = refined;
    g_zones[n].falseBreaks = 0;
    g_zones[n].fba        = false;
    g_zones[n].pendBar    = -1;
@@ -751,48 +784,107 @@ void ReanchorFlipped(const double price, const bool isHigh, const double atr,
   }
 
 //+------------------------------------------------------------------+
-//| The captain's middle timeframe, in code. He marks a zone on the  |
-//| 1-hour, drops to the 15-minute and draws a SMALLER zone INSIDE   |
-//| it, then confirms on the 5-minute. So when chart swings print    |
-//| inside an analysis zone, that zone is re-drawn as the band those |
-//| swings bracket - the same "band between two points" rule as the  |
-//| rest of SNRZ, one level down. Once only, on the second inner     |
-//| swing, and only while the zone is untouched and carries no order.|
+//| The captain's middle layer, in his own words: when the big zone  |
+//| is marked on 15m and you go to 1m, that zone gets SMALLER,       |
+//| because the candles are smaller. On 1m the 15-minute zone is     |
+//| LIFTED and the zone the 1-minute chart drew is what counts; when |
+//| price pulls back to it, the trade is taken.                      |
+//|                                                                  |
+//| The key is WHICH candles redraw it. Not price returning later -  |
+//| the 15m zone and the 1m zone are drawn from THE SAME MINUTES at  |
+//| a finer resolution. One 15m candle with a five-dollar wick is    |
+//| fifteen 1m candles and the turn only used three of them. So the  |
+//| chart candles that built this band are re-read, the one holding  |
+//| the extreme is found, and the band is redrawn around ITS little  |
+//| cluster with the ordinary SNRZ geometry: wick side out to the    |
+//| extreme, body side in to the closes.                             |
+//|                                                                  |
+//| rawTop/rawBot keep the wide band for the drawing; the order, the |
+//| stop and the touch count all belong to the tight one.            |
 //+------------------------------------------------------------------+
-void RefineInner(const double price, const double atr)
+void RefineFromChart(double &top, double &bot, const int role,
+                     const datetime born, const double atr)
   {
-   if(!InpRefineHtf)
+   // the analysis pivot needs InpPivotHtf bars each side to confirm, so its
+   // turn lies within that many analysis bars of chart candles
+   double ratio = (double)PeriodSeconds(g_atf) / (double)PeriodSeconds(_Period);
+   int span = (int)MathMin(400.0, MathMax(1.0, ratio) * (2 * InpPivotHtf + 1));
+   int base = iBarShift(_Symbol, _Period, born, false);
+   if(base < 0)
       return;
-   for(int i = 0; i < ArraySize(g_zones); i++)
+
+   int    best = -1;
+   double bestPx = 0.0;
+   for(int k = 0; k <= span; k++)
      {
-      if(!g_zones[i].htf || g_zones[i].dead || g_zones[i].refined)
-         continue;
-      if(g_zones[i].touches > 0)
-         continue;
-      if(price < g_zones[i].bot || price > g_zones[i].top)
-         continue;
-      if(HasOrder(g_zones[i].id))
-         continue;
-      g_zones[i].inLo = (g_zones[i].inN == 0) ? price : MathMin(g_zones[i].inLo, price);
-      g_zones[i].inHi = (g_zones[i].inN == 0) ? price : MathMax(g_zones[i].inHi, price);
-      g_zones[i].inN++;
-      if(g_zones[i].inN < 2)
-         continue;
-      double t = g_zones[i].inHi, b = g_zones[i].inLo;
-      double mn = atr * InpMinZoneATR;
-      if(t - b < mn)
+      int    sh = base + k;
+      double h  = iHigh(_Symbol, _Period, sh);
+      double l  = iLow (_Symbol, _Period, sh);
+      if(h <= 0.0 || l <= 0.0)
+         break;                                  // ran out of history
+      if(h < bot || l > top)
+         continue;                               // never visited the band
+      double px = MathMax(bot, MathMin(top, role == 1 ? l : h));
+      if(best < 0 || (role == 1 ? px < bestPx : px > bestPx))
         {
-         double m = (t + b) / 2.0;
-         t = m + mn / 2.0;
-         b = m - mn / 2.0;
+         best   = sh;
+         bestPx = px;
         }
-      if(t - b < g_zones[i].top - g_zones[i].bot)
-        {
-         g_zones[i].top = t;
-         g_zones[i].bot = b;
-        }
-      g_zones[i].refined = true;
      }
+   if(best < 0)
+      return;
+
+   int    k0 = InpStructBars;
+   double ex = 0.0, body = 0.0;
+   bool   got = false;
+   for(int sh = MathMax(0, best - k0); sh <= best + k0; sh++)
+     {
+      double o = iOpen (_Symbol, _Period, sh);
+      double c = iClose(_Symbol, _Period, sh);
+      double h = iHigh (_Symbol, _Period, sh);
+      double l = iLow  (_Symbol, _Period, sh);
+      if(o <= 0.0 || c <= 0.0)
+         continue;
+      double e = (role == 1) ? l : h;
+      double y = (role == 1) ? MathMax(o, c) : MathMin(o, c);
+      if(!got)
+        {
+         ex = e;  body = y;  got = true;
+        }
+      else if(role == 1)
+        {
+         ex = MathMin(ex, e);  body = MathMax(body, y);
+        }
+      else
+        {
+         ex = MathMax(ex, e);  body = MathMin(body, y);
+        }
+     }
+   if(!got)
+      return;
+
+   double t, b;
+   if(role == 1)
+     {
+      b = MathMax(bot, ex);
+      t = MathMin(top, body);
+     }
+   else
+     {
+      t = MathMin(top, ex);
+      b = MathMax(bot, body);
+     }
+   double mn = atr * InpMinZoneATR;
+   if(t - b < mn)                                // still a zone, not a hair
+     {
+      double m = (t + b) / 2.0;
+      t = MathMin(top, m + mn / 2.0);
+      b = MathMax(bot, m - mn / 2.0);
+     }
+   if(t <= b || t - b >= top - bot)
+      return;                                    // no tighter than it was
+   top = t;
+   bot = b;
   }
 
 //+------------------------------------------------------------------+
@@ -1343,7 +1435,6 @@ int OnCalculate(const int rates_total,
            {
             g_cPrevHigh = g_cHigh;  g_cHigh = high[pc];
             ReanchorFlipped(high[pc], true, atr, false, pc, high, low);
-            RefineInner(high[pc], atr);
             MateSeg(false, high[pc], pc, atr, high, low, fHiC, fLoC);
             EngulfPair(open, high, low, close, pc, true, rates_total, eTC, eBC);
             StructBand(open, high, low, close, pc, rates_total, true, sLoC, sHiC);
@@ -1356,7 +1447,6 @@ int OnCalculate(const int rates_total,
            {
             g_cPrevLow = g_cLow;    g_cLow = low[pc];
             ReanchorFlipped(low[pc], false, atr, false, pc, high, low);
-            RefineInner(low[pc], atr);
             MateSeg(false, low[pc], pc, atr, high, low, fHiC, fLoC);
             EngulfPair(open, high, low, close, pc, false, rates_total, eTC, eBC);
             StructBand(open, high, low, close, pc, rates_total, false, sLoC, sHiC);
@@ -1389,7 +1479,6 @@ int OnCalculate(const int rates_total,
                   loRunL = MathMin(loRunL, close[k]);
                  }
                double lHi = 0.0, lLo = 0.0;
-               RefineInner(close[pc], atr);   // the line swing counts too
                if(lPH)
                  {
                   MateSeg(false, close[pc], pc, atr, high, low, lHi, lLo, true);
