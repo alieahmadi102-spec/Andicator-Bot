@@ -581,10 +581,29 @@ class SnrzEngine:
                     if gone < atr * self.cfg.big_move_atr:
                         continue
             half = max(atr * self.cfg.min_zone_atr, 1e-9) / 2.0
-            z.top, z.bot = price + half, price - half
+            top, bot = price + half, price - half
+            # A zone is only ever checked for overlap where it is CREATED, so
+            # moving one here could drop it straight on top of a live zone —
+            # which is what put two boxes with the same label on top of each
+            # other on the 15m and 4h charts. The zone itself does not count
+            # as its own obstacle.
+            # Two boxes can legitimately sit on one price here: the pullback
+            # swing that re-anchors a flipped level is itself a pivot, so the
+            # ordinary passes may already have drawn their own zone on it. That
+            # is the same nesting the book does on purpose, not a collision.
+            #
+            # Three ways of forbidding it were measured after the stacked
+            # labels showed up on the 15m and 4h charts — skip the move, retire
+            # the duplicate, let the stronger rank win — and all three cost
+            # money (pooled +0.0252 -> +0.0123 / +0.0065 / +0.0073). The
+            # stacked boxes were a DRAWING bug in the Pine file, not this: a
+            # zone that moved kept its original box top. Fixed there.
+            z.top, z.bot = top, bot
             z.born_index = idx
             z.await_pull = -1
-            z.src = z.src + " pull"
+            # ...and "pull pull pull" was just noise on the label
+            if not z.src.endswith(" pull"):
+                z.src = z.src + " pull"
 
     def _pivot_zones(self, series: List[Candle], n: int, atr: float,
                      idx: int, htf: bool, track_trend: bool,
