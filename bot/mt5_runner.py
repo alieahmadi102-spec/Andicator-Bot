@@ -52,6 +52,13 @@ ORDER_EXPIRY_BARS = 40      # same as Config.order_expiry_bars in snrz_core
 # with them. The crypto runner defaults the same way.
 DRY_RUN = True
 
+# "Trend is King" is the book's rule and it is the single biggest reason a
+# setup does not fire -- 31% of the times price stood in a zone and nothing
+# happened. Turning it off with --no-trend gives roughly FOUR times as many
+# trades at slightly lower quality: on 83 days the median went +0.024 to
+# +0.002, M1 from -0.059 to +0.001, M5 from +0.104 to +0.075.
+NO_TREND = False
+
 
 def mt5_timeframe(minutes: int):
     """MT5 has no TIMEFRAME_M60 — anything from an hour up has its own name."""
@@ -414,10 +421,24 @@ def waiting_line(engine, symbol: str, price: float) -> str:
     bits = [f"{len(live)} zones"]
     if live:
         near = min(live, key=lambda z: abs(price - (z.top + z.bot) / 2.0))
-        edge = near.top if price < near.bot else (
-            near.bot if price > near.top else price)
+        # the NEAR edge: below the zone that is its bottom, above it its top.
+        # This had them the wrong way round, so a price sitting just above a
+        # zone was reported as further away than it was.
+        edge = near.bot if price < near.bot else (
+            near.top if price > near.top else price)
         bits.append(f"nearest {near.kind} {near.bot:.2f}-{near.top:.2f} "
                     f"({abs(price - edge):.2f} away)")
+        # ...and, when price is AT that zone, why it is not firing. Measured
+        # over 70 days of M1, what blocks a zone price is standing in:
+        #   26% waiting for the pullback swing after a break
+        #   31% the trend filter
+        #   15% a break still pending
+        #   the rest is touches not yet earned, sweeps, and caps
+        if engine.candles:
+            c = engine.candles[-1]
+            if c.low <= near.top and c.high >= near.bot:
+                bits.append("BLOCKED: " + engine.why_blocked(
+                    near, c, len(engine.candles) - 1))
     engine_orders = len(engine.orders)
     if engine_orders:
         bits.append(f"{engine_orders} order(s) armed")
@@ -507,14 +528,18 @@ def read_args():
         python mt5_runner.py                    # H1, dry run
         python mt5_runner.py --tf 5             # 5-minute chart
         python mt5_runner.py --tf 5 --live      # ...and send real orders
+        python mt5_runner.py --tf 5 --no-trend  # ignore "Trend is King": ~4x
+                                                # the trades, slightly worse
     """
-    global SYMBOL, TIMEFRAME_MIN, RISK_PCT, DRY_RUN, MAGIC
+    global SYMBOL, TIMEFRAME_MIN, RISK_PCT, DRY_RUN, MAGIC, NO_TREND
     args = sys.argv[1:]
     i = 0
     while i < len(args):
         a = args[i]
         if a == "--live":
             DRY_RUN = False
+        elif a == "--no-trend":
+            NO_TREND = True
         elif a in ("-h", "--help"):
             print(read_args.__doc__)
             raise SystemExit(0)
@@ -603,6 +628,10 @@ def main():
     # the analysis timeframe follows the captain's ladder from the chart we run
     # on — two rungs up, the middle one skipped
     cfg = Config(chart_minutes=TIMEFRAME_MIN)
+    if NO_TREND:
+        cfg.trend_filter = False
+        print("trend filter OFF — about 4x the trades, measured slightly "
+              "lower quality each")
     engine = SnrzEngine(cfg)
     if cfg.single_tf:
         print(f"zones marked, confirmed and traded all on {TIMEFRAME_MIN}m")

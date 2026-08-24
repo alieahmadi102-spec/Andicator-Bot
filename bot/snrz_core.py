@@ -1206,6 +1206,65 @@ class SnrzEngine:
                 tp3 = tp2
         return entry, sl, tp1, tp2, tp3
 
+    def why_blocked(self, z: "Zone", c: Candle, idx: int) -> str:
+        """Why this zone did NOT produce a signal on this bar.
+
+        "no setup" for hours is unanswerable from the outside -- the rules that
+        could be stopping it are spread across a hundred lines. This walks the
+        same conditions in the same order and names the first one that fails,
+        so the question stops being a guess. It reads state, never changes it.
+        """
+        cfg = self.cfg
+        if z.dead:
+            return "zone is finished (broken, or out of touches)"
+        if idx <= z.born_index:
+            return "zone was only just drawn"
+        if z.await_pull >= 0:
+            return "level broke; waiting for the pullback swing to set the price"
+        if z.pend_dir != 0:
+            return "a break is pending — waiting to see if it holds"
+        is_sup = z.role == Role.SUPPORT
+        need = 1 if z.src != "pivot" else 2
+        if not (z.srr
+                or (z.state == State.VALID and z.touches >= need)
+                or (z.state == State.INVERTED and 1 <= z.touches <= 2)):
+            if z.state == State.FRESH:
+                return (f"still FRESH — needs {2 - z.touches} more touch(es) "
+                        f"to become valid")
+            if z.state == State.VALID:
+                return f"valid, but needs {need - z.touches} more touch(es)"
+            return "inverted zone outside its 1-2 touch window"
+        if self._has_order_or_trade(z.uid):
+            return "already has an order or a running trade"
+        if cfg.require_nested and not self._nested(z):
+            return "not nested inside an analysis zone"
+        trend_ok = (not cfg.trend_filter) \
+            or (self.trend_up if is_sup else self.trend_down) \
+            or (self.trend_unknown and not self.in_range) \
+            or (cfg.allow_counter_inv and z.state == State.INVERTED)
+        if not trend_ok:
+            if self.in_range:
+                return "market is RANGING — the book says stand aside"
+            return (f"trend is against it ("
+                    f"{'up' if self.trend_up else 'down' if self.trend_down else 'unclear'})")
+        if cfg.sweep_guard and self._fresh_extreme(idx, is_sup):
+            return "price just swept a fresh extreme — that is the liquidity grab"
+        outside = (c.close > z.top) if is_sup else (c.close < z.bot)
+        if not outside:
+            where = "inside" if z.bot <= c.close <= z.top else "the wrong side of"
+            return (f"the bar closed {where} the zone — the entry needs a close "
+                    f"back {'above' if is_sup else 'below'} it")
+        atr = self._atr()
+        if atr:
+            lv = self._levels(is_sup, z, c, atr)
+            if lv is None:
+                return ("no zone ahead worth the risk — no setup, no trade "
+                        "(or the stop is wider than the ceiling)")
+        live = len(self.orders) + sum(1 for t in self.trades if not t.closed)
+        if live >= cfg.max_open:
+            return f"already carrying {live} setups, the cap is {cfg.max_open}"
+        return "should have fired — this is a bug, please report it"
+
     def _has_order_or_trade(self, uid: int) -> bool:
         return any(o.uid == uid for o in self.orders) or \
             any(t.uid == uid and not t.closed for t in self.trades)
