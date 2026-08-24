@@ -20,8 +20,12 @@ except ImportError:  # keeps the repo importable on non-Windows dev machines
 from snrz_core import Candle, Config, SnrzEngine
 
 SYMBOL = "XAUUSD"
-# ANALYSIS timeframe — the book draws zones on 1H/4H/Daily and only monitors
-# below. M15 is a confirmation timeframe, not a zone timeframe.
+# The CHART timeframe — the one the bot watches and trades on. The ANALYSIS
+# timeframe is derived from it by the captain's ladder (two rungs up, middle
+# rung skipped), so 1 -> 15, 5 -> 30, 15 -> 60, 30 -> 240, 60 -> D, 240 -> W.
+# This used to be described as the analysis timeframe, which it stopped being
+# when the ladder went in — and the startup banner still repeated that, printing
+# "analysis TF 1m" on a run whose zones were marked on 15m.
 TIMEFRAME_MIN = 60
 RISK_PCT = 1.0              # max 1% risk per trade (book rule)
 # The spread must not eat more than this share of a trade's risk. The account's
@@ -163,9 +167,25 @@ def show_state(engine):
     print(f"\nzones live: {len(live)}  "
           f"({sum(1 for z in live if not z.htf)} on the chart TF, "
           f"{sum(1 for z in live if z.htf)} on the analysis TF)")
-    for z in sorted(live, key=lambda z: -z.top)[:10]:
-        tag = "analysis" if z.htf else "chart   "
-        print(f"   {tag}  {z.kind:5s}  {z.bot:9.2f} – {z.top:9.2f}   touches {z.touches}")
+    # Two flipped levels whose pullbacks print on the same swing land on
+    # EXACTLY the same band, so one price can carry three rows. They cost
+    # nothing — each zone takes at most one order and the targets already
+    # ignore repeats — but printing them three times reads like a bug, so
+    # identical bands are folded into one line with a count.
+    rows: dict = {}
+    for z in sorted(live, key=lambda z: -z.top):
+        key = (z.htf, round(z.top, 2), round(z.bot, 2))
+        rows.setdefault(key, []).append(z)
+    shown = list(rows.items())[:10]
+    for (htf, top, bot), zs in shown:
+        tag = "analysis" if htf else "chart   "
+        names = " / ".join(sorted({z.kind for z in zs}))
+        touch = max(z.touches for z in zs)
+        extra = f"   (x{len(zs)} on this band)" if len(zs) > 1 else ""
+        print(f"   {tag}  {names:12s}  {bot:9.2f} – {top:9.2f}   "
+              f"touches {touch}{extra}")
+    if len(rows) > len(shown):
+        print(f"   … and {len(rows) - len(shown)} more, furthest from price")
     if engine.orders:
         print(f"limit orders resting: {len(engine.orders)}")
         for o in engine.orders:
@@ -190,7 +210,7 @@ def main():
     acc = mt5.account_info()
     print(f"MT5 connected: account {acc.login} ({acc.server}), "
           f"balance {acc.balance} {acc.currency}")
-    print(f"symbol {SYMBOL} · analysis TF {TIMEFRAME_MIN}m · risk {RISK_PCT}% "
+    print(f"symbol {SYMBOL} · chart TF {TIMEFRAME_MIN}m · risk {RISK_PCT}% "
           f"· mode {'DRY RUN (no orders sent)' if DRY_RUN else '*** LIVE ORDERS ***'}")
     if not DRY_RUN:
         input("DRY_RUN is off, real orders will be sent. Press Enter to go on, "
