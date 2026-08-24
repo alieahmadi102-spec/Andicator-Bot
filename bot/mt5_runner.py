@@ -300,6 +300,21 @@ def broker_state(symbol: str):
     return orders, positions
 
 
+def bot_ledger(symbol: str, days: int = 30):
+    """Every deal THIS bot has closed, and what they came to.
+
+    Without this a balance that moved is a mystery: the account also carries
+    whatever was traded by hand, and swap, and anything another EA did. The
+    magic number is the only thing that separates them. If this prints "0
+    deals" then the bot has not touched the balance, whatever it has done."""
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    deals = mt5.history_deals_get(since, datetime.now(timezone.utc)) or []
+    mine = [d for d in deals if d.magic == MAGIC and d.symbol == symbol]
+    closing = [d for d in mine if d.entry == mt5.DEAL_ENTRY_OUT]
+    pnl = sum(d.profit + d.swap + d.commission for d in closing)
+    return mine, closing, pnl
+
+
 def show_state(engine):
     """What the engine is actually holding right now. Without this the bot
     printed one line and then sat silent for an hour, which looks broken even
@@ -338,8 +353,11 @@ def show_state(engine):
     if open_trades:
         print(f"trades running: {len(open_trades)}")
         for t in open_trades:
+            # A stop sitting exactly on the entry is the break-even move, not a
+            # trade with no risk — printed bare it looked like the latter.
+            tag = "  (break-even, risk free)" if t.be else ""
             print(f"   {t.side.upper():4s} {t.zone:5s} from {t.entry:9.2f}  "
-                  f"SL {t.sl:9.2f}  TP1 {t.tp1:9.2f}")
+                  f"SL {t.sl:9.2f}  TP1 {t.tp1:9.2f}{tag}")
 
 
 def read_args():
@@ -436,6 +454,19 @@ def main():
         engine.on_candle(Candle(int(r["time"]), r["open"], r["high"], r["low"], r["close"]))
     last_time = rates[-1]["time"]
     print(f"warmed up with {len(rates)} candles")
+
+    # Whatever the balance has done, this says whether THIS bot did it.
+    try:
+        mine, closed, pnl = bot_ledger(SYMBOL)
+        if not mine:
+            print(f"this bot's own trades at the broker (last 30 days): NONE — "
+                  f"it has not touched the balance")
+        else:
+            print(f"this bot's own trades at the broker (last 30 days): "
+                  f"{len(closed)} closed, net {pnl:+.2f} {acc.currency}")
+    except Exception as e:
+        print(f"(could not read the trade history: {e})")
+
     show_state(engine)
     print(f"\nwatching for the next closed {TIMEFRAME_MIN}m bar — on this timeframe "
           f"that is one check every {TIMEFRAME_MIN} minutes, so silence is normal.")
