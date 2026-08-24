@@ -179,6 +179,16 @@ class Config:
     # floor was silently doubling every stop. Measured on 83 days of real
     # XAUUSD, dropping it moved the median from -0.038R to +0.057R.
     min_sl_atr: float = 0.0
+    # ...but there has to be a CEILING. The wick is read from the last 3 chart
+    # candles, and when price spiked far below the zone and closed back inside
+    # (a false break, which the book calls a good sign) that wick can sit ten
+    # zone-heights away. Measured on M5: the stop is a median 5.9x the zone
+    # height, p90 11.7x, worst 52x. A stop that wide makes the R:R marginal and
+    # the position unfundable on a small account. 0 = no ceiling.
+    # Every value from 5 ATR down to 2 beats no ceiling at all, which is what
+    # makes it a real effect rather than a fitted number; 3.0 turns away 1.7%
+    # of the setups and takes the median from +0.056 to +0.064.
+    max_sl_atr: float = 3.0
     max_open: int = 3           # how many zones may carry a live order/trade
     min_rr: float = 1.0         # the next zone must be at least this many R away
     # Master class image 54 — the setups ranked by strength, "the market
@@ -587,7 +597,19 @@ class SnrzEngine:
             # which is what put two boxes with the same label on top of each
             # other on the 15m and 4h charts. The zone itself does not count
             # as its own obstacle.
-            # Two boxes can legitimately sit on one price here: the pullback
+            # Two flipped levels whose pullbacks print on the same swing land
+            # on EXACTLY the same band — a re-anchor is always price +/- half.
+            # The live run showed "RBS 4658.05-4659.59" and
+            # "I.VR 4658.05-4659.59" stacked, which reads like a bug.
+            #
+            # It is only clutter. Two identical zones do NOT double the risk:
+            # each carries at most one order, max_open caps the total and the
+            # ranking picks between them, so on 45,045 M5 bars there was ONE
+            # bar with two resting orders at the same side and price, and four
+            # with two open trades. Suppressing the duplicate costs real money
+            # (pooled +0.0291 -> +0.0137), so the labels stay.
+            #
+            # Two boxes can also legitimately sit on one price: the pullback
             # swing that re-anchors a flipped level is itself a pivot, so the
             # ordinary passes may already have drawn their own zone on it. That
             # is the same nesting the book does on purpose, not a collision.
@@ -1118,6 +1140,8 @@ class SnrzEngine:
             entry = z.bot
             raw_sl = max(z.top, wick_hi) + atr * cfg.sl_buffer_atr
         risk = max(abs(entry - raw_sl), atr * cfg.min_sl_atr)
+        if cfg.max_sl_atr > 0 and risk > atr * cfg.max_sl_atr:
+            return None          # the wick is too far away — no setup, no trade
         sl = entry - risk if is_buy else entry + risk
 
         ahead = self._zones_ahead(is_buy, entry)

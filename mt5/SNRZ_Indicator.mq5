@@ -14,7 +14,7 @@
 //|   • One position at a time with SL / TP1 / TP2 / TP3 drawn       |
 //+------------------------------------------------------------------+
 #property copyright   "SNRZ (Zindan The Gold Chaser) — indicator port"
-#property version     "11.00"
+#property version     "11.20"
 #property description "SNRZ: chart zones AND analysis zones together (book p.41/p.44), one trade at a time"
 #property indicator_chart_window
 #property indicator_buffers 4
@@ -116,6 +116,13 @@ input double InpTpMaxR       = 6.0;   // Max R for TP1/TP2 (farther zone -> TP3)
 input bool   InpEntryAtZone   = true;  // Entry = LIMIT order on the zone (p41/p42)
 input bool   InpEntryEdge     = true;  // ...at the near EDGE of the zone, not its middle
 input double InpSlBufferATR   = 0.8;   // How far beyond the zone the stop sits (ATR x)
+input double InpMaxSlATR      = 3.0;   // Maximum stop distance (ATR x) - 0 = no ceiling.
+// The stop sits behind the WICK, but the wick is read from the last 3 bars,
+// and when price spiked far below the zone and closed back inside (a false
+// break, which the book calls a good sign) that wick can sit ten zone-heights
+// away. Measured on M5 the stop is a median 5.9x the zone height, p90 11.7x,
+// worst 52x. Every ceiling from 5 ATR down to 2 beat no ceiling at all, which
+// is what makes it a real effect and not a fitted number.
 input int    InpOrderExpiry   = 10;    // An unfilled limit order dies after N bars
 input bool   InpRequireNested = false; // Only chart zones sitting inside an analysis zone (p14)
 input bool   InpEntriesHtfOnly= false; // Entries only from analysis-timeframe zones
@@ -1780,8 +1787,9 @@ int OnCalculate(const int rates_total,
                   double entry   = g_zones[i].top;
                   double rawSl   = MathMin(g_zones[i].bot, swingLo) - zAtr * InpSlBufferATR;
                   double risk    = MathMax(MathAbs(entry - rawSl), atr * InpMinSlATR);
+                  bool   tooWide = (InpMaxSlATR > 0.0 && risk > atr * InpMaxSlATR);
                   double t1 = NextZone(true, entry, 0);
-                  if(t1 > 0.0 && (t1 - entry) >= risk * InpMinRR)
+                  if(t1 > 0.0 && !tooWide && (t1 - entry) >= risk * InpMinRR)
                     {
                      double t2 = NextZone(true, entry, 1);
                      double t3 = NextZone(true, entry, 2);
@@ -1881,8 +1889,9 @@ int OnCalculate(const int rates_total,
                   double entry   = g_zones[i].bot;
                   double rawSl   = MathMax(g_zones[i].top, swingHi) + zAtr * InpSlBufferATR;
                   double risk    = MathMax(MathAbs(rawSl - entry), atr * InpMinSlATR);
+                  bool   tooWide = (InpMaxSlATR > 0.0 && risk > atr * InpMaxSlATR);
                   double t1 = NextZone(false, entry, 0);
-                  if(t1 > 0.0 && (entry - t1) >= risk * InpMinRR)
+                  if(t1 > 0.0 && !tooWide && (entry - t1) >= risk * InpMinRR)
                     {
                      double t2 = NextZone(false, entry, 1);
                      double t3 = NextZone(false, entry, 2);
