@@ -229,14 +229,11 @@ class Config:
     engulf_full_candle: bool = True  # ...and the zone is the WHOLE candle
     momentum_zones: bool = True  # image 43: one momentum candle IS a zone
     momentum_body_atr: float = 0.8   # ...and this is how big "momentum" is
-    # Image 43 looks like it boxes the WHOLE candle, the way the engulf rule
-    # explicitly does («کل کندل بدنه با سایه میشه زون»). Measured both ways on
-    # 83 days: pooled over all six timeframes it is a dead heat (+0.0250 vs
-    # +0.0257 on ~6450 trades) and the median is slightly worse whole-candle.
-    # With no measurable difference and no words from the captain — only my
-    # reading of one screenshot's box edges — the default keeps the ordinary
-    # SNRZ geometry that every other zone here uses. Ask him and flip it.
-    momentum_full_candle: bool = False
+    # Image 43 boxes the WHOLE candle, the way the engulf rule explicitly does
+    # («کل کندل بدنه با سایه میشه زون»). Confirmed by the captain. Measured
+    # both ways it is a dead heat (+0.0250 vs +0.0257 pooled over ~6450
+    # trades), so this is the book's answer, not the backtest's.
+    momentum_full_candle: bool = True
     # p39: zones are marked on W/D/4H/1H; the low timeframes only MONITOR.
     entries_htf_only: bool = False
     # p42: entry at the zone midpoint, stop just beyond the zone, TP1 at 1:1

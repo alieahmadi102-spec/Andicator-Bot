@@ -14,7 +14,7 @@
 //|   • One position at a time with SL / TP1 / TP2 / TP3 drawn       |
 //+------------------------------------------------------------------+
 #property copyright   "SNRZ (Zindan The Gold Chaser) — indicator port"
-#property version     "10.90"
+#property version     "11.00"
 #property description "SNRZ: chart zones AND analysis zones together (book p.41/p.44), one trade at a time"
 #property indicator_chart_window
 #property indicator_buffers 4
@@ -79,6 +79,7 @@ input bool   InpEngulfFullCandle = true; // The engulf zone is the WHOLE candle:
 input bool   InpEngulfZones  = true;  // Method 5: draw a zone from the ENGULF pair (images 27/28)
 input bool   InpMomentumZones= true;  // A single MOMENTUM candle is a zone too (image 43)
 input double InpMomBodyATR   = 0.8;   // ..."momentum" = body at least this many ATR
+input bool   InpMomFullCandle= true;  // ...and the zone is the WHOLE candle, body with both wicks (image 43)
 input bool   InpShowFresh    = false; // Also draw zones that are not valid yet
 input bool   InpDropDead     = true;  // Delete a finished zone from the chart
 input int    InpNewBars      = 30;    // Mark a zone NEW for this many bars
@@ -969,7 +970,13 @@ void AddSwingZone(const bool htf, const double price, const bool isHigh,
                   const double refClose, const datetime t1, const datetime t2,
                   const double firstHi, const double firstLo,
                   const double engTop, const double engBot, const double momBody,
-                  const bool line = false)
+                  const double momHi, const double momLo,
+                  const bool line = false,
+                  // The structural band of THIS pivot's turn. These two were
+                  // used in the body (PushSwing, and the InpStructZone widen
+                  // below) and passed by four call sites, but never declared —
+                  // so the indicator had not compiled since v10.7.
+                  const double stLo = 0.0, const double stHi = 0.0)
   {
    int mi = InpPairZones ? FindMate(htf, price, bar, atr, line) : -1;
    double matePrice = 0.0;
@@ -1052,8 +1059,20 @@ void AddSwingZone(const bool htf, const double price, const bool isHigh,
       else
          if(InpMomentumZones && momBody >= atr * InpMomBodyATR)
            {
-            ft = isHigh ? price  : bodyLo;
-            fb = isHigh ? bodyHi : price;
+            // Image 43 boxes the WHOLE candle - body together with both wicks,
+            // exactly as the engulf rule does. Taking only the wick side left
+            // the zone a sliver on top of a candle whose whole point is its
+            // body. Confirmed by the captain.
+            if(InpMomFullCandle && momHi > momLo)
+              {
+               ft = momHi;
+               fb = momLo;
+              }
+            else
+              {
+               ft = isHigh ? price  : bodyLo;
+               fb = isHigh ? bodyHi : price;
+              }
             got = (ft > fb);
            }
       if(got)
@@ -1281,7 +1300,7 @@ void ProcessHtfBar(const int j, const MqlRates &htf[], const double &atrH[], con
          AddSwingZone(true, htf[p].low, false, p, j, atr, bodyHiH, bodyLoH,
                       hiRun, loRun, htf[j].close, htf[p].time, htf[j].time,
                       fHi, fLo, eT, eB, MathAbs(htf[p].close - htf[p].open),
-                      false, sLo, sHi);
+                      htf[p].high, htf[p].low, false, sLo, sHi);
         }
       if(isPH)
         {
@@ -1291,7 +1310,7 @@ void ProcessHtfBar(const int j, const MqlRates &htf[], const double &atrH[], con
          AddSwingZone(true, htf[p].high, true, p, j, atr, bodyHiH, bodyLoH,
                       hiRun, loRun, htf[j].close, htf[p].time, htf[j].time,
                       fHi, fLo, eT, eB, MathAbs(htf[p].close - htf[p].open),
-                      false, sLo, sHi);
+                      htf[p].high, htf[p].low, false, sLo, sHi);
         }
 
       //--- and the line chart of the ANALYSIS timeframe
@@ -1317,7 +1336,7 @@ void ProcessHtfBar(const int j, const MqlRates &htf[], const double &atrH[], con
             MateSegRates(htf[p].close, p, atr, htf, lHi, lLo, true);
             AddSwingZone(true, htf[p].close, lPH, p, j, atr, bodyHiH, bodyLoH,
                          hiRunL, loRunL, htf[j].close, htf[p].time, htf[j].time,
-                         lHi, lLo, 0.0, 1.0, 0.0, true);
+                         lHi, lLo, 0.0, 1.0, 0.0, 0.0, 0.0, true);
            }
         }
      }
@@ -1472,7 +1491,7 @@ int OnCalculate(const int rates_total,
             AddSwingZone(false, high[pc], true, pc, bar, atr, bodyHiC, bodyLoC,
                          hiRunC, loRunC, close[bar], time[pc], time[bar],
                          fHiC, fLoC, eTC, eBC, MathAbs(close[pc] - open[pc]),
-                         false, sLoC, sHiC);
+                         high[pc], low[pc], false, sLoC, sHiC);
            }
          if(isPL)
            {
@@ -1484,7 +1503,7 @@ int OnCalculate(const int rates_total,
             AddSwingZone(false, low[pc], false, pc, bar, atr, bodyHiC, bodyLoC,
                          hiRunC, loRunC, close[bar], time[pc], time[bar],
                          fHiC, fLoC, eTC, eBC, MathAbs(close[pc] - open[pc]),
-                         false, sLoC, sHiC);
+                         high[pc], low[pc], false, sLoC, sHiC);
            }
 
          //--- the LINE CHART's own zones: pivots of CLOSES, no wicks at all.
@@ -1515,14 +1534,14 @@ int OnCalculate(const int rates_total,
                   MateSeg(false, close[pc], pc, atr, close, close, lHi, lLo, true);
                   AddSwingZone(false, close[pc], true, pc, bar, atr, bodyHiC, bodyLoC,
                                hiRunL, loRunL, close[bar], time[pc], time[bar],
-                               lHi, lLo, 0.0, 1.0, 0.0, true);
+                               lHi, lLo, 0.0, 1.0, 0.0, 0.0, 0.0, true);
                  }
                if(lPL)
                  {
                   MateSeg(false, close[pc], pc, atr, close, close, lHi, lLo, true);
                   AddSwingZone(false, close[pc], false, pc, bar, atr, bodyHiC, bodyLoC,
                                hiRunL, loRunL, close[bar], time[pc], time[bar],
-                               lHi, lLo, 0.0, 1.0, 0.0, true);
+                               lHi, lLo, 0.0, 1.0, 0.0, 0.0, 0.0, true);
                  }
               }
            }

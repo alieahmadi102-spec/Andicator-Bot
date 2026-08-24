@@ -31,7 +31,7 @@
 //                  TP3 = the one beyond. 1R/2R/3R when no zone sits there.
 //  SCALP vs SWING (book): M5/M15 = SCALP · H1/H4/Daily = SWING.
 // ═══════════════════════════════════════════════════════════════════════════
-indicator("SNRZ Strategy [Zindan] v9", "SNRZ v10.9", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500, max_bars_back = 500)
+indicator("SNRZ Strategy [Zindan] v9", "SNRZ v11.0", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500, max_bars_back = 500)
 
 // ───────────────────────────── Inputs ──────────────────────────────────────
 grpZ  = "Zones (SNRZ)"
@@ -71,6 +71,7 @@ engulfFullCandle = input.bool(true, "…و زونِ انگالف = کلِ کند
 engulfZones   = input.bool(true, "روش پنجم: زون از ENGULF (عکس ۲۷/۲۸)",     group = grpZ, tooltip = "«لەو شوێنەوەی کە دوستی کردووە بە بەرز بوون و کاندڵێک پێش خۆی کامیان کوورتر بوون ئەوە دیاری ئەکەین» — جفتِ انگالف لازم است و بدنه‌ی کندلِ کوتاه‌تر همان زون است.")
 momentumZones = input.bool(true, "کندل مومنتوم هم یک زون است (عکس ۴۳)",     group = grpZ, tooltip = "عکس ۴۳: یک کندل مومنتومِ تنها خودش زون است — «در ۸۰٪ مواقع بازار از آن تکرار می‌کند». این تنها چیزی است که کتاب روی یک سوئینگِ بی‌جفت می‌کشد.")
 momBodyATR    = input.float(0.8, "…«مومنتوم» یعنی بدنه ≥ ATR ×",            minval = 0.1, step = 0.1, group = grpZ)
+momFullCandle = input.bool(true, "…و زون **کلِ کندل** است (بدنه با سایه)", group = grpZ, tooltip = "عکس ۴۳ کلِ کندل را باکس می‌کند، دقیقاً مثل قانونِ engulf که کاپیتان گفت «کل کندل بدنه با سایه میشه زون». قبلاً فقط سمتِ سایه گرفته می‌شد، که روی کندلی که کلِ ارزشش بدنه‌اش است یک نوارِ باریک می‌ساخت.\n\nروی ۸۳ روز XAUUSD با اسپردِ واقعی، هر دو حالت روی ~۶۴۵۰ معامله مساوی درآمد (+۰٫۰۲۵۰ در برابر +۰٫۰۲۵۷) — پس این انتخاب از روی **کتاب** است، نه از روی عدد.")
 fbaBars       = input.int(3,    "شکست باید N کندل دوام بیاورد تا زون برگردد", minval = 1, maxval = 10, group = grpZ, tooltip = "کتاب ص۴۷: سطحی که شکسته شد و بعد دوباره به آن احترام گذاشته شد، False Breakout Area است — زون خوبی است، نه زون مرده.")
 
 grpS  = "Signals"
@@ -195,6 +196,9 @@ loRunLc = ta.lowest(close,  pivotLtf)
 [engBearTL, engBearBL] = engulfZone(pivotLtf, true)
 [engBullTL, engBullBL] = engulfZone(pivotLtf, false)
 momBodyL = math.abs(close[pivotLtf] - open[pivotLtf])
+// ...and the WHOLE candle, for image 43's momentum zone
+momHiL   = high[pivotLtf]
+momLoL   = low[pivotLtf]
 
 // analysis-timeframe pivots, structure and ATR
 phSrc = ta.pivothigh(high, pivotHtf, pivotHtf)
@@ -206,6 +210,8 @@ loRunSrc = ta.lowest(low,  pivotHtf)
 [engBearTSrc, engBearBSrc] = engulfZone(pivotHtf, true)
 [engBullTSrc, engBullBSrc] = engulfZone(pivotHtf, false)
 momBodySrc = math.abs(close[pivotHtf] - open[pivotHtf])
+momHiSrc   = high[pivotHtf]
+momLoSrc   = low[pivotHtf]
 stKh       = math.min(structBars, pivotHtf)
 stLoSrc    = ta.lowest(low, 2 * stKh + 1)[pivotHtf - stKh]
 stHiSrc    = ta.highest(high, 2 * stKh + 1)[pivotHtf - stKh]
@@ -216,7 +222,7 @@ plLcSrc = ta.pivotlow(close,  pivotHtf, pivotHtf)
 hiRunLcSrc = ta.highest(close, pivotHtf)
 loRunLcSrc = ta.lowest(close,  pivotHtf)
 
-[phH, plH, bodyHiH, bodyLoH, closeH, atrH, hiRunH, loRunH, engBearTH, engBearBH, engBullTH, engBullBH, momBodyH, phLcH, plLcH, hiRunLcH, loRunLcH, stLoH, stHiH, stBodyHiH, stBodyLoH] = request.security(syminfo.tickerid, htfTF, [phSrc, plSrc, bodyHiSrc, bodyLoSrc, close[1], atr[1], hiRunSrc, loRunSrc, engBearTSrc, engBearBSrc, engBullTSrc, engBullBSrc, momBodySrc, phLcSrc, plLcSrc, hiRunLcSrc, loRunLcSrc, stLoSrc, stHiSrc, stBodyHiSrc, stBodyLoSrc], lookahead = barmerge.lookahead_off)
+[phH, plH, bodyHiH, bodyLoH, closeH, atrH, hiRunH, loRunH, engBearTH, engBearBH, engBullTH, engBullBH, momBodyH, momHiH, momLoH, phLcH, plLcH, hiRunLcH, loRunLcH, stLoH, stHiH, stBodyHiH, stBodyLoH] = request.security(syminfo.tickerid, htfTF, [phSrc, plSrc, bodyHiSrc, bodyLoSrc, close[1], atr[1], hiRunSrc, loRunSrc, engBearTSrc, engBearBSrc, engBullTSrc, engBullBSrc, momBodySrc, momHiSrc, momLoSrc, phLcSrc, plLcSrc, hiRunLcSrc, loRunLcSrc, stLoSrc, stHiSrc, stBodyHiSrc, stBodyLoSrc], lookahead = barmerge.lookahead_off)
 
 atrA = na(atrH) ? atr : atrH              // ATR of the analysis timeframe
 
@@ -639,7 +645,7 @@ reanchorFlipped(float _price, bool _isHigh, float _atr, bool _htf) =>
                         z.awaitPull := -1
 
 // one swing -> at most one zone, drawn with its mate when pairing is on
-addSwing(bool _htf, float _price, bool _isHigh, int _bar, int _back, float _atr, float _bodyHi, float _bodyLo, float _hiRun, float _loRun, int _uid, float _engT, float _engB, float _momBody, bool _line, float _stLo, float _stHi) =>
+addSwing(bool _htf, float _price, bool _isHigh, int _bar, int _back, float _atr, float _bodyHi, float _bodyLo, float _hiRun, float _loRun, int _uid, float _engT, float _engB, float _momBody, float _momHi, float _momLo, bool _line, float _stLo, float _stHi) =>
     reanchorFlipped(_price, _isHigh, _atr, _htf)
     mate = findMate(_htf, _price, _bar, _atr, _line)
     mi   = pairZones ? mate : -1
@@ -752,8 +758,16 @@ addSwing(bool _htf, float _price, bool _isHigh, int _bar, int _back, float _atr,
             ft := _engT
             fb := _engB
         else if momentumZones and _momBody >= _atr * momBodyATR
-            ft := _isHigh ? _price   : _bodyLo
-            fb := _isHigh ? _bodyHi  : _price
+            // Image 43 boxes the WHOLE candle — body together with both wicks,
+            // exactly as the engulf rule does. Taking only the wick side left
+            // the zone a sliver on top of a candle whose whole point is its
+            // body. Confirmed by the captain.
+            if momFullCandle and not na(_momHi)
+                ft := _momHi
+                fb := _momLo
+            else
+                ft := _isHigh ? _price   : _bodyLo
+                fb := _isHigh ? _bodyHi  : _price
         if not na(ft) and ft > fb
             away = _isHigh ? ft - _loRun : _hiRun - fb
             if away >= _atr * bigMoveMult and not overlaps(ft, fb, _htf)
@@ -768,30 +782,30 @@ extendSeg(true,  htfBackSeg)
 // chart timeframe: the many small zones that give TP1 and the low-timeframe
 // setups (book p.44: "let TP1 be a 5-minute zone")
 if not na(plL)
-    addSwing(false, plL, false, bar_index - pivotLtf, pivotLtf, atr, bodyHiL, bodyLoL, hiRunL, loRunL, bar_index * 8 + 0, engBullTL, engBullBL, momBodyL, false, stLoL, stBodyHiL)
+    addSwing(false, plL, false, bar_index - pivotLtf, pivotLtf, atr, bodyHiL, bodyLoL, hiRunL, loRunL, bar_index * 8 + 0, engBullTL, engBullBL, momBodyL, momHiL, momLoL, false, stLoL, stBodyHiL)
 if not na(phL)
-    addSwing(false, phL, true,  bar_index - pivotLtf, pivotLtf, atr, bodyHiL, bodyLoL, hiRunL, loRunL, bar_index * 8 + 1, engBearTL, engBearBL, momBodyL, false, stBodyLoL, stHiL)
+    addSwing(false, phL, true,  bar_index - pivotLtf, pivotLtf, atr, bodyHiL, bodyLoL, hiRunL, loRunL, bar_index * 8 + 1, engBearTL, engBearBL, momBodyL, momHiL, momLoL, false, stBodyLoL, stHiL)
 
 // the LINE CHART's own zones — closes only, on the chart timeframe (image 31)
 if lineZones and not na(plLc)
-    addSwing(false, plLc, false, bar_index - pivotLtf, pivotLtf, atr, bodyHiL, bodyLoL, hiRunLc, loRunLc, bar_index * 8 + 4, na, na, 0.0, true, na, na)
+    addSwing(false, plLc, false, bar_index - pivotLtf, pivotLtf, atr, bodyHiL, bodyLoL, hiRunLc, loRunLc, bar_index * 8 + 4, na, na, 0.0, na, na, true, na, na)
 if lineZones and not na(phLc)
-    addSwing(false, phLc, true,  bar_index - pivotLtf, pivotLtf, atr, bodyHiL, bodyLoL, hiRunLc, loRunLc, bar_index * 8 + 5, na, na, 0.0, true, na, na)
+    addSwing(false, phLc, true,  bar_index - pivotLtf, pivotLtf, atr, bodyHiL, bodyLoL, hiRunLc, loRunLc, bar_index * 8 + 5, na, na, 0.0, na, na, true, na, na)
 
 // analysis timeframe: the few big zones that set the trend and TP2
 htfBack = htfBackSeg
 if newPLh and not na(atrH)
-    addSwing(true, plH, false, htfBarNo, htfBack, atrA, bodyHiH, bodyLoH, hiRunH, loRunH, bar_index * 8 + 2, engBullTH, engBullBH, momBodyH, false, stLoH, stBodyHiH)
+    addSwing(true, plH, false, htfBarNo, htfBack, atrA, bodyHiH, bodyLoH, hiRunH, loRunH, bar_index * 8 + 2, engBullTH, engBullBH, momBodyH, momHiH, momLoH, false, stLoH, stBodyHiH)
 if newPHh and not na(atrH)
-    addSwing(true, phH, true,  htfBarNo, htfBack, atrA, bodyHiH, bodyLoH, hiRunH, loRunH, bar_index * 8 + 3, engBearTH, engBearBH, momBodyH, false, stBodyLoH, stHiH)
+    addSwing(true, phH, true,  htfBarNo, htfBack, atrA, bodyHiH, bodyLoH, hiRunH, loRunH, bar_index * 8 + 3, engBearTH, engBearBH, momBodyH, momHiH, momLoH, false, stBodyLoH, stHiH)
 
 // ...and the line chart of the analysis timeframe
 newPHlc = lineZones and not na(phLcH) and (na(phLcH[1]) or phLcH != phLcH[1])
 newPLlc = lineZones and not na(plLcH) and (na(plLcH[1]) or plLcH != plLcH[1])
 if newPLlc and not na(atrH)
-    addSwing(true, plLcH, false, htfBarNo, htfBack, atrA, bodyHiH, bodyLoH, hiRunLcH, loRunLcH, bar_index * 8 + 6, na, na, 0.0, true, na, na)
+    addSwing(true, plLcH, false, htfBarNo, htfBack, atrA, bodyHiH, bodyLoH, hiRunLcH, loRunLcH, bar_index * 8 + 6, na, na, 0.0, na, na, true, na, na)
 if newPHlc and not na(atrH)
-    addSwing(true, phLcH, true,  htfBarNo, htfBack, atrA, bodyHiH, bodyLoH, hiRunLcH, loRunLcH, bar_index * 8 + 7, na, na, 0.0, true, na, na)
+    addSwing(true, phLcH, true,  htfBarNo, htfBack, atrA, bodyHiH, bodyLoH, hiRunLcH, loRunLcH, bar_index * 8 + 7, na, na, 0.0, na, na, true, na, na)
 
 // The limit-order model needs no confirmation candle: the book puts the order
 // ON the zone before price arrives, and the fill IS the entry. The old
