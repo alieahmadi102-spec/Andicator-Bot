@@ -29,12 +29,16 @@ class Report:
     tp3: int = 0
     stopped: int = 0
     breakeven: int = 0
+    timeout: int = 0                   # ran out of bars without reaching either
     open_at_end: int = 0
     r_total: float = 0.0               # realized R, from each trade's own levels
 
     @property
     def resolved(self) -> int:
-        return self.tp1 + self.tp2 + self.tp3 + self.stopped + self.breakeven
+        # Timed-out trades used to be added to r_total and left OUT of this
+        # count, so they moved the average without paying for a slot in it.
+        return (self.tp1 + self.tp2 + self.tp3 + self.stopped
+                + self.breakeven + self.timeout)
 
     @property
     def win_rate(self) -> float:
@@ -58,6 +62,7 @@ class Report:
         return (f"{label:<28} signals={self.signals:<4} "
                 f"TP1={self.tp1:<3} TP2={self.tp2:<3} TP3={self.tp3:<3} "
                 f"BE={self.breakeven:<3} SL={self.stopped:<3} "
+                f"TO={self.timeout:<3} "
                 f"win={self.win_rate:5.1f}%  E={self.expectancy_r:+.2f}R")
 
 
@@ -66,7 +71,14 @@ def realized_r(p, spread: float = 0.0) -> float:
 
     The book's plan (image 41): money comes off at the 1:1 line and the stop
     goes to entry there, then the rest rides to the zone targets — a quarter
-    at TP2 and a quarter at TP3.
+    at TP2 and a quarter at TP3. Whatever is STILL on when the trade ends comes
+    off at the price it actually ended at.
+
+    That last clause is why p.exit_px exists. Before it, a trade that simply
+    ran out of bars without reaching anything was scored as though half of it
+    had come off at the 1:1 line — a flat +0.5R for a trade that went nowhere.
+    On M5 that was 37 trades silently worth +18R, and the same trades were
+    missing from the denominator, so the error was counted twice.
 
     `spread` is the broker's bid/ask gap in price units. A round trip crosses
     it once — in at the ask, out at the bid for a buy — so the whole position
@@ -78,19 +90,31 @@ def realized_r(p, spread: float = 0.0) -> float:
         return 0.0
     cost = spread / risk if spread > 0 else 0.0
     sign = 1.0 if p.side == "buy" else -1.0
-    r1 = sign * (p.tp1 - p.entry) / risk
-    r2 = sign * (p.tp2 - p.entry) / risk
-    r3 = sign * (p.tp3 - p.entry) / risk
+
+    def r(px: float) -> float:
+        return sign * (px - p.entry) / risk
+
     if p.stat == -1:
-        return -1.0 - cost                   # stopped before the 1:1 line
-    # Image 41: at the 1:1 red line money comes off and the stop goes to
-    # entry. p.peak is how far the trade actually got before it ended, which
-    # p.stat forgets once the break-even stop closes it.
-    paid = 0.5 * (r1 if p.peak >= 1 else 1.0)     # the first half
+        # stopped before the 1:1 line, so nothing had been banked yet
+        return -1.0 - cost
+
+    paid = 0.0
+    left = 1.0
+    # Image 41: at the red 1:1 line half comes off and the stop goes to entry.
+    # p.be records that that actually happened; p.peak records how far the
+    # trade got, which p.stat forgets once a later exit overwrites it.
+    if p.peak >= 1 or p.be:
+        paid += 0.5 * (r(p.tp1) if p.peak >= 1 else 1.0)
+        left -= 0.5
     if p.peak >= 2:
-        paid += 0.25 * r2
+        paid += 0.25 * r(p.tp2)
+        left -= 0.25
     if p.peak >= 3:
-        paid += 0.25 * r3
+        paid += 0.25 * r(p.tp3)
+        left -= 0.25
+    if left > 1e-9:
+        exit_px = p.exit_px if p.exit_px else (p.entry if p.be else p.sl)
+        paid += left * r(exit_px)
     return paid - cost
 
 
@@ -130,6 +154,8 @@ def run(candles: Iterable[Candle], cfg: Config, spread: float = 0.0) -> Report:
                 rep.breakeven += 1
             elif p.stat == -1:
                 rep.stopped += 1
+            else:
+                rep.timeout += 1
     rep.open_at_end = sum(1 for t in eng.trades if not t.closed)
     return rep
 
@@ -195,6 +221,7 @@ def total(reports: List[Report]) -> Report:
         t.tp3 += r.tp3
         t.stopped += r.stopped
         t.breakeven += r.breakeven
+        t.timeout += r.timeout
         t.open_at_end += r.open_at_end
         t.r_total += r.r_total
     return t
@@ -220,8 +247,8 @@ def main() -> None:
 
     sets = [
         ("everything on (default)", Config()),
-        ("no micro-BOS", Config(need_micro_bos=False)),
-        ("micro-BOS over 4 bars", Config(micro_bos_len=4)),
+        ("no analysis-zone refine", Config(refine_htf=False)),
+        ("whole-candle momentum zone", Config(momentum_full_candle=True)),
         ("no break-even", Config(break_even=False)),
         ("keep stopped-out zones", Config(kill_on_stop=False)),
     ]

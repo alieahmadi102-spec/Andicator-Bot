@@ -31,7 +31,7 @@
 //                  TP3 = the one beyond. 1R/2R/3R when no zone sits there.
 //  SCALP vs SWING (book): M5/M15 = SCALP · H1/H4/Daily = SWING.
 // ═══════════════════════════════════════════════════════════════════════════
-indicator("SNRZ Strategy [Zindan] v9", "SNRZ v10.8", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500, max_bars_back = 500)
+indicator("SNRZ Strategy [Zindan] v9", "SNRZ v10.9", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500, max_bars_back = 500)
 
 // ───────────────────────────── Inputs ──────────────────────────────────────
 grpZ  = "Zones (SNRZ)"
@@ -596,15 +596,21 @@ pushSwing(bool _htf, float _price, bool _isHigh, int _bar, float _segHi, float _
 // candle that has just become a PIVOT candidate — `high[_back]`, not `high` —
 // so the reading stops exactly at the pivot bar the next zone is drawn from.
 extendSeg(bool _htf, int _back) =>
-    sH = _htf ? htfSegHi : ltfSegHi
-    sL = _htf ? htfSegLo : ltfSegLo
+    sH = _htf ? htfSegHi  : ltfSegHi
+    sL = _htf ? htfSegLo  : ltfSegLo
+    lf = _htf ? htfSwLine : ltfSwLine
     n  = array.size(sH)
     if n > 0
-        h = high[_back]
-        l = low[_back]
+        h  = high[_back]
+        l  = low[_back]
+        cl = close[_back]
         for i = 0 to n - 1
-            array.set(sH, i, math.max(array.get(sH, i), h))
-            array.set(sL, i, math.min(array.get(sL, i), l))
+            // a LINE swing has no wicks, so its movement is measured close to
+            // close — reading high/low here measured the first movement on a
+            // chart the zone was never drawn from
+            bool isLn = array.get(lf, i)
+            array.set(sH, i, math.max(array.get(sH, i), isLn ? cl : h))
+            array.set(sL, i, math.min(array.get(sL, i), isLn ? cl : l))
 
 // A broken level only becomes tradable where the PULLBACK turns. The captain's
 // 30m chart: an R at 4,433.9 breaks upward, price runs to 4,530, then pulls
@@ -677,10 +683,14 @@ addSwing(bool _htf, float _price, bool _isHigh, int _bar, int _back, float _atr,
         gp = array.get(_htf ? htfSwPrice : ltfSwPrice, gi)
         gt = math.max(gp, _price)
         gb = math.min(gp, _price)
-        // images 31/33: which side we trade the gap from depends on where
-        // price is standing relative to the band
-        grole = close > gt ? 1 : close < gb ? -1 : (close > (gt + gb) / 2 ? 1 : -1)
-        if not overlaps(gt, gb, _htf)
+        // images 31/33: which side we trade the gap from is decided by where
+        // price IS — above the band it is support underneath, below it is
+        // resistance overhead. While price stands INSIDE the band there is no
+        // side yet, and images 52/53 both draw the box with price already
+        // outside it and wait for the return. The old midpoint tie-break gave
+        // such a band a side by accident.
+        grole = close > gt ? 1 : close < gb ? -1 : 0
+        if grole != 0 and not overlaps(gt, gb, _htf)
             array.push(zones, newZone(gt, gb, grole, _htf, _uid, _atr, _back, true))
     else if mi >= 0
         t = math.max(matePrice, _price)
@@ -881,6 +891,24 @@ nextZone(bool _isBuy, float _entry, int _rank) =>
             break
     best
 
+// How many separate LEVELS a set of broken zones represents. Zones drawn by
+// the candle pass, the line pass and the analysis pass sit on top of each
+// other, so three zones giving way together is usually one level, not three.
+distinctLevels(array<float> px, float _atr) =>
+    n = array.size(px)
+    int out = 0
+    if n > 0
+        arr = array.copy(px)
+        array.sort(arr, order.ascending)
+        tol = _atr * pairTolATR
+        float last = na
+        for i = 0 to array.size(arr) - 1
+            v = array.get(arr, i)
+            if na(last) or v - last > tol
+                out += 1
+                last := v
+    out
+
 // ─────────────────────── Zone engine ───────────────────────────────────────
 bool buySig      = false
 bool sellSig     = false
@@ -888,8 +916,15 @@ bool po2Buy      = false
 bool po2Sell     = false
 bool zoneBreakUp = false
 bool zoneBreakDn = false
-bool brokeResistanceNow = false
-bool brokeSupportNow    = false
+// p25: "it MUST break TWO supports; if it breaks more, that is no problem" —
+// so what is counted is LEVELS, not bars. These were plain booleans, so one
+// impulse through three resistances credited a support with a single break.
+// The prices are collected rather than counted, because the same real level is
+// usually carried by several zones at once (the candle pass, the line pass and
+// the analysis pass each draw their own) and overlaps() only keeps them apart
+// WITHIN a set.
+brokeResPx = array.new<float>()
+brokeSupPx = array.new<float>()
 
 var int lastSigBar = -1
 canFire = liveCount() < maxOpen
@@ -952,7 +987,7 @@ for z in zones
                 z.pendBar := -1
                 z.pendDir := 0
                 zoneBreakDn := true
-                brokeSupportNow := true
+                array.push(brokeSupPx, z.bot)
         else if inZone and close >= z.bot and not z.dead
             if justEntered
                 z.touches := z.touches + 1
@@ -1017,7 +1052,7 @@ for z in zones
                 z.pendBar := -1
                 z.pendDir := 0
                 zoneBreakUp := true
-                brokeResistanceNow := true
+                array.push(brokeResPx, z.top)
         else if inZone and close <= z.top and not z.dead
             if justEntered
                 z.touches := z.touches + 1
@@ -1051,16 +1086,18 @@ for z in zones
 
 // SRR / RSS qualification (book): a Support whose move broke ≥2 Resistances
 // becomes SRR (buy); a Resistance whose move broke ≥2 Supports becomes RSS.
-if brokeResistanceNow or brokeSupportNow
+nRes = distinctLevels(brokeResPx, atr)
+nSup = distinctLevels(brokeSupPx, atr)
+if nRes > 0 or nSup > 0
     for z in zones
         if z.state == 2 or z.dead
             continue
-        if brokeResistanceNow and z.role == 1 and close > z.top
-            z.oppBreaks := z.oppBreaks + 1
+        if nRes > 0 and z.role == 1 and close > z.top
+            z.oppBreaks := z.oppBreaks + nRes
             if z.oppBreaks >= 2
                 z.srr := true
-        if brokeSupportNow and z.role == -1 and close < z.bot
-            z.oppBreaks := z.oppBreaks + 1
+        if nSup > 0 and z.role == -1 and close < z.bot
+            z.oppBreaks := z.oppBreaks + nSup
             if z.oppBreaks >= 2
                 z.srr := true
         refreshZone(z)

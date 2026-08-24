@@ -14,7 +14,7 @@
 //|   • One position at a time with SL / TP1 / TP2 / TP3 drawn       |
 //+------------------------------------------------------------------+
 #property copyright   "SNRZ (Zindan The Gold Chaser) — indicator port"
-#property version     "10.80"
+#property version     "10.90"
 #property description "SNRZ: chart zones AND analysis zones together (book p.41/p.44), one trade at a time"
 #property indicator_chart_window
 #property indicator_buffers 4
@@ -541,6 +541,30 @@ void PushSwing(const bool htf, const double price, const bool isHigh,
 //+------------------------------------------------------------------+
 int FindMate(const bool htf, const double price, const int bar, const double atr, const bool line);
 
+//+------------------------------------------------------------------+
+//| How many separate LEVELS a set of broken zones represents. Zones  |
+//| drawn by the candle pass, the line pass and the analysis pass sit |
+//| on top of each other, so three zones giving way together is       |
+//| usually one level, not three.                                     |
+//+------------------------------------------------------------------+
+int DistinctLevels(double &px[], const double atr)
+  {
+   int n = ArraySize(px);
+   if(n <= 0)
+      return 0;
+   ArraySort(px);
+   double tol = atr * InpPairTolATR;
+   int    out = 1;
+   double last = px[0];
+   for(int i = 1; i < n; i++)
+      if(px[i] - last > tol)
+        {
+         out++;
+         last = px[i];
+        }
+   return out;
+  }
+
 void MateSeg(const bool htf, const double price, const int bar, const double atr,
              const double &hi[], const double &lo[], double &outHi, double &outLo,
              const bool line = false)
@@ -568,11 +592,15 @@ void MateSegRates(const double price, const int bar, const double atr,
    if(mi < 0) return;
    int mb = g_swHtf[mi].bar;
    if(mb < 0 || mb > bar) return;
-   outHi = r[mb].high; outLo = r[mb].low;
+   // a LINE swing has no wicks, so its movement is measured close to close.
+   // Reading high/low here measured the first movement on a chart the zone was
+   // never drawn from - the same mistake the engulf path once had.
+   outHi = line ? r[mb].close : r[mb].high;
+   outLo = line ? r[mb].close : r[mb].low;
    for(int k = mb; k <= bar; k++)
      {
-      outHi = MathMax(outHi, r[k].high);
-      outLo = MathMin(outLo, r[k].low);
+      outHi = MathMax(outHi, line ? r[k].close : r[k].high);
+      outLo = MathMin(outLo, line ? r[k].close : r[k].low);
      }
   }
 
@@ -982,11 +1010,14 @@ void AddSwingZone(const bool htf, const double price, const bool isHigh,
      {
       double gp = htf ? g_swHtf[gi].price : g_swLtf[gi].price;
       double gt = MathMax(gp, price), gb = MathMin(gp, price);
-      // images 31/33: which side we trade the gap from depends on where price
-      // is standing relative to the band
-      int grole = (refClose > gt) ? 1 : (refClose < gb ? -1
-                  : (refClose > (gt + gb) / 2.0 ? 1 : -1));
-      if(!Overlaps(gt, gb, htf))
+      // images 31/33: which side the gap is traded from is decided by where
+      // price IS - above the band it is support underneath, below it is
+      // resistance overhead. While price stands INSIDE the band there is no
+      // side yet, and images 52/53 both draw the box with price already
+      // outside it and wait for the return. The old midpoint tie-break gave
+      // such a band a side by accident.
+      int grole = (refClose > gt) ? 1 : (refClose < gb ? -1 : 0);
+      if(grole != 0 && !Overlaps(gt, gb, htf))
          AddZone(gt, gb, grole, bornH, atr, t1, t2, htf, true);
       return;
      }
@@ -1481,14 +1512,14 @@ int OnCalculate(const int rates_total,
                double lHi = 0.0, lLo = 0.0;
                if(lPH)
                  {
-                  MateSeg(false, close[pc], pc, atr, high, low, lHi, lLo, true);
+                  MateSeg(false, close[pc], pc, atr, close, close, lHi, lLo, true);
                   AddSwingZone(false, close[pc], true, pc, bar, atr, bodyHiC, bodyLoC,
                                hiRunL, loRunL, close[bar], time[pc], time[bar],
                                lHi, lLo, 0.0, 1.0, 0.0, true);
                  }
                if(lPL)
                  {
-                  MateSeg(false, close[pc], pc, atr, high, low, lHi, lLo, true);
+                  MateSeg(false, close[pc], pc, atr, close, close, lHi, lLo, true);
                   AddSwingZone(false, close[pc], false, pc, bar, atr, bodyHiC, bodyLoC,
                                hiRunL, loRunL, close[bar], time[pc], time[bar],
                                lHi, lLo, 0.0, 1.0, 0.0, true);
@@ -1524,8 +1555,16 @@ int OnCalculate(const int rates_total,
       // The limit-order model needs no confirmation candle: the book puts the
       // order ON the zone before price arrives, and the fill IS the entry.
       double o = open[bar], h = high[bar], l = low[bar], c = close[bar];
-      bool brokeSupportNow    = false;
-      bool brokeResistanceNow = false;
+      // p25: "it MUST break TWO supports; if it breaks more, that is no
+      // problem" - so what is counted is LEVELS, not bars. These were plain
+      // booleans, so one impulse through three resistances credited a support
+      // with a single break. The prices are collected rather than counted,
+      // because the same real level is usually carried by several zones at
+      // once (candle pass, line pass, analysis pass) and Overlaps() only keeps
+      // them apart WITHIN a set.
+      double brokeSupPx[], brokeResPx[];
+      ArrayResize(brokeSupPx, 0);
+      ArrayResize(brokeResPx, 0);
 
       //--- fill the resting orders, manage the live trades ------------------
       for(int i = ArraySize(g_orders) - 1; i >= 0; i--)
@@ -1680,7 +1719,11 @@ int OnCalculate(const int rates_total,
                   g_zones[i].dead     = (g_zones[i].flips >= InpMaxFlips);
                   g_zones[i].pendBar  = -1;
                   g_zones[i].pendDir  = 0;
-                  brokeSupportNow     = true;
+                  {
+                   int nb = ArraySize(brokeSupPx);
+                   ArrayResize(brokeSupPx, nb + 1);
+                   brokeSupPx[nb] = g_zones[i].bot;
+                  }
                   Notify((g_zones[i].wasValid ? "I.VS" : "SBR") + " — Support broken (75% rule), zone inverted to SELL", live);
                  }
               }
@@ -1781,7 +1824,11 @@ int OnCalculate(const int rates_total,
                   g_zones[i].dead     = (g_zones[i].flips >= InpMaxFlips);
                   g_zones[i].pendBar  = -1;
                   g_zones[i].pendDir  = 0;
-                  brokeResistanceNow  = true;
+                  {
+                   int nb = ArraySize(brokeResPx);
+                   ArrayResize(brokeResPx, nb + 1);
+                   brokeResPx[nb] = g_zones[i].top;
+                  }
                   Notify((g_zones[i].wasValid ? "I.VR" : "RBS") + " — Resistance broken (75% rule), zone inverted to BUY", live);
                  }
               }
@@ -1847,21 +1894,23 @@ int OnCalculate(const int rates_total,
 
       //--- SRR / RSS qualification (book): Support that broke >=2 Resistances
       //    becomes SRR (buy); Resistance that broke >=2 Supports becomes RSS.
-      if(brokeSupportNow || brokeResistanceNow)
+      int nSup = DistinctLevels(brokeSupPx, atr);
+      int nRes = DistinctLevels(brokeResPx, atr);
+      if(nSup > 0 || nRes > 0)
         {
          for(int i = 0; i < ArraySize(g_zones); i++)
            {
             if(g_zones[i].state == 2 || g_zones[i].dead)
                continue;
-            if(brokeResistanceNow && g_zones[i].role == 1 && c > g_zones[i].top)
+            if(nRes > 0 && g_zones[i].role == 1 && c > g_zones[i].top)
               {
-               g_zones[i].oppBreaks++;
+               g_zones[i].oppBreaks += nRes;
                if(g_zones[i].oppBreaks >= 2)
                   g_zones[i].srr = true;
               }
-            if(brokeSupportNow && g_zones[i].role == -1 && c < g_zones[i].bot)
+            if(nSup > 0 && g_zones[i].role == -1 && c < g_zones[i].bot)
               {
-               g_zones[i].oppBreaks++;
+               g_zones[i].oppBreaks += nSup;
                if(g_zones[i].oppBreaks >= 2)
                   g_zones[i].srr = true;
               }

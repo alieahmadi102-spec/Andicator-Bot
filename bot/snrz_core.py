@@ -165,8 +165,6 @@ class Config:
     drop_far_zones: bool = False     # ...delete it instead (old behaviour)
     max_flips: int = 2          # role inversions before a level is retired
     kill_on_stop: bool = True   # a zone whose signal got stopped out is finished
-    need_micro_bos: bool = True # book: "a small BOS in the trade direction"
-    micro_bos_len: int = 2
     break_even: bool = True     # book: risk free once the trade pays 1:1
     # Master class image 41, the fully worked trade: zone 4706-4720, stop
     # 4698.67, and a RED LINE drawn at 4732.33 — exactly 1:1 against that
@@ -231,6 +229,14 @@ class Config:
     engulf_full_candle: bool = True  # ...and the zone is the WHOLE candle
     momentum_zones: bool = True  # image 43: one momentum candle IS a zone
     momentum_body_atr: float = 0.8   # ...and this is how big "momentum" is
+    # Image 43 looks like it boxes the WHOLE candle, the way the engulf rule
+    # explicitly does («کل کندل بدنه با سایه میشه زون»). Measured both ways on
+    # 83 days: pooled over all six timeframes it is a dead heat (+0.0250 vs
+    # +0.0257 on ~6450 trades) and the median is slightly worse whole-candle.
+    # With no measurable difference and no words from the captain — only my
+    # reading of one screenshot's box edges — the default keeps the ordinary
+    # SNRZ geometry that every other zone here uses. Ask him and flip it.
+    momentum_full_candle: bool = False
     # p39: zones are marked on W/D/4H/1H; the low timeframes only MONITOR.
     entries_htf_only: bool = False
     # p42: entry at the zone midpoint, stop just beyond the zone, TP1 at 1:1
@@ -323,6 +329,9 @@ class Position:
     risk0: float = 0.0     # the ORIGINAL stop distance — break-even overwrites sl
     peak: int = 0          # best target reached before the exit (stat loses it)
     stat: int = 0          # 0 running · 1/2/3 TP reached · -1 stopped · -2 BE
+    exit_px: float = 0.0   # where the REST of the position actually came off.
+                           # Without it a trade that simply ran out of bars had
+                           # no exit price at all and the scoring had to guess.
     closed: bool = False
     be: bool = False       # stop already moved to entry
     uid: int = 0           # the zone that produced this setup
@@ -522,7 +531,10 @@ class SnrzEngine:
             pc = series[p]
             body = abs(pc.close - pc.open)
             if body >= atr * cfg.momentum_body_atr:
-                if is_high:
+                if cfg.momentum_full_candle:
+                    top, bot = pc.high, pc.low
+                    away = (top - lo_run) if is_high else (hi_run - bot)
+                elif is_high:
                     top, bot = pc.high, max(pc.open, pc.close)
                     away = top - lo_run
                 else:
@@ -735,7 +747,8 @@ class SnrzEngine:
                 # (p51). Which side we trade it from depends on where price is.
                 mid = (top + bot) / 2
                 role = Role.SUPPORT if series[j].close > mid else Role.RESISTANCE
-                src = "S+R" if mate.is_high else "R+S"
+                # the MATE came first, so a resistance mate makes it R+S
+                src = "R+S" if mate.is_high else "S+R"
             if self._overlaps(top, bot, htf):
                 continue
             # Master class image 36: "the difference from an ordinary support
@@ -748,9 +761,15 @@ class SnrzEngine:
             # or the second, is bigger, it is BETTER" — one, not both, and
             # better, not required. The code used to reject any zone unless
             # BOTH cleared 1.2 ATR, which is stricter than the rule twice over.
+            # ...measured close-to-close on a line chart, exactly like hi_run
+            # and lo_run above. A line chart has no wicks, so reading .high/.low
+            # here was measuring the first movement on a chart the zone was
+            # never drawn from — the same mistake the engulf path had.
             seg = series[mate.index: p + 1]
-            first = (max(w.high for w in seg) - top) if role == Role.SUPPORT \
-                else (bot - min(w.low for w in seg))
+            if role == Role.SUPPORT:
+                first = max((w.close if use_close else w.high) for w in seg) - top
+            else:
+                first = bot - min((w.close if use_close else w.low) for w in seg)
             away = (hi_run - top) if role == Role.SUPPORT else (bot - lo_run)
             if cfg.big_move_rule == "both":
                 if first < big or away < big:
@@ -833,14 +852,21 @@ class SnrzEngine:
         span = top - bot
         if not (atr * cfg.gap_min_atr <= span <= atr * cfg.gap_max_atr):
             return False
-        # the newer level tells us which way the market last travelled: a
-        # SUPPORT made above a resistance is the up-trend R+S of image 31
-        role = Role.SUPPORT if (not is_high and price > mate.price) or \
-            (is_high and price > mate.price) else Role.RESISTANCE
-        if close < bot:
-            role = Role.RESISTANCE
-        elif close > top:
+        # Which side the gap is traded from is decided by where price IS, and
+        # nothing else: above the band it is support underneath, below it is
+        # resistance overhead. While price sits INSIDE the band there is no
+        # side yet — images 52/53 both draw the box with price already outside
+        # it and wait for the return. (The old test here read
+        # `(not is_high and price > mate.price) or (is_high and price > mate.price)`
+        # — the same condition twice, so is_high did nothing and a band price
+        # was standing in got a side assigned by an accident of which swing
+        # printed last.)
+        if close > top:
             role = Role.SUPPORT
+        elif close < bot:
+            role = Role.RESISTANCE
+        else:
+            return False
         if self._overlaps(top, bot, htf):
             return False
         self._add_zone(top, bot, role, atr, idx, htf, src="GAP", valid=True)
@@ -871,8 +897,12 @@ class SnrzEngine:
             return 2                                   # PO2 (2nd touch coming)
         if inv:
             return 4                                   # V.S / V.R inversion
-        if z.src in ("S+R", "R+S", "PBP", "DBD"):
-            return 5                                   # GAP / base
+        # Image 54 ranks GAP fifth. This used to test for "S+R"/"R+S", which
+        # are the names of the PAIRED zones — a real gap carries src "GAP", so
+        # the branch never once fired for the thing it was written for, and the
+        # paired zones it did catch were being ranked above their own class.
+        if "GAP" in z.src or z.src in ("PBP", "DBD"):
+            return 5                                   # GAP / continuation base
         if z.state == State.VALID:
             return 6                                   # V.S / V.R fresh
         return 7                                       # SBR / RBS
@@ -927,6 +957,21 @@ class SnrzEngine:
         if is_high:
             return max(w.high for w in recent) >= max(w.high for w in window)
         return min(w.low for w in recent) <= min(w.low for w in window)
+
+    def _distinct_levels(self, prices: List[float], atr: float) -> int:
+        """How many separate LEVELS these broken zones represent.
+
+        Zones drawn by the candle pass, the line pass and the analysis pass sit
+        on top of each other, so three zones inverting together is usually one
+        level giving way, not three."""
+        if not prices:
+            return 0
+        tol = atr * self.cfg.pair_tol_atr
+        kept: List[float] = []
+        for p in sorted(prices):
+            if not kept or p - kept[-1] > tol:
+                kept.append(p)
+        return len(kept)
 
     def _struct_expand(self, series: List[Candle], idxs, role: Role,
                        top: float, bot: float, k: int):
@@ -1118,10 +1163,12 @@ class SnrzEngine:
             if p.side == "buy":
                 if c.low <= p.sl:
                     p.stat, p.closed = (-2 if p.be else -1), True
+                    p.exit_px = p.sl
                 elif entry_bar:
                     pass
                 elif c.high >= p.tp3:
                     p.stat, p.peak, p.closed = 3, 3, True
+                    p.exit_px = p.tp3
                 elif c.high >= p.tp2 and p.stat < 2:
                     p.stat = p.peak = 2
                 elif c.high >= p.tp1 and p.stat < 1:
@@ -1129,10 +1176,12 @@ class SnrzEngine:
             else:
                 if c.high >= p.sl:
                     p.stat, p.closed = (-2 if p.be else -1), True
+                    p.exit_px = p.sl
                 elif entry_bar:
                     pass
                 elif c.low <= p.tp3:
                     p.stat, p.peak, p.closed = 3, 3, True
+                    p.exit_px = p.tp3
                 elif c.low <= p.tp2 and p.stat < 2:
                     p.stat = p.peak = 2
                 elif c.low <= p.tp1 and p.stat < 1:
@@ -1146,13 +1195,24 @@ class SnrzEngine:
                 if reached or p.stat >= 1:
                     p.sl, p.be = p.entry, True
             if not p.closed and idx - p.index > self.cfg.max_trade_bars:
-                p.closed = True
+                # ran out of bars: whatever is still on comes off HERE, at the
+                # market. Recording the price is the whole point — without it
+                # the scoring had to invent an exit for these.
+                p.closed, p.exit_px = True, c.close
             if self.cfg.kill_on_stop and p.closed and p.stat == -1:
                 for z in self.zones:
                     if z.uid == p.uid:
                         z.dead = True
         if len(self.trades) > 400:
-            self.trades = [t for t in self.trades if not t.closed][-200:]
+            # Keep every trade that could still be closing on this bar. The old
+            # line dropped ALL closed trades, so a trade that finished on the
+            # very bar the list overflowed was gone before anything downstream
+            # could read it — it never reached the backtester's tally or a live
+            # runner's log. A trade cannot outlive max_trade_bars, so anything
+            # older than that has certainly been seen already.
+            keep_from = idx - self.cfg.max_trade_bars - 1
+            self.trades = [t for t in self.trades
+                           if not t.closed or t.index >= keep_from]
 
     @property
     def _effective_trend(self) -> int:
@@ -1232,16 +1292,32 @@ class SnrzEngine:
                 continue
             kept.append(z)
         self.zones = kept
-        # book, confirmation list: "a small Break of Structure in the trade
-        # direction" — without it a sell fires in the middle of a rally just
-        # because one candle poked the zone
-        prev = self.candles[max(0, idx - self.cfg.micro_bos_len):idx]
-        bos_buy_ok = (not self.cfg.need_micro_bos) or not prev \
-            or c.close > max(w.close for w in prev)
-        bos_sell_ok = (not self.cfg.need_micro_bos) or not prev \
-            or c.close < min(w.close for w in prev)
+        # The book's confirmation list asks for "a small Break of Structure in
+        # the trade direction". It is NOT applied here, and the two config
+        # knobs that claimed to apply it are gone — they were computed into two
+        # locals that nothing ever read, so "no micro-BOS" and "micro-BOS over
+        # 4 bars" printed byte-identical backtests to the default.
+        #
+        # Wiring it in was measured rather than assumed: it throws away 55% of
+        # the setups (6450 -> 2935) and takes the median from +0.066 to -0.004.
+        # That fits the model — the rule is a confirmation candle for entering
+        # AT MARKET once price reaches the zone, and this engine rests a LIMIT
+        # on the zone before price gets there, so the fill IS the entry. There
+        # is no candle left to confirm.
         cfg = self.cfg
-        broke_support = broke_resistance = False
+        # p25: "it MUST break TWO supports; if it breaks more, that is no
+        # problem" — so what is counted is LEVELS, not bars. These were plain
+        # booleans, which meant one impulse through three resistances credited
+        # a support with a single break and an SRR the book would have named
+        # needed a second impulse to appear.
+        #
+        # The prices are collected rather than just counted, because the same
+        # real level is often carried by more than one zone at once — the
+        # candle pass, the line pass and the analysis pass each draw their own,
+        # and _overlaps only keeps them apart WITHIN a set. Counting raw
+        # inversions would let one level break three times.
+        broke_support: List[float] = []
+        broke_resistance: List[float] = []
         # book: don't overtrade — while a setup is running, no new signal
         # Every zone gets its OWN order, so nothing blocks anything: the only
         # limit is one live order per zone and a cap on how many run at once.
@@ -1277,7 +1353,7 @@ class SnrzEngine:
                         z.flips += 1
                         z.dead = z.flips >= cfg.max_flips
                         z.pend_bar, z.pend_dir = -1, 0
-                        broke_support = True
+                        broke_support.append(z.bot)
                 elif in_zone and c.close >= z.bot and not z.dead:
                     if not z.in_zone_prev:
                         z.touches += 1
@@ -1349,7 +1425,7 @@ class SnrzEngine:
                         z.flips += 1
                         z.dead = z.flips >= cfg.max_flips
                         z.pend_bar, z.pend_dir = -1, 0
-                        broke_resistance = True
+                        broke_resistance.append(z.top)
                 elif in_zone and c.close <= z.top and not z.dead:
                     if not z.in_zone_prev:
                         z.touches += 1
@@ -1416,15 +1492,17 @@ class SnrzEngine:
         # Resistances becomes SRR (buy); a Resistance whose move broke >=2
         # Supports becomes RSS (sell).
         if broke_resistance or broke_support:
+            n_res = self._distinct_levels(broke_resistance, atr)
+            n_sup = self._distinct_levels(broke_support, atr)
             for z in self.zones:
                 if z.state == State.INVERTED or z.dead:
                     continue
-                if broke_resistance and z.role == Role.SUPPORT and c.close > z.top:
-                    z.opp_breaks += 1
+                if n_res and z.role == Role.SUPPORT and c.close > z.top:
+                    z.opp_breaks += n_res
                     if z.opp_breaks >= 2:
                         z.srr = True
-                if broke_support and z.role == Role.RESISTANCE and c.close < z.bot:
-                    z.opp_breaks += 1
+                if n_sup and z.role == Role.RESISTANCE and c.close < z.bot:
+                    z.opp_breaks += n_sup
                     if z.opp_breaks >= 2:
                         z.srr = True
 
