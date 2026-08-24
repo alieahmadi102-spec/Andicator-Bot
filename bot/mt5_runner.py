@@ -401,6 +401,37 @@ def sync_orders(engine, symbol: str, tf_minutes: int):
                      o.entry, o.sl, o.tp1, o.tp2, o.tp3), symbol, tf_minutes)
 
 
+def waiting_line(engine, symbol: str, price: float) -> str:
+    """One line saying what the bot is waiting FOR.
+
+    "(no new setup)" on every bar for hours is indistinguishable from a bot
+    that has quietly died, and the waits are long by nature: measured over 70
+    days, M1 goes a typical 31 minutes between signals and one wait in ten runs
+    past 2.5 hours; on M5 the typical wait is 165 minutes. So the silence needs
+    to show its work -- the nearest zone, how far price is from it, and whether
+    anything of ours is at the broker."""
+    live = [z for z in engine.zones if not z.dead]
+    bits = [f"{len(live)} zones"]
+    if live:
+        near = min(live, key=lambda z: abs(price - (z.top + z.bot) / 2.0))
+        edge = near.top if price < near.bot else (
+            near.bot if price > near.top else price)
+        bits.append(f"nearest {near.kind} {near.bot:.2f}-{near.top:.2f} "
+                    f"({abs(price - edge):.2f} away)")
+    engine_orders = len(engine.orders)
+    if engine_orders:
+        bits.append(f"{engine_orders} order(s) armed")
+    if not DRY_RUN:
+        try:
+            resting, holding = broker_state(symbol)
+            bits.append(f"broker {len(resting)}o/{len(holding)}p")
+        except Exception:
+            bits.append("broker ?")
+    else:
+        bits.append("DRY RUN")
+    return " · ".join(bits)
+
+
 def show_state(engine, symbol: str = None):
     """What the engine is actually holding right now. Without this the bot
     printed one line and then sat silent for an hour, which looks broken even
@@ -650,8 +681,11 @@ def main():
         sigs = engine.on_candle(Candle(int(b["time"]), b["open"], b["high"],
                                        b["low"], b["close"]))
         stamp = datetime.fromtimestamp(int(b["time"]), tz=timezone.utc)
-        print(f"[{stamp:%Y-%m-%d %H:%M} UTC] bar closed {b['close']:.2f}"
-              f"{'' if sigs else '  (no new setup)'}")
+        if sigs:
+            print(f"[{stamp:%Y-%m-%d %H:%M} UTC] bar closed {b['close']:.2f}")
+        else:
+            print(f"[{stamp:%Y-%m-%d %H:%M} UTC] {b['close']:.2f}  "
+                  f"no setup — {waiting_line(engine, SYMBOL, b['close'])}")
         for sig in sigs:
             print(f"  SIGNAL {sig.side.upper()} {sig.zone} @ {sig.price:.2f}  "
                   f"SL {sig.sl:.2f}  TP1 {sig.tp1:.2f} (next zone)")
