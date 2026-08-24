@@ -53,7 +53,13 @@ class Zone:
     role: Role
     state: State = State.FRESH
     touches: int = 0
-    sig_touch: int = 0          # anti-spam latch: one signal per touch
+    sig_touch: int = -1         # the touch count this zone last armed an
+                                # order at. -1 = never. Declared as an
+                                # "anti-spam latch: one signal per touch" and
+                                # then never read, while the zone re-armed the
+                                # moment its previous order expired: 401 orders
+                                # a day sent to the broker on M1, 94% of them
+                                # expiring unfilled. Now it means what it says.
     opp_breaks: int = 0         # opposite zones broken since creation (SRR/RSS)
     srr: bool = False           # qualified as SRR (support) / RSS (resistance)
     was_valid: bool = False
@@ -297,6 +303,17 @@ class Config:
     refine_htf: bool = True
     require_nested: bool = False   # as a GATE: measured much worse
     nested_bonus: bool = True      # ...as a PREFERENCE instead
+    # How near price has to be before an order is rested on a zone. The book
+    # draws zones stacked up the chart with an order on each, but a zone fifty
+    # dollars away is not a pullback candidate -- it is churn: an order placed
+    # and cancelled every few bars for a price that was never coming. 0 = arm
+    # every zone regardless of distance.
+    # Swept: no limit / 6 / 3 / 2 / 1 ATR gave 96 / 90 / 69 / 55 / 38 orders a
+    # day on M1 and a median of -0.010 / +0.017 / +0.008 / +0.045 / +0.070,
+    # pooled +0.0247 / +0.0291 / +0.0310 / +0.0367 / +0.0271. 2 ATR is the best
+    # on pooled and near-best on median, and it cuts the churn seven-fold from
+    # the 401 a day this started at.
+    arm_within_atr: float = 2.0
     order_expiry_bars: int = 10   # a limit order that never fills must expire —
                                   # while it rests it blocks every new signal
 
@@ -1503,7 +1520,7 @@ class SnrzEngine:
                         z.was_valid = z.state == State.VALID
                         z.role, z.state = Role.RESISTANCE, State.INVERTED
                         z.await_pull = idx if cfg.flip_needs_pullback else -1
-                        z.touches = z.sig_touch = 0
+                        z.touches, z.sig_touch = 0, -1
                         z.srr = z.fba = False
                         z.false_breaks = 0
                         z.flips += 1
@@ -1518,47 +1535,6 @@ class SnrzEngine:
                         if (z.state != State.INVERTED and z.touches > cfg.max_touches) or \
                            (z.state == State.INVERTED and z.touches > 2):
                             z.dead = True                  # 3-touch rule
-                    # a paired zone already has its two touches by
-                    # construction (p24/p35), so the RETURN to it is the entry
-                    need = 1 if z.src != "pivot" else 2
-                    # await_pull >= 0 means the level broke but the pullback
-                    # has not printed its swing yet, so there is nothing to
-                    # trade at any price. The old band is not the level.
-                    tradable = (not z.dead) and z.pend_dir == 0 \
-                        and z.await_pull < 0 and (
-                        (z.state == State.VALID and z.touches >= need) or
-                        # SRR/RSS: "a support that has broken TWO resistances,
-                        # and when it pulls back to it we place the order on
-                        # it". The order is armed while price is AWAY from the
-                        # zone, so the pullback IS the fill — demanding a touch
-                        # first threw away exactly the pullback the captain's
-                        # chart marks with an arrow, and waited for a second.
-                        z.srr or
-                        (z.state == State.INVERTED and 1 <= z.touches <= 2))
-                    if cfg.entries_htf_only and not z.htf:
-                        tradable = False        # p39: entries only from W/D/4H/1H
-                    if cfg.require_nested and not self._nested(z):
-                        tradable = False        # p14/p35: small zone inside big
-                    ok_trend = (not cfg.trend_filter) or self.trend_up \
-                        or (self.trend_unknown and not self.in_range) \
-                        or (cfg.allow_counter_inv and z.state == State.INVERTED)
-                    # §15: buying right into a freshly swept HIGH is buying the
-                    # liquidity grab, the mirror of the sell-side rule
-                    if cfg.sweep_guard and self._fresh_extreme(idx, True):
-                        ok_trend = False
-                    if tradable and ok_trend and can_fire \
-                            and not self._has_order_or_trade(z.uid) \
-                            and c.close > z.top:      # price is ABOVE the zone
-                        lv = self._levels(True, z, c, atr)
-                        if lv is not None:
-                            cand.append((self._rank(z) if cfg.rank_setups else 0,
-                                         z.uid, "buy", z.kind,
-                                         # image 55: PO2 is the SECOND touch of
-                                         # an inversion zone. The order is armed
-                                         # while price is away, so the fill IS
-                                         # that second touch — which means the
-                                         # zone must have exactly ONE touch now.
-                                         z.state == State.INVERTED and z.touches == 1, lv))
             else:
                 if z.pend_dir == 0 and self._bull_break(z.top, c):
                     z.pend_bar, z.pend_dir = idx, 1
@@ -1575,7 +1551,7 @@ class SnrzEngine:
                         z.was_valid = z.state == State.VALID
                         z.role, z.state = Role.SUPPORT, State.INVERTED
                         z.await_pull = idx if cfg.flip_needs_pullback else -1
-                        z.touches = z.sig_touch = 0
+                        z.touches, z.sig_touch = 0, -1
                         z.srr = z.fba = False
                         z.false_breaks = 0
                         z.flips += 1
@@ -1590,48 +1566,66 @@ class SnrzEngine:
                         if (z.state != State.INVERTED and z.touches > cfg.max_touches) or \
                            (z.state == State.INVERTED and z.touches > 2):
                             z.dead = True
-                    # a paired zone already has its two touches by
-                    # construction (p24/p35), so the RETURN to it is the entry
-                    need = 1 if z.src != "pivot" else 2
-                    # await_pull >= 0 means the level broke but the pullback
-                    # has not printed its swing yet, so there is nothing to
-                    # trade at any price. The old band is not the level.
-                    tradable = (not z.dead) and z.pend_dir == 0 \
-                        and z.await_pull < 0 and (
-                        (z.state == State.VALID and z.touches >= need) or
-                        # SRR/RSS: "a support that has broken TWO resistances,
-                        # and when it pulls back to it we place the order on
-                        # it". The order is armed while price is AWAY from the
-                        # zone, so the pullback IS the fill — demanding a touch
-                        # first threw away exactly the pullback the captain's
-                        # chart marks with an arrow, and waited for a second.
-                        z.srr or
-                        (z.state == State.INVERTED and 1 <= z.touches <= 2))
-                    if cfg.entries_htf_only and not z.htf:
-                        tradable = False        # p39: entries only from W/D/4H/1H
-                    if cfg.require_nested and not self._nested(z):
-                        tradable = False        # p14/p35: small zone inside big
-                    ok_trend = (not cfg.trend_filter) or self.trend_down \
-                        or (self.trend_unknown and not self.in_range) \
-                        or (cfg.allow_counter_inv and z.state == State.INVERTED)
-                    # §15: gold takes the sell-side liquidity FIRST and then
-                    # moves — selling just after a fresh low is selling the
-                    # reversal. This is what sold the 3942 bottom.
-                    if cfg.sweep_guard and self._fresh_extreme(idx, False):
-                        ok_trend = False
-                    if tradable and ok_trend and can_fire \
-                            and not self._has_order_or_trade(z.uid) \
-                            and c.close < z.bot:      # price is BELOW the zone
-                        lv = self._levels(False, z, c, atr)
-                        if lv is not None:
-                            cand.append((self._rank(z) if cfg.rank_setups else 0,
-                                         z.uid, "sell", z.kind,
-                                         # image 55: PO2 is the SECOND touch of
-                                         # an inversion zone. The order is armed
-                                         # while price is away, so the fill IS
-                                         # that second touch — which means the
-                                         # zone must have exactly ONE touch now.
-                                         z.state == State.INVERTED and z.touches == 1, lv))
+
+            # ── the entry ────────────────────────────────────────────────
+            # This used to live INSIDE "elif in_zone", so an order could only
+            # be armed on a bar where price was touching the zone. But the
+            # entry is a LIMIT resting AT the zone: if price has to be there
+            # for the order to exist, it then has to come back a SECOND time to
+            # fill it. Every setup needed two visits instead of one.
+            #
+            # The book puts the order on the zone and waits for the pullback --
+            # one visit. The SRR comment below even said "the order is armed
+            # while price is AWAY from the zone", describing behaviour the
+            # placement made impossible. So it is evaluated for every live
+            # zone, every bar, and being on the correct side of the zone is
+            # what qualifies it -- not standing in it.
+            is_buy = z.role == Role.SUPPORT
+            # a paired zone already has its two touches by construction
+            # (p24/p35), so the RETURN to it is the entry
+            need = 1 if z.src != "pivot" else 2
+            # await_pull >= 0 means the level broke but the pullback has not
+            # printed its swing yet, so there is nothing to trade at any price.
+            tradable = (not z.dead) and z.pend_dir == 0 \
+                and z.await_pull < 0 and (
+                (z.state == State.VALID and z.touches >= need) or
+                z.srr or
+                (z.state == State.INVERTED and 1 <= z.touches <= 2))
+            if cfg.entries_htf_only and not z.htf:
+                tradable = False        # p39: entries only from W/D/4H/1H
+            if cfg.require_nested and not self._nested(z):
+                tradable = False        # p14/p35: small zone inside big
+            ok_trend = (not cfg.trend_filter) \
+                or (self.trend_up if is_buy else self.trend_down) \
+                or (self.trend_unknown and not self.in_range) \
+                or (cfg.allow_counter_inv and z.state == State.INVERTED)
+            # §15: buying into a freshly swept HIGH, or selling into a freshly
+            # swept LOW, is taking the wrong side of the liquidity grab
+            if cfg.sweep_guard and self._fresh_extreme(idx, is_buy):
+                ok_trend = False
+            # price must be on the side the trade comes FROM: above a support,
+            # below a resistance. The limit then waits at the zone's near edge.
+            side_ok = (c.close > z.top) if is_buy else (c.close < z.bot)
+            if side_ok and cfg.arm_within_atr > 0:
+                gap = (c.close - z.top) if is_buy else (z.bot - c.close)
+                side_ok = gap <= atr * cfg.arm_within_atr
+            # ...and only ONCE per touch. Without this the zone re-armed as
+            # soon as its order expired, and the same setup was offered over
+            # and over while price sat on the same side of it.
+            if tradable and ok_trend and can_fire and side_ok \
+                    and z.sig_touch != z.touches \
+                    and not self._has_order_or_trade(z.uid):
+                lv = self._levels(is_buy, z, c, atr)
+                if lv is not None:
+                    z.sig_touch = z.touches
+                    cand.append((self._rank(z) if cfg.rank_setups else 0,
+                                 z.uid, "buy" if is_buy else "sell", z.kind,
+                                 # image 55: PO2 is the SECOND touch of an
+                                 # inversion zone. The order is armed while
+                                 # price is away, so the fill IS that second
+                                 # touch -- the zone must have ONE touch now.
+                                 z.state == State.INVERTED and z.touches == 1,
+                                 lv))
             z.in_zone_prev = in_zone
 
         # image 54: when more zones qualify than there are slots, the
