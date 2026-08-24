@@ -1,39 +1,115 @@
 @echo off
 REM ===========================================================================
-REM  SNRZ bot -- double-click this file to start it.
+REM  SNRZ bot -- double-click this file, or run it from cmd.
 REM
-REM  Why a .bat and not the .ps1 directly: Windows refuses to run a .ps1 on
-REM  double-click (it opens it in Notepad instead), and a .py that crashes
-REM  closes its own window before you can read the error. This does neither --
-REM  it launches PowerShell with the execution policy unblocked for this one
-REM  run, and holds the window open afterwards so the last message stays on
-REM  screen whether it finished or failed.
+REM  Pure cmd: no PowerShell anywhere in here. It checks the things that
+REM  actually go wrong, names the one that failed, and holds the window open
+REM  so the message stays on screen.
 REM
-REM  DRY RUN by default: nothing is sent to the broker. To send real orders you
-REM  have to type the command yourself -- see the bottom of this file. That is
-REM  deliberate, so a stray double-click can never place a trade.
+REM  DRY RUN by default -- nothing is sent to the broker. Real orders need
+REM  --live typed by hand, so a stray double-click can never place a trade.
 REM
-REM  Want a different timeframe? Right-click this file -> Create shortcut, then
-REM  in the shortcut's Properties add the argument at the end of Target:
-REM       ...\START_BOT.bat -Tf 60
+REM      START_BOT.bat                  5-minute chart, dry run
+REM      START_BOT.bat --tf 15          15-minute chart
+REM      START_BOT.bat --tf 5 --live    real orders
 REM ===========================================================================
 
 setlocal
 cd /d "%~dp0"
-title SNRZ bot - DRY RUN
+title SNRZ bot
 
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0run_windows.ps1" %*
+echo.
+echo   SNRZ bot
+echo   --------
 
+REM --- 1) does python actually RUN? -------------------------------------------
+REM  "where python" is not enough: Windows ships a Microsoft Store stub called
+REM  python.exe that exists, is on PATH, and does nothing but open the Store.
+python -c "print(1)" >nul 2>&1
+if errorlevel 1 goto :no_python
+for /f "delims=" %%V in ('python --version 2^>^&1') do echo   [ok] %%V
+
+REM --- 2) 64-bit? the MetaTrader5 package needs it ---------------------------
+python -c "import platform,sys; sys.exit(0 if platform.architecture()[0]=='64bit' else 1)" >nul 2>&1
+if errorlevel 1 goto :not_64bit
+echo   [ok] 64-bit
+
+REM --- 3) the MetaTrader5 package --------------------------------------------
+python -c "import MetaTrader5" >nul 2>&1
+if not errorlevel 1 goto :have_pkg
+echo   ... installing the MetaTrader5 package, one moment
+python -m pip install --quiet --upgrade pip
+python -m pip install --quiet MetaTrader5
+python -c "import MetaTrader5" >nul 2>&1
+if errorlevel 1 goto :no_pkg
+:have_pkg
+echo   [ok] MetaTrader5 package
+
+REM --- 4) the terminal itself -------------------------------------------------
+REM  Two names because 32-bit terminals exist. Written with && rather than
+REM  nested ifs: inside a parenthesised block cmd expands errorlevel at PARSE
+REM  time, so a nested "if errorlevel" there reads the value from before the
+REM  block ever ran.
+set "MT5RUN="
+tasklist /FI "IMAGENAME eq terminal64.exe" 2>nul | find /I "terminal64.exe" >nul && set "MT5RUN=1"
+tasklist /FI "IMAGENAME eq terminal.exe"   2>nul | find /I "terminal.exe"   >nul && set "MT5RUN=1"
+if not defined MT5RUN goto :no_mt5
+echo   [ok] MetaTrader 5 is running
+echo.
+
+REM --- 5) go ------------------------------------------------------------------
+if "%~1"=="" (
+    python mt5_runner.py --tf 5
+) else (
+    python mt5_runner.py %*
+)
+goto :done
+
+:no_python
+echo.
+echo   [X] Python is not installed, or PATH points at the Microsoft Store stub.
+echo.
+echo       Get it from  https://www.python.org/downloads/windows/
+echo       Pick "Windows installer (64-bit)".
+echo       During setup TICK "Add python.exe to PATH", then reopen cmd.
+echo.
+pause
+exit /b 1
+
+:not_64bit
+echo.
+echo   [X] This is 32-bit Python. The MetaTrader5 package needs 64-bit.
+echo       Install the "Windows installer (64-bit)" from python.org.
+echo.
+pause
+exit /b 1
+
+:no_pkg
+echo.
+echo   [X] pip could not install MetaTrader5.
+echo       Run this to see the real error:
+echo           python -m pip install MetaTrader5
+echo.
+pause
+exit /b 1
+
+:no_mt5
+echo.
+echo   [X] MetaTrader 5 does not look like it is running.
+echo       Open it, log in to the account you want, and try again.
+echo       The bot talks to the terminal -- it cannot log in by itself.
+echo.
+pause
+exit /b 1
+
+:done
 echo.
 echo ============================================================
 echo   The bot has stopped.
+echo   If that was an error, the reason is printed just above.
 echo.
-echo   If it stopped because of an error, the reason is printed
-echo   just above this box.
-echo.
-echo   To send REAL orders instead of a dry run, open PowerShell
-echo   here and type:
-echo       .\run_windows.ps1 -Live
+echo   Real orders:   START_BOT.bat --tf 5 --live
+echo   Other charts:  START_BOT.bat --tf 15
 echo ============================================================
 echo.
 pause
