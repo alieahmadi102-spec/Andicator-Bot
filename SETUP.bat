@@ -55,9 +55,19 @@ echo   [ok] bot folder  %SRC%\bot
 if defined PUTIND echo   [ok] indicator   %PUTIND%
 if not defined PUTIND echo   [--] MT5 folder not found -- copy mt5\SNRZ_Indicator.mq5 by hand
 echo.
+echo   Ready-made launchers, one per timeframe -- just double-click one:
+echo.
+echo       RUN_1m.bat    RUN_5m.bat    RUN_15m.bat        dry run, nothing sent
+echo       RUN_30m.bat   RUN_1h.bat    RUN_4h.bat
+echo.
+echo       LIVE_5m.bat   LIVE_15m.bat  ...                REAL orders
+echo.
+echo   RUN_5m.bat is the one to start with: on 83 days of real XAUUSD the
+echo   5-minute chart measured best, and it is the captain's own timeframe.
+echo.
 echo   Next:
 echo     1. open MetaTrader 5 and log in
-echo     2. double-click START_BOT.bat in the folder that just opened
+echo     2. double-click RUN_5m.bat in the folder that just opened
 echo.
 
 explorer "%SRC%\bot"
