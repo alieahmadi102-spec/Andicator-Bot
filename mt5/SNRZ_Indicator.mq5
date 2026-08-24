@@ -14,7 +14,7 @@
 //|   • One position at a time with SL / TP1 / TP2 / TP3 drawn       |
 //+------------------------------------------------------------------+
 #property copyright   "SNRZ (Zindan The Gold Chaser) — indicator port"
-#property version     "11.20"
+#property version     "12.00"
 #property description "SNRZ: chart zones AND analysis zones together (book p.41/p.44), one trade at a time"
 #property indicator_chart_window
 #property indicator_buffers 4
@@ -107,6 +107,13 @@ input bool   InpKillOnStop   = true;  // A zone that got stopped out is finished
 // back to the stop before it was ever protected.
 input bool   InpBreakEven    = true;  // Move stop to entry at the 1:1 line
 input double InpBeAtR        = 1.0;   // ...meaning this many times the stop distance
+input bool   InpSingleTf     = true;  // Everything on THIS timeframe (no separate analysis TF)
+// The captain's ladder marks the zones two rungs up and drops to the chart to
+// confirm and enter. This turns that off: the chart marks its own zones,
+// confirms on itself and opens the trade on itself - 1-minute zones traded on
+// the 1-minute chart. With no analysis timeframe the trend filter reads the
+// CHART's own structure and TP2 falls back to the next chart zone. Nothing
+// else in the rules changes.
 input int    InpRangeBars    = 10;    // Range lockout (analysis-TF bars since opposite BOS)
 input int    InpMaxOpen      = 3;     // How many zones may carry a live order/trade at once
 input double InpMinRR        = 1.0;   // The next zone must be at least this many R away
@@ -1458,13 +1465,29 @@ int OnCalculate(const int rates_total,
             continue;                        // not enough history yet
          hIdx = j;
         }
-      while(hIdx + 1 < hCount && htf[hIdx + 1].time <= time[bar])
-        {
-         hIdx++;
-         ProcessHtfBar(hIdx, htf, atrH, hCount);
-        }
+      if(!InpSingleTf)
+         while(hIdx + 1 < hCount && htf[hIdx + 1].time <= time[bar])
+           {
+            hIdx++;
+            ProcessHtfBar(hIdx, htf, atrH, hCount);
+           }
 
-      double atrA = atrH[hIdx] > 0.0 ? atrH[hIdx] : atr;
+      double atrA = InpSingleTf ? atr
+                    : (atrH[hIdx] > 0.0 ? atrH[hIdx] : atr);
+
+      // With no analysis timeframe there is no analysis structure either, so
+      // the Break of Structure that turns the trend is read from the CHART's
+      // own last confirmed swings.
+      if(InpSingleTf)
+        {
+         double cc = close[bar];
+         bool bUp = (g_cHigh > 0 && cc > g_cHigh + atr * 0.1);
+         bool bDn = (g_cLow  > 0 && cc < g_cLow  - atr * 0.1);
+         if(bUp && !g_bosUpPrev) { g_lastBosUpH = bar; g_trendState =  1; }
+         if(bDn && !g_bosDnPrev) { g_lastBosDnH = bar; g_trendState = -1; }
+         g_bosUpPrev = bUp;
+         g_bosDnPrev = bDn;
+        }
 
       //--- CHART-timeframe zones (book p.41: zones are marked on the analysis
       //    timeframe AND on the chart; TP1 comes from a chart zone) ---------
@@ -1562,8 +1585,11 @@ int OnCalculate(const int rates_total,
                RemoveZoneAt(i);
 
       // both sides of structure broken recently = sideway. "No Setup, No Trade".
-      bool inRange   = (hIdx - g_lastBosUpH) <= InpRangeBars &&
-                       (hIdx - g_lastBosDnH) <= InpRangeBars;
+      // g_lastBos* holds an ANALYSIS index normally and a CHART index under
+      // InpSingleTf, so the cursor compared against it has to match.
+      int rIdx = InpSingleTf ? bar : hIdx;
+      bool inRange   = (rIdx - g_lastBosUpH) <= InpRangeBars &&
+                       (rIdx - g_lastBosDnH) <= InpRangeBars;
       // Until the analysis timeframe has printed two swings it has NO opinion,
       // and with g_trendState stuck at 0 the filter blocked every trade
       // forever. "Trend is King" does not mean "no opinion, no trade" — the

@@ -125,6 +125,17 @@ class Config:
     # rung deliberately skipped — the SKIP column of the book's TimeFrames
     # table. Set chart_minutes and the analysis timeframe follows from it;
     # leave it 0 and htf_mult is used as given.
+    # ONE TIMEFRAME. The captain's ladder marks the zones two rungs up and
+    # drops to the chart to confirm and enter. This turns that off: the chart
+    # marks its own zones, confirms on itself, and opens the trade on itself —
+    # 1-minute zones traded on the 1-minute chart.
+    #
+    # With no analysis timeframe there is no separate trend to obey either, so
+    # the trend filter reads the CHART's own structure, and TP2 falls back to
+    # the next chart zone instead of preferring an analysis one. Nothing else
+    # in the rules changes: the same five ways of drawing a zone, the same
+    # entries, the same targets.
+    single_tf: bool = True
     chart_minutes: int = 0
     htf_rungs: int = 2
     htf_mult: int = 3
@@ -871,8 +882,15 @@ class SnrzEngine:
                 self.trend_state = 1
             elif self.last_high < self.prev_high and self.last_low < self.prev_low:
                 self.trend_state = -1
-        # both sides broken recently = ranging; the book says stand aside
-        span = self.cfg.range_bars * max(1, self.cfg.htf_mult)
+        # Both sides broken recently = ranging; the book says stand aside.
+        # range_bars counts ANALYSIS bars, and idx is a CHART index, so the
+        # window is scaled by the multiplier between them — which is 1 when the
+        # chart IS the analysis timeframe. Leaving the multiplier in under
+        # single_tf made the window three times too wide and, since the trend
+        # now updates on every chart bar rather than every analysis bar, held
+        # the engine "in range" almost permanently: 571 trades instead of 6352.
+        mult = 1 if self.cfg.single_tf else max(1, self.cfg.htf_mult)
+        span = self.cfg.range_bars * mult
         self.in_range = (idx - self.last_bos_up) <= span \
             and (idx - self.last_bos_dn) <= span
 
@@ -1295,12 +1313,18 @@ class SnrzEngine:
 
         # Book p.41: zones are marked on the analysis timeframe AND the chart,
         # so both passes run. Only the analysis pass feeds the trend.
+        # single_tf: the chart marks its OWN zones, confirms on itself and
+        # trades on itself — so the trend has to come from the chart's own
+        # structure too, which is what track_trend does here.
+        one = self.cfg.single_tf
         self._pivot_zones(self.candles, self.cfg.pivot_ltf, atr, idx,
-                          htf=False, track_trend=False)
+                          htf=False, track_trend=one)
         if self.cfg.line_zones:
             self._pivot_zones(self.candles, self.cfg.pivot_ltf, atr, idx,
                               htf=False, track_trend=False, use_close=True)
-        if self._push_htf(c):
+        if one:
+            self._update_trend(c, atr, idx)
+        elif self._push_htf(c):
             atr_h = self._htf_atr()
             if atr_h and atr_h > 0:
                 self._pivot_zones(self.htf_candles, self.cfg.pivot_htf, atr_h,

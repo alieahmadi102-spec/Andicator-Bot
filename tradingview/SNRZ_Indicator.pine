@@ -31,7 +31,7 @@
 //                  TP3 = the one beyond. 1R/2R/3R when no zone sits there.
 //  SCALP vs SWING (book): M5/M15 = SCALP · H1/H4/Daily = SWING.
 // ═══════════════════════════════════════════════════════════════════════════
-indicator("SNRZ Strategy [Zindan] v9", "SNRZ v11.2", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500, max_bars_back = 500)
+indicator("SNRZ Strategy [Zindan] v9", "SNRZ v12.0", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500, max_bars_back = 500)
 
 // ───────────────────────────── Inputs ──────────────────────────────────────
 grpZ  = "Zones (SNRZ)"
@@ -40,6 +40,7 @@ structZone    = input.bool(true, "زونِ تایمِ تحلیل از **ساخت
 structBars    = input.int(3, "…چند کندل هر طرفِ پیوت جزو چرخش است", minval = 1, maxval = 10, group = grpZ)
 maxZoneATRHtf = input.float(1.0, "سقفِ ارتفاعِ زونِ تایمِ تحلیل (ATR ×)", minval = 0.1, step = 0.1, group = grpZ, tooltip = "زونِ تحلیل شکلش را از ساختار می‌گیرد، پس این عدد فقط یک حدِ ایمنی است نه شکل‌دهنده.")
 refineHtf     = input.bool(true, "روی چارت، زونِ تایمِ تحلیل کوچک شود (قانونِ کاپیتان)", group = grpZ, tooltip = "«وقتی زونِ بزرگ در ۱۵ دقیقه مشخص شد و به ۱ دقیقه می‌روی، آن زون کوچک‌تر می‌شود چون کندل‌ها کوچک‌ترند. در یک دقیقه آن زونِ ۱۵ دقیقه **برداشته می‌شود** و روی زونی که یک دقیقه مشخص کرده حساب می‌شود، و وقتی قیمت پول‌بک زد معامله انجام می‌شود.»\n\nنکته این است که **کدام کندل‌ها** آن را دوباره می‌کشند: قیمتِ آینده نه — همان دقیقه‌ها با دقتِ بالاتر. یک کندلِ ۱۵ دقیقه‌ای با سایه‌ی ۵ دلاری، پانزده کندلِ ۱ دقیقه‌ای است و خودِ چرخش فقط سه‌تایش را گرفته.\n\nباکسِ پهن حذف نمی‌شود — با خطِ نقطه‌چین می‌ماند تا ببینی تایمِ تحلیل کجا سطح را دیده. ولی اردر، استاپ و شمارشِ برخورد همه مالِ باکسِ تنگ‌اند.\n\nروی ۸۳ روز XAUUSD با اسپردِ واقعی ۱۴ سنت: M5 از −۰٫۰۰۷ به **+۰٫۰۱۹** · M15 از −۰٫۰۲۲ به **+۰٫۰۰۱** · M30 از −۰٫۰۷۳ به **−۰٫۰۲۵** · M1 از −۰٫۰۹۶ به −۰٫۰۸۷. H1 و H4 عملاً ثابت (اختلافشان روی ۱۵۵ و ۵۳ معامله در حدِ نویز است).")
+singleTf      = input.bool(true, "همه‌چیز روی همین تایم‌فریم (بدونِ تایمِ تحلیل)", group = grpZ, tooltip = "زون‌ها روی **همین چارت** مشخص می‌شوند، تأیید روی همین چارت گرفته می‌شود و معامله روی همین چارت باز می‌شود. یعنی روی ۱ دقیقه، زونِ ۱ دقیقه‌ای معامله می‌شود.\n\nنردبانِ کاپیتان (زون دو پله بالاتر، ورود روی چارت) با خاموش‌کردنِ این برمی‌گردد.\n\nوقتی روشن است تایمِ تحلیلی وجود ندارد، پس فیلترِ ترند هم **ساختارِ همین چارت** را می‌خواند و TP2 به‌جای زونِ تحلیلی، زونِ بعدیِ همین چارت می‌شود. بقیه‌ی قانون‌ها عوض نمی‌شوند.\n\nروی ۸۳ روز XAUUSD با اسپردِ ۱۴ سنت: M5 از +۰٫۰۹۴ به **+۰٫۱۲۰** بهتر شد، ولی M15 از +۰٫۰۳۸ به −۰٫۰۳۳ و H1 از +۰٫۰۸۱ به −۰٫۰۸۸ بدتر. تعدادِ ستاپ‌ها هم تقریباً نصف می‌شود چون فقط یک دسته زون کشیده می‌شود.")
 htfSkipRung   = input.bool(true, "تایمِ تحلیل دو پله بالاتر (نردبانِ کاپیتان)", group = grpZ, tooltip = "قانونِ خودِ کاپیتان با سه مثال: «۱ ساعته زون مشخص می‌شود، می‌رود روی ۱۵ دقیقه: زون کوچک‌تر + تأیید + ورود» · «۳۰ دقیقه ⇒ ۵ دقیقه» · «۱۵ دقیقه ⇒ ۱ دقیقه». هر سه **دو پله** پایین‌ترند — همان ستونِ SKIP جدولِ کتاب.\n\nروی ۸۳ روز XAUUSD: H1 برای اولین بار مثبت شد (−۰٫۱۱ ⇒ **+۰٫۱۵**) و M30 کمی بهتر، ولی M5 از +۰٫۱۱ به +۰٫۰۲ و M15 از +۰٫۰۸ به −۰٫۰۱ افتاد. روشن است چون قانونِ کاپیتان است، نه چون عدد بهتر شد — خاموشش کنی به ضریبِ ثابتِ ۳ برمی‌گردد.")
 pivotLtf      = input.int(5,    "Pivot length — chart zones",              minval = 2,  group = grpZ, tooltip = "کوچک‌تر = زون بیشتر روی خود چارت = سیگنال بیشتر در تایم‌های پایین.")
 pivotHtf      = input.int(8,    "Pivot length — analysis zones",           minval = 2,  group = grpZ)
@@ -237,16 +238,24 @@ var float lastHigh = na
 var float prevHigh = na
 var float lastLow  = na
 var float prevLow  = na
-prevHigh := newPHh ? lastHigh : prevHigh
-lastHigh := newPHh ? phH : lastHigh
-prevLow := newPLh ? lastLow : prevLow
-lastLow := newPLh ? plH : lastLow
+// ...unless singleTf is on, in which case there IS no analysis timeframe and
+// the chart's own swings are the structure.
+newPHt = singleTf ? not na(phL)  : newPHh
+newPLt = singleTf ? not na(plL)  : newPLh
+phT    = singleTf ? phL          : phH
+plT    = singleTf ? plL          : plH
+closeT = singleTf ? close        : closeH
+atrT   = singleTf ? atr          : atrA
+prevHigh := newPHt ? lastHigh : prevHigh
+lastHigh := newPHt ? phT : lastHigh
+prevLow := newPLt ? lastLow : prevLow
+lastLow := newPLt ? plT : lastLow
 
 var int trendState   = 0
 var int lastBosUpBar = -99999
 var int lastBosDnBar = -99999
-bosUp = not na(lastHigh) and not na(closeH) and closeH > lastHigh + atrA * 0.1
-bosDn = not na(lastLow)  and not na(closeH) and closeH < lastLow  - atrA * 0.1
+bosUp = not na(lastHigh) and not na(closeT) and closeT > lastHigh + atrT * 0.1
+bosDn = not na(lastLow)  and not na(closeT) and closeT < lastLow  - atrT * 0.1
 bosUpNew = bosUp and not bosUp[1]
 bosDnNew = bosDn and not bosDn[1]
 if bosUpNew
@@ -277,7 +286,11 @@ fbUp = not na(cPrevHi) and not na(cPrevLo) and cHi > cPrevHi and cLo > cPrevLo
 fbDn = not na(cPrevHi) and not na(cPrevLo) and cHi < cPrevHi and cLo < cPrevLo
 effTrend = trendState != 0 ? trendState : fbUp ? 1 : fbDn ? -1 : 0
 
-rangeSpan = math.round(rangeBars * tfRatio)
+// rangeBars counts ANALYSIS bars and bar_index is a CHART index, so the window
+// is scaled by the ratio between them — which is 1 when the chart IS the
+// analysis timeframe. Leaving the ratio in under singleTf made the window
+// several times too wide and held the engine "in range" almost permanently.
+rangeSpan = math.round(rangeBars * (singleTf ? 1.0 : tfRatio))
 inRange   = (bar_index - lastBosUpBar) <= rangeSpan and (bar_index - lastBosDnBar) <= rangeSpan
 trendUp   = effTrend == 1 and not inRange
 trendDown = effTrend == -1 and not inRange
@@ -804,19 +817,21 @@ if lineZones and not na(plLc)
 if lineZones and not na(phLc)
     addSwing(false, phLc, true,  bar_index - pivotLtf, pivotLtf, atr, bodyHiL, bodyLoL, hiRunLc, loRunLc, bar_index * 8 + 5, na, na, 0.0, na, na, true, na, na)
 
-// analysis timeframe: the few big zones that set the trend and TP2
+// analysis timeframe: the few big zones that set the trend and TP2.
+// singleTf skips this whole block — the chart marks, confirms and trades on
+// itself, so there is no second set of zones to draw.
 htfBack = htfBackSeg
-if newPLh and not na(atrH)
+if not singleTf and newPLh and not na(atrH)
     addSwing(true, plH, false, htfBarNo, htfBack, atrA, bodyHiH, bodyLoH, hiRunH, loRunH, bar_index * 8 + 2, engBullTH, engBullBH, momBodyH, momHiH, momLoH, false, stLoH, stBodyHiH)
-if newPHh and not na(atrH)
+if not singleTf and newPHh and not na(atrH)
     addSwing(true, phH, true,  htfBarNo, htfBack, atrA, bodyHiH, bodyLoH, hiRunH, loRunH, bar_index * 8 + 3, engBearTH, engBearBH, momBodyH, momHiH, momLoH, false, stBodyLoH, stHiH)
 
 // ...and the line chart of the analysis timeframe
 newPHlc = lineZones and not na(phLcH) and (na(phLcH[1]) or phLcH != phLcH[1])
 newPLlc = lineZones and not na(plLcH) and (na(plLcH[1]) or plLcH != plLcH[1])
-if newPLlc and not na(atrH)
+if not singleTf and newPLlc and not na(atrH)
     addSwing(true, plLcH, false, htfBarNo, htfBack, atrA, bodyHiH, bodyLoH, hiRunLcH, loRunLcH, bar_index * 8 + 6, na, na, 0.0, na, na, true, na, na)
-if newPHlc and not na(atrH)
+if not singleTf and newPHlc and not na(atrH)
     addSwing(true, phLcH, true,  htfBarNo, htfBack, atrA, bodyHiH, bodyLoH, hiRunLcH, loRunLcH, bar_index * 8 + 7, na, na, 0.0, na, na, true, na, na)
 
 // The limit-order model needs no confirmation candle: the book puts the order
@@ -1244,7 +1259,7 @@ plotshape(po2Sell, "PO2 SELL", shape.triangledown, location.abovebar, color.new(
 // ───────────────────── Zindan info panel ───────────────────────────────────
 var table info = table.new(position.top_right, 1, 6, bgcolor = color.new(#0b0b0b, 8), frame_width = 2, frame_color = color.new(#d4af37, 20), border_width = 1, border_color = color.new(#d4af37, 75))
 if showPanel and barstate.islast
-    tSrc = trendState != 0 ? htfTF : timeframe.period
+    tSrc = (singleTf or trendState == 0) ? timeframe.period : htfTF
     trendTxt = inRange ? "◆ RANGE — no trade" : trendUp ? "▲ UPTREND " + tSrc : trendDown ? "▼ DOWNTREND " + tSrc : "◇ trend unclear"
     trendCol = inRange ? colGold : trendUp ? colBuy : trendDown ? colSell : colGold
     liveLtf = 0
@@ -1264,7 +1279,7 @@ if showPanel and barstate.islast
             nRun += 1
     posTxt = nOrd + nRun == 0 ? "— no setup right now —" :
              str.tostring(nOrd) + " limit waiting · " + str.tostring(nRun) + " running"
-    table.cell(info, 0, 0, "⚜  SNRZ v11.1 —  ZiNDAN", text_color = colGold, text_size = size.normal)
+    table.cell(info, 0, 0, "⚜  SNRZ v12.0 —  ZiNDAN", text_color = colGold, text_size = size.normal)
     table.cell(info, 0, 1, "The Gold Chaser", text_color = color.new(colGold, 35), text_size = size.tiny)
     table.cell(info, 0, 2, trendTxt, text_color = trendCol, text_size = size.small)
     table.cell(info, 0, 3, "Zones: " + str.tostring(liveLtf) + " @ " + timeframe.period + "  +  " + str.tostring(liveHtf) + " @ " + htfTF, text_color = color.new(color.white, 20), text_size = size.small)
