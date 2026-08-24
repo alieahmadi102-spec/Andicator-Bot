@@ -89,75 +89,215 @@ def lots_for_risk(symbol: str, sl_distance: float, risk_pct: float):
     return min(lots, info.volume_max), risk_money
 
 
+def _retcode(res) -> str:
+    """order_send returns a struct, not an exception. Printing it raw hides the
+    one field that matters."""
+    if res is None:
+        return f"no reply from the terminal ({mt5.last_error()})"
+    ok = (mt5.TRADE_RETCODE_DONE, getattr(mt5, "TRADE_RETCODE_PLACED", 10008))
+    if res.retcode in ok:
+        return ""
+    known = {
+        10004: "requote",
+        10006: "the broker rejected it",
+        10013: "invalid request",
+        10014: "invalid volume",
+        10015: "invalid price",
+        10016: "invalid stops — SL/TP too close to the price",
+        10018: "the market is closed",
+        10019: "not enough money",
+        10027: "algo trading is DISABLED in the terminal (the Algo Trading button)",
+        10030: "this filling mode is not supported by the broker",
+    }
+    return known.get(res.retcode, f"retcode {res.retcode}") + f" [{res.comment}]"
+
+
+def _filling(info):
+    """The broker publishes which filling modes it accepts as a bitmask. Sending
+    IOC to a broker that only takes FOK is retcode 10030, which used to come
+    back as an unreadable struct."""
+    mask = getattr(info, "filling_mode", 0)
+    if mask & 2:
+        return mt5.ORDER_FILLING_IOC
+    if mask & 1:
+        return mt5.ORDER_FILLING_FOK
+    return mt5.ORDER_FILLING_RETURN
+
+
+def split_volume(total: float, info):
+    """The book's exit plan is HALF at TP1, a QUARTER at TP2, a QUARTER at TP3,
+    and that split is where the whole edge lives. Measured on 83 days with the
+    real spread:
+
+        exit plan                 median E
+        half / quarter / quarter    -0.008     (M5 +0.120)
+        everything at TP1           -0.078
+        everything at TP2           -0.105
+        everything at TP3           -0.088
+
+    Every single-exit plan loses. So the runner must place THREE orders at the
+    same price with the same stop and different targets, not one order with one
+    TP -- one order IS the -0.078 plan.
+
+    That needs at least four volume steps to divide up. Returns None when the
+    account cannot be split that finely, because taking the trade anyway would
+    be running the losing plan."""
+    step = info.volume_step
+    units = int(round(total / step))
+    if units < 4:
+        return None
+    half = (units // 2) * step
+    rest = units - (units // 2)
+    q1 = (rest // 2) * step
+    q2 = (rest - rest // 2) * step
+    return [round(half, 8), round(q1, 8), round(q2, 8)]
+
+
 def place(signal, symbol: str, tf_minutes: int):
     """Book p41/p42: the entry is a LIMIT order resting AT the zone, not a
-    market order. signal.price is that zone price — the engine and the
-    backtester both assume the fill happens there, so sending a market order
-    here would make the live bot trade something the numbers never measured.
-    The order expires the same way it does in the backtest."""
+    market order. signal.price is that zone price -- the engine and the
+    backtester both assume the fill happens there, so a market order here would
+    make the live bot trade something the numbers never measured."""
+    info = mt5.symbol_info(symbol)
     tick = mt5.symbol_info_tick(symbol)
+    if info is None or tick is None:
+        print(f"  SKIPPED - the terminal has no quote for {symbol}")
+        return
+    digits = info.digits
+    rnd = lambda p: round(p, digits)
+
     market = tick.ask if signal.side == "buy" else tick.bid
     sl_distance = abs(signal.price - signal.sl)
 
     # The spread is paid once, at entry, so in R it is spread / stop distance.
     # Measured on 83 days of XAUUSD at this account's own 14 cents, that is
-    # 0.3% of the risk on H4 and 6.5% on M1 — the same spread costs twenty
-    # times more on the fast chart, which is why the fast timeframes stop being
-    # profitable long before the slow ones do. The live spread FLOATS, so it is
-    # read here rather than assumed, and the trade is refused when it eats too
-    # much of the risk.
+    # 0.3% of the risk on H4 and 6.5% on M1 -- the same spread costs twenty
+    # times more on the fast chart. The live spread FLOATS, so it is read here
+    # rather than assumed, and the trade is refused when it eats too much.
     spread = max(0.0, tick.ask - tick.bid)
     spread_r = spread / sl_distance if sl_distance > 0 else 1.0
     if spread_r > MAX_SPREAD_R:
-        print(f"  SKIPPED — spread is {spread:.2f}, which is "
-              f"{100 * spread_r:.0f}% of the {sl_distance:.2f} stop "
-              f"(limit {100 * MAX_SPREAD_R:.0f}%). Every trade would start "
-              f"that far behind.")
+        print(f"  SKIPPED - spread is {spread:.{digits}f}, which is "
+              f"{100 * spread_r:.0f}% of the {sl_distance:.{digits}f} stop "
+              f"(limit {100 * MAX_SPREAD_R:.0f}%).")
         return
 
-    volume, info = lots_for_risk(symbol, sl_distance, RISK_PCT)
-    if volume is None:
-        print(f"  SKIPPED — {info}")
+    # The broker refuses a stop or target closer to the price than its stops
+    # level. Their spec showed 0, but a broker can change it without notice.
+    stops = getattr(info, "trade_stops_level", 0) * info.point
+    if stops > 0 and sl_distance < stops:
+        print(f"  SKIPPED - the {sl_distance:.{digits}f} stop is inside the "
+              f"broker's minimum distance of {stops:.{digits}f}")
         return
-    print(f"  spread {spread:.2f} = {100 * spread_r:.1f}% of the stop")
+
+    volume, why = lots_for_risk(symbol, sl_distance, RISK_PCT)
+    if volume is None:
+        print(f"  SKIPPED - {why}")
+        return
+
+    legs = split_volume(volume, info)
+    if legs is None:
+        print(f"  SKIPPED - {volume} lots cannot be split into the book's "
+              f"half/quarter/quarter exit (needs at least "
+              f"{4 * info.volume_step} at this broker's {info.volume_step} "
+              f"step). Every single-exit plan measured NEGATIVE, so taking "
+              f"this trade would be running a losing plan on purpose. "
+              f"A CENT account fixes it.")
+        return
+
+    print(f"  spread {spread:.{digits}f} = {100 * spread_r:.1f}% of the stop "
+          f"| {volume} lots -> {legs[0]} @TP1 + {legs[1]} @TP2 + {legs[2]} @TP3")
     expiry = datetime.now(timezone.utc) + timedelta(
         minutes=tf_minutes * ORDER_EXPIRY_BARS)
 
     if signal.side == "buy":
-        # price is already at or below the zone -> the limit would fill instantly
         kind = mt5.ORDER_TYPE_BUY_LIMIT if market > signal.price else mt5.ORDER_TYPE_BUY
     else:
         kind = mt5.ORDER_TYPE_SELL_LIMIT if market < signal.price else mt5.ORDER_TYPE_SELL
     pending = kind in (mt5.ORDER_TYPE_BUY_LIMIT, mt5.ORDER_TYPE_SELL_LIMIT)
+    targets = [signal.tp1, signal.tp2, signal.tp3]
 
     if DRY_RUN:
-        print(f"  DRY_RUN — would place {signal.side.upper()}"
-              f"{' LIMIT' if pending else ' (market, price already there)'} "
-              f"{volume} {symbol} @ {signal.price:.2f}  SL {signal.sl:.2f}  "
-              f"TP1 {signal.tp1:.2f}"
-              + (f"  expires {expiry:%Y-%m-%d %H:%M} UTC" if pending else ""))
+        for vol, tp, n in zip(legs, targets, (1, 2, 3)):
+            print(f"  DRY_RUN - would place {signal.side.upper()}"
+                  f"{' LIMIT' if pending else ' (market)'} {vol} {symbol} "
+                  f"@ {rnd(signal.price)}  SL {rnd(signal.sl)}  TP{n} {rnd(tp)}")
         return
 
-    req = {
-        "action": mt5.TRADE_ACTION_PENDING if pending else mt5.TRADE_ACTION_DEAL,
-        "symbol": symbol,
-        "volume": volume,
-        "type": kind,
-        "price": signal.price if pending else market,
-        "sl": signal.sl,
-        "tp": signal.tp1,   # the next zone, not a 1R guess
-        "magic": MAGIC,
-        "comment": f"SNRZ {signal.kind} {signal.zone}",
-    }
-    if pending:
-        req["type_time"] = mt5.ORDER_TIME_SPECIFIED
-        req["expiration"] = expiry
-    else:
-        req["deviation"] = 20
-        req["type_time"] = mt5.ORDER_TIME_GTC
-        req["type_filling"] = mt5.ORDER_FILLING_IOC
-    res = mt5.order_send(req)
-    print("order_send:", res)
+    for vol, tp, n in zip(legs, targets, (1, 2, 3)):
+        req = {
+            "action": mt5.TRADE_ACTION_PENDING if pending else mt5.TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": vol,
+            "type": kind,
+            "price": rnd(signal.price if pending else market),
+            "sl": rnd(signal.sl),
+            "tp": rnd(tp),
+            "magic": MAGIC,
+            "comment": f"SNRZ {signal.zone} T{n}"[:31],
+            "type_filling": _filling(info),
+        }
+        if pending:
+            req["type_time"] = mt5.ORDER_TIME_SPECIFIED
+            req["expiration"] = expiry
+        else:
+            req["deviation"] = 20
+            req["type_time"] = mt5.ORDER_TIME_GTC
+        res = mt5.order_send(req)
+        bad = _retcode(res)
+        if bad:
+            print(f"  TP{n} leg FAILED - {bad}")
+        else:
+            print(f"  TP{n} leg placed: {vol} lots, ticket {res.order}")
+
+
+def manage_open_positions(symbol: str):
+    """Image 41: at the 1:1 line the stop goes to entry and the trade is free.
+
+    In the backtest that happens in software. Live, nothing moves the stop
+    unless something asks the broker to -- and the measured numbers assume it
+    happens, so without this the live bot is not running the plan that was
+    measured. Every position this bot opened is checked each bar and its stop
+    pulled to entry once price has paid 1R."""
+    positions = mt5.positions_get(symbol=symbol)
+    if not positions:
+        return
+    info = mt5.symbol_info(symbol)
+    tick = mt5.symbol_info_tick(symbol)
+    if info is None or tick is None:
+        return
+    for p in positions:
+        if p.magic != MAGIC or p.sl == 0.0:
+            continue
+        risk = abs(p.price_open - p.sl)
+        if risk <= 0:
+            continue
+        is_buy = p.type == mt5.POSITION_TYPE_BUY
+        if is_buy:
+            if p.sl >= p.price_open or tick.bid < p.price_open + risk:
+                continue                      # already at entry, or not 1R yet
+        else:
+            if p.sl <= p.price_open or tick.ask > p.price_open - risk:
+                continue
+        res = mt5.order_send({
+            "action": mt5.TRADE_ACTION_SLTP,
+            "symbol": symbol,
+            "position": p.ticket,
+            "sl": round(p.price_open, info.digits),
+            "tp": p.tp,
+        })
+        bad = _retcode(res)
+        print(f"  BREAK-EVEN {p.ticket}: stop -> entry {p.price_open}"
+              + (f"  FAILED - {bad}" if bad else ""))
+
+
+def broker_state(symbol: str):
+    """What the BROKER thinks is going on, which after a restart is the only
+    truth. The engine rebuilds its own orders from history and would happily
+    place a second set on top of the ones already resting."""
+    orders = [o for o in (mt5.orders_get(symbol=symbol) or []) if o.magic == MAGIC]
+    positions = [p for p in (mt5.positions_get(symbol=symbol) or []) if p.magic == MAGIC]
+    return orders, positions
 
 
 def show_state(engine):
@@ -243,24 +383,55 @@ def main():
     if not mt5.initialize():
         raise SystemExit(f"MT5 init failed: {mt5.last_error()}")
 
+    # A symbol that is not in Market Watch answers every quote with None, and
+    # order_send fails with an error that does not mention the symbol at all.
+    if not mt5.symbol_select(SYMBOL, True):
+        raise SystemExit(f"{SYMBOL} is not available on this account "
+                         f"({mt5.last_error()}). Check the exact name in "
+                         f"Market Watch — some brokers use XAUUSD.fix / .zero.")
+
     acc = mt5.account_info()
     print(f"MT5 connected: account {acc.login} ({acc.server}), "
           f"balance {acc.balance} {acc.currency}")
+    if not DRY_RUN and not getattr(acc, "trade_allowed", True):
+        raise SystemExit("this account cannot trade (trade_allowed is false) — "
+                         "on the terminal side that is usually the Algo Trading "
+                         "button being off.")
     print(f"symbol {SYMBOL} · chart TF {TIMEFRAME_MIN}m · risk {RISK_PCT}% "
           f"· mode {'DRY RUN (no orders sent)' if DRY_RUN else '*** LIVE ORDERS ***'}")
     if not DRY_RUN:
-        input("DRY_RUN is off, real orders will be sent. Press Enter to go on, "
+        info = mt5.symbol_info(SYMBOL)
+        print(f"\n  contract {info.trade_contract_size} · volume "
+              f"{info.volume_min} to {info.volume_max} step {info.volume_step} "
+              f"· digits {info.digits}")
+        print(f"  the book's exit needs at least {4 * info.volume_step} lots so "
+              f"it can be split half / quarter / quarter — every single-exit "
+              f"plan measured NEGATIVE.")
+        input("\n*** REAL ORDERS WILL BE SENT *** Press Enter to go on, "
               "or Ctrl+C to stop: ")
+        resting, holding = broker_state(SYMBOL)
+        if resting or holding:
+            print(f"  note: this bot already has {len(resting)} order(s) and "
+                  f"{len(holding)} position(s) at the broker; they are left "
+                  f"alone and managed, not duplicated.")
 
     tf = mt5_timeframe(TIMEFRAME_MIN)
     # the analysis timeframe follows the captain's ladder from the chart we run
     # on — two rungs up, the middle one skipped
-    engine = SnrzEngine(Config(chart_minutes=TIMEFRAME_MIN))
-    print(f"zones marked on {SnrzEngine.analysis_minutes(TIMEFRAME_MIN)}m, "
-          f"refined and traded on {TIMEFRAME_MIN}m")
+    cfg = Config(chart_minutes=TIMEFRAME_MIN)
+    engine = SnrzEngine(cfg)
+    if cfg.single_tf:
+        print(f"zones marked, confirmed and traded all on {TIMEFRAME_MIN}m")
+    else:
+        print(f"zones marked on {SnrzEngine.analysis_minutes(TIMEFRAME_MIN)}m, "
+              f"refined and traded on {TIMEFRAME_MIN}m")
 
     # warm up with history
     rates = mt5.copy_rates_from_pos(SYMBOL, tf, 1, 1000)
+    if rates is None or len(rates) < 200:
+        raise SystemExit(f"only {0 if rates is None else len(rates)} candles "
+                         f"available for {SYMBOL} on this timeframe. Open that "
+                         f"chart in the terminal once so it downloads history.")
     for r in rates:
         engine.on_candle(Candle(int(r["time"]), r["open"], r["high"], r["low"], r["close"]))
     last_time = rates[-1]["time"]
@@ -273,8 +444,26 @@ def main():
     beat = 0
     while True:
         time.sleep(5)
+        # Image 41's break-even is software in the backtest; live, nothing moves
+        # a stop unless it is asked to. The measured numbers assume it happens,
+        # so it is checked every pass, not once a bar.
+        if not DRY_RUN:
+            try:
+                manage_open_positions(SYMBOL)
+            except Exception as e:            # never let housekeeping kill the run
+                print(f"  (break-even check failed this pass: {e})")
+
         bars = mt5.copy_rates_from_pos(SYMBOL, tf, 1, 1)  # last CLOSED bar
         if bars is None or len(bars) == 0:
+            # The terminal drops the connection on its own now and then. Without
+            # this the bot span forever on None and looked alive while doing
+            # nothing at all.
+            if mt5.terminal_info() is None:
+                print("  terminal connection lost — reconnecting …")
+                mt5.shutdown()
+                time.sleep(10)
+                if mt5.initialize() and mt5.symbol_select(SYMBOL, True):
+                    print("  reconnected")
             continue
         b = bars[0]
         if b["time"] == last_time:
@@ -297,6 +486,14 @@ def main():
         for sig in sigs:
             print(f"  SIGNAL {sig.side.upper()} {sig.zone} @ {sig.price:.2f}  "
                   f"SL {sig.sl:.2f}  TP1 {sig.tp1:.2f} (next zone)")
+            if not DRY_RUN:
+                # After a restart the engine rebuilds its orders from history
+                # and would happily stack a second set on top of the ones still
+                # resting at the broker. The broker is the only truth here.
+                resting, _ = broker_state(SYMBOL)
+                if any(abs(o.price_open - sig.price) < 1e-6 for o in resting):
+                    print("  already resting at the broker — not duplicated")
+                    continue
             place(sig, SYMBOL, TIMEFRAME_MIN)
         if sigs:
             show_state(engine)
