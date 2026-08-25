@@ -1298,6 +1298,33 @@ class SnrzEngine:
                 tp3 = tp2
         return entry, sl, tp1, tp2, tp3
 
+    def zone_states(self) -> dict:
+        """A count of what the live zones are DOING, for the status line.
+
+        Naming only the nearest zone is misleading: a level flips exactly where
+        price is, so the closest zone is nearly always one that just flipped
+        and is waiting for its pullback. Read bar after bar that looks like
+        every zone is stuck on one rule, when each is a different zone that
+        clears in about 15 bars. These counts say what the whole set is doing.
+
+        "armed" is the useful one: the zone has passed every rule and is simply
+        waiting for price to come to it."""
+        out = {"armed": 0, "pullback": 0, "breaking": 0, "touches": 0}
+        for z in self.zones:
+            if z.dead:
+                continue
+            if z.pend_dir != 0:
+                out["breaking"] += 1
+            elif z.await_pull >= 0:
+                out["pullback"] += 1
+            else:
+                need = 1 if z.src != "pivot" else 2
+                ok = ((z.state == State.VALID and z.touches >= need)
+                      or z.srr
+                      or (z.state == State.INVERTED and 1 <= z.touches <= 2))
+                out["armed" if ok else "touches"] += 1
+        return out
+
     def why_blocked(self, z: "Zone", c: Candle, idx: int) -> str:
         """Why this zone did NOT produce a signal on this bar.
 

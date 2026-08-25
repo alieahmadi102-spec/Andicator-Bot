@@ -925,6 +925,23 @@ def waiting_line(engine, symbol: str, price: float) -> str:
     anything of ours is at the broker."""
     live = [z for z in engine.zones if not z.dead]
     bits = [f"{len(live)} zones"]
+    # ...and what state they are IN. This line only ever named the single
+    # nearest zone, and the nearest zone is biased: a level flips exactly where
+    # price is, so a freshly flipped one waiting for its pullback is almost
+    # always the closest. Reading the log it looked as though every zone on the
+    # chart was stuck on the same rule, when in fact each was a DIFFERENT zone
+    # that clears in about 15 bars (measured: 4789 of them got their pullback
+    # on M1, only 5 were still waiting after 70 days). Counting the whole set
+    # says plainly how many are genuinely ready and how many are waiting.
+    if live:
+        st = engine.zone_states()
+        state = [f"{st['armed']} armed"]
+        for key, word in (("pullback", "awaiting pullback"),
+                          ("breaking", "mid-break"),
+                          ("touches", "need touches")):
+            if st[key]:
+                state.append(f"{st[key]} {word}")
+        bits[0] += " (" + ", ".join(state) + ")"
     if live:
         near = min(live, key=lambda z: abs(price - (z.top + z.bot) / 2.0))
         # the NEAR edge: below the zone that is its bottom, above it its top.
