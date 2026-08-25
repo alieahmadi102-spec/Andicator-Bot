@@ -92,8 +92,9 @@ beAtR          = input.float(1.0, "…یعنی چند برابر فاصله‌ی
 entryAtZone    = input.bool(true,  "ورود = اردر لیمیت روی خود زون (نه کلوز کندل تأیید)", group = grpS, tooltip = "کتاب ص۴۱/۴۲: اردر روی زون گذاشته می‌شود، استاپ کمی بیرون زون، و تارگت اول خط ۱:۱. ورود روی کلوزِ کندل تأیید استاپ را به اندازه‌ی کل زون + خود کندل پهن می‌کرد.")
 entryEdge      = input.bool(true,  "…لیمیت روی لبه‌ی نزدیک زون (نه وسط آن)", group = grpS)
 slBufferATR    = input.float(0.8,  "استاپ چقدر بیرون زون (ATR ×)",          minval = 0.0, step = 0.25, group = grpS)
-maxSlAtr       = input.float(3.0,   "حداکثر فاصله‌ی استاپ (ATR ×) — ۰ یعنی بی‌سقف", minval = 0.0, step = 0.5, group = grpS, tooltip = "استاپ پشتِ سایه است، ولی سایه از **۳ کندلِ آخر** خوانده می‌شود و وقتی قیمت خیلی پایین‌تر از زون شدو زده و برگشته داخل (False Breakout، که کتاب آن را نشانه‌ی خوبی می‌داند) آن سایه می‌تواند ده برابرِ ارتفاعِ زون دور باشد.\n\nاندازه‌گیری روی M5: استاپ به‌طور میانه **۵٫۹ برابرِ ارتفاعِ زون** است، صدکِ ۹۰ برابرِ ۱۱٫۷، و بدترین حالت ۵۲ برابر. چنین استاپی هم R:R را خراب می‌کند هم روی حسابِ کوچک اصلاً قابلِ حجم‌گرفتن نیست.\n\nهر عددی از ۵ ATR تا ۲ از بی‌سقف بهتر بود — برای همین این یک اثرِ واقعی است نه عددِ fit شده. ۳٫۰ حدودِ ۱٫۷٪ ستاپ‌ها را رد می‌کند و میانه را از +۰٫۰۵۶ به +۰٫۰۶۴ می‌برد.")
+maxSlAtr       = input.float(3.0,   "حداکثر فاصله‌ی استاپ (ATR ×) — ۰ یعنی بی‌سقف", minval = 0.0, step = 0.5, group = grpS, tooltip = "استاپ کمی بیرونِ **لبه‌ی خودِ زون** گذاشته می‌شود؛ همان سایه‌ای که زون را ساخته. این سقف برای زون‌هایی است که خودشان خیلی پهن‌اند — آن‌جا استاپ هم R:R را خراب می‌کند هم روی حسابِ کوچک قابلِ حجم‌گرفتن نیست.\n\nقبلاً سایه از **۳ کندلِ آخرِ چارت** خوانده می‌شد. تا وقتی اردر روی کندلِ برخورد گذاشته می‌شد آن سه کندل واقعاً کنارِ زون بودند؛ ولی حالا اردر از فاصله گذاشته می‌شود و آن سه کندل می‌توانند هرجا باشند — یک اسپایکِ بی‌ربط استاپ را از سقف رد می‌کرد و ستاپ را می‌کشت. اندازه‌گیری روی XAUUSD واقعی با اسپردِ ۱۴ سنت: مجموع +۰٫۰۳۷ به +۰٫۰۵۰R و M5 از +۰٫۱۰۲ به +۰٫۱۳۶R.")
 orderExpiry    = input.int(10,     "اردر لیمیتِ پرنشده بعد از N کندل باطل شود", minval = 5, group = grpS)
+armWithinAtr   = input.float(2.0,  "اردر فقط وقتی قیمت تا این فاصله‌ی زون است (ATR ×) — ۰ یعنی بی‌سقف", minval = 0.0, step = 0.5, group = grpS, tooltip = "اردر لیمیت **قبل از** رسیدنِ قیمت روی زون گذاشته می‌شود، پس باید مشخص شود «چقدر قبل». بدون این سقف، هر زونِ زنده‌ای روی چارت اردر می‌گیرد — حتی زونی که نیم‌سشن دورتر است و اردرش قبل از رسیدنِ قیمت منقضی می‌شود.\n\nروی M1 این تعدادِ اردرها را از ۴۰۱ در روز به ۵۵ در روز رساند، بدونِ اینکه ستاپ‌های واقعی را از دست بدهد.")
 requireNested  = input.bool(false, "فقط زون چارتی که داخل زون تایم تحلیل است", group = grpS, tooltip = "کتاب ص۱۴: زون کوچک داخل زون بزرگ است. سخت‌گیرانه است — تعداد سیگنال را خیلی کم می‌کند.")
 entriesHtfOnly = input.bool(false, "ورود فقط از زون‌های تایم تحلیل",         group = grpS)
 rrTp1          = input.float(1.0,  "TP1 = چند برابر فاصله‌ی استاپ (کتاب ص۴۱: ۱:۱)", minval = 0.1, step = 0.05, group = grpS)
@@ -475,7 +476,12 @@ newZone(float _top, float _bot, int _role, bool _htf, int _uid, float _atr, int 
         bxr := box.new(x1, rawT, bar_index + 10, rawB, border_color = color.new(color.gray, 60), bgcolor = color.new(color.gray, 100), border_style = line.style_dotted)
     md = line.new(x1, (t + b) / 2, bar_index + 10, (t + b) / 2, style = line.style_dashed, color = color.new(color.gray, 55))
     // a paired zone already HAS its two movements (p35), so it is born VALID
-    Zone.new(t, b, _role, _paired ? 1 : 0, 0, 0, 0, 0, _uid, _htf, false, false, false, _paired, 0, false, -1, 0, bar_index, false, -1, rawT, rawB, wasRef, bx, bxr, md)
+    //                                    touches=0, sigTouch=-1
+    // sigTouch is "the touch count this zone has already produced an order
+    // for", so it must start at a value no touch count can equal. Born at 0 it
+    // matched the zone's own 0 touches and the zone was blocked from arming
+    // for its entire life — every zone, from the moment it was drawn.
+    Zone.new(t, b, _role, _paired ? 1 : 0, 0, -1, 0, 0, _uid, _htf, false, false, false, _paired, 0, false, -1, 0, bar_index, false, -1, rawT, rawB, wasRef, bx, bxr, md)
 
 // Overlap is checked WITHIN a set only — a small chart zone is expected to sit
 // inside a big analysis zone. An exhausted zone reserves nothing: the book says
@@ -980,8 +986,6 @@ nested(Zone z) =>
                 break
     res
 
-swingLo3 = ta.lowest(low, 3)
-swingHi3 = ta.highest(high, 3)
 
 // Book, liquidity section: "in gold the sell-side liquidity is usually taken
 // first and THEN the real move — about 80% of the time". A sell placed right
@@ -995,7 +999,6 @@ for z in zones
     if bar_index <= z.bornBar
         refreshZone(z)
         continue
-    zAtr = z.htf ? atrA : atr
     inZone      = low <= z.top and high >= z.bot
     justEntered = inZone and not (low[1] <= z.top and high[1] >= z.bot)
 
@@ -1019,7 +1022,7 @@ for z in zones
                 z.state := 2
                 z.awaitPull := flipNeedsPullback ? bar_index : -1
                 z.touches := 0
-                z.sigTouch := 0
+                z.sigTouch := -1
                 z.srr := false
                 z.fba := false
                 z.falseBreaks := 0
@@ -1036,37 +1039,6 @@ for z in zones
                     z.state := 1
                 if (z.state != 2 and z.touches > maxTouches) or (z.state == 2 and z.touches > 2)
                     z.dead := true
-            // p24/p35: a paired zone was drawn FROM two touches, so the
-            // RETURN to it is already the entry — it does not need a third.
-            need = z.paired ? 1 : 2
-            tradable = not z.dead and z.pendDir == 0 and z.awaitPull < 0 and ((z.state == 1 and z.touches >= need) or z.srr or (z.state == 2 and z.touches >= 1 and z.touches <= 2)) and (not entriesHtfOnly or z.htf) and (not requireNested or nested(z))
-            okTrend  = (not useTrendFilter or trendUp or trendUnknown or (allowCounterInv and z.state == 2)) and not sweptHigh
-            // one order per zone, placed while price is still ABOVE it, and
-            // aimed at the NEXT zone up. No confirmation candle is waited for:
-            // the book puts a LIMIT on the zone before price gets there.
-            if tradable and okTrend and canFire and not hasOrder(z.uid) and close > z.top
-                entry = z.top
-                rawSl = math.min(z.bot, swingLo3) - zAtr * slBufferATR
-                risk  = math.max(math.abs(entry - rawSl), atr * minSlAtr)
-                // ...and a ceiling: when the 3-bar wick sits absurdly far from
-                // the zone there is no setup, only a bad one
-                tooWide = maxSlAtr > 0 and risk > atr * maxSlAtr
-                t1 = nextZone(true, entry, 0)
-                if not na(t1) and not tooWide and (t1 - entry) >= risk * minRR
-                    t2 = nextZone(true, entry, 1)
-                    t3 = nextZone(true, entry, 2)
-                    isPO2 = z.state == 2 and z.touches == 1   // image 55: the fill IS the 2nd touch
-                    po2Buy := isPO2 ? true : po2Buy
-                    buySig := isPO2 ? buySig : true
-                    lastSigBar := bar_index
-                    // Every target is a zone that is ALREADY on the chart and
-                    // still unbroken. No second zone ahead means no TP2 — the
-                    // whole position comes off at TP1. The 2x/3x fallback that
-                    // used to sit here named a price the chart never did.
-                    array.push(orders, Ord.new(true, isPO2, z.uid, bar_index, entry,
-                         entry - risk, t1, na(t2) ? t1 : t2,
-                         na(t3) ? (na(t2) ? t1 : t2) : t3,
-                         zoneText(z), -9, false, chartMin >= 60, risk))
     else
         if z.pendDir == 0 and bullBreak75(z.top)
             z.pendBar := bar_index
@@ -1087,7 +1059,7 @@ for z in zones
                 z.state := 2
                 z.awaitPull := flipNeedsPullback ? bar_index : -1
                 z.touches := 0
-                z.sigTouch := 0
+                z.sigTouch := -1
                 z.srr := false
                 z.fba := false
                 z.falseBreaks := 0
@@ -1104,29 +1076,65 @@ for z in zones
                     z.state := 1
                 if (z.state != 2 and z.touches > maxTouches) or (z.state == 2 and z.touches > 2)
                     z.dead := true
-            // p24/p35: a paired zone was drawn FROM two touches, so the
-            // RETURN to it is already the entry — it does not need a third.
-            need = z.paired ? 1 : 2
-            tradable = not z.dead and z.pendDir == 0 and z.awaitPull < 0 and ((z.state == 1 and z.touches >= need) or z.srr or (z.state == 2 and z.touches >= 1 and z.touches <= 2)) and (not entriesHtfOnly or z.htf) and (not requireNested or nested(z))
-            okTrend  = (not useTrendFilter or trendDown or trendUnknown or (allowCounterInv and z.state == 2)) and not sweptLow
-            if tradable and okTrend and canFire and not hasOrder(z.uid) and close < z.bot
-                entry = z.bot
-                rawSl = math.max(z.top, swingHi3) + zAtr * slBufferATR
-                risk  = math.max(math.abs(rawSl - entry), atr * minSlAtr)
-                tooWide = maxSlAtr > 0 and risk > atr * maxSlAtr
-                t1 = nextZone(false, entry, 0)
-                if not na(t1) and not tooWide and (entry - t1) >= risk * minRR
-                    t2 = nextZone(false, entry, 1)
-                    t3 = nextZone(false, entry, 2)
-                    isPO2 = z.state == 2 and z.touches == 1   // image 55: the fill IS the 2nd touch
-                    po2Sell := isPO2 ? true : po2Sell
-                    sellSig := isPO2 ? sellSig : true
-                    lastSigBar := bar_index
-                    // same rule on the sell side: no zone, no target
-                    array.push(orders, Ord.new(false, isPO2, z.uid, bar_index, entry,
-                         entry + risk, t1, na(t2) ? t1 : t2,
-                         na(t3) ? (na(t2) ? t1 : t2) : t3,
-                         zoneText(z), -9, false, chartMin >= 60, risk))
+    // ───────────────────────────── the entry ─────────────────────────────
+    // This used to sit INSIDE the "else if inZone" branch on each side, so an
+    // order could only be armed on a bar where price was already touching the
+    // zone. But the entry is a LIMIT resting AT the zone: if price has to be
+    // there for the order to exist, it then has to come back a SECOND time to
+    // fill it, and every setup needed two visits instead of one. The book
+    // puts the order on the zone and waits for the pullback — one visit. So
+    // it is evaluated for every live zone on every bar, and being on the
+    // correct SIDE of the zone is what qualifies it, not standing in it.
+    //
+    // This is the same shape as the Python engine's on_candle(), and the two
+    // are meant to be read side by side.
+    isBuy = z.role == 1
+    // p24/p35: a paired zone was drawn FROM two touches, so the RETURN to it
+    // is already the entry — it does not need a third.
+    need = z.paired ? 1 : 2
+    tradable = not z.dead and z.pendDir == 0 and z.awaitPull < 0 and ((z.state == 1 and z.touches >= need) or z.srr or (z.state == 2 and z.touches >= 1 and z.touches <= 2)) and (not entriesHtfOnly or z.htf) and (not requireNested or nested(z))
+    okTrend  = (not useTrendFilter or (isBuy ? trendUp : trendDown) or trendUnknown or (allowCounterInv and z.state == 2)) and not (isBuy ? sweptHigh : sweptLow)
+    // price must be on the side the trade comes FROM: above a support, below
+    // a resistance — and near enough that the order would still be alive when
+    // price arrives, rather than resting on a zone half a session away.
+    gapToZone = isBuy ? close - z.top : z.bot - close
+    sideOk = gapToZone > 0 and (armWithinAtr <= 0 or gapToZone <= atr * armWithinAtr)
+    // ...and only ONCE per touch. Without this a zone re-armed the moment its
+    // order expired and offered the same setup over and over while price sat
+    // on the same side of it.
+    if tradable and okTrend and canFire and sideOk and z.sigTouch != z.touches and not hasOrder(z.uid)
+        entry = isBuy ? z.top : z.bot
+        // The stop belongs to the ZONE, not to wherever price happens to be.
+        // This read a 3-bar swing, which was right while the order was armed
+        // on the touch bar because those bars were then AT the zone. Armed
+        // from a distance they can be anywhere, and one unrelated spike
+        // dragged the stop past the ceiling and killed the setup. The zone's
+        // own edge already IS the wick that drew it.
+        rawSl = isBuy ? z.bot - atr * slBufferATR : z.top + atr * slBufferATR
+        risk  = math.max(math.abs(entry - rawSl), atr * minSlAtr)
+        tooWide = maxSlAtr > 0 and risk > atr * maxSlAtr
+        t1 = nextZone(isBuy, entry, 0)
+        reward = isBuy ? t1 - entry : entry - t1
+        if not na(t1) and not tooWide and reward >= risk * minRR
+            t2 = nextZone(isBuy, entry, 1)
+            t3 = nextZone(isBuy, entry, 2)
+            isPO2 = z.state == 2 and z.touches == 1   // image 55: the fill IS the 2nd touch
+            z.sigTouch := z.touches
+            if isBuy
+                po2Buy := isPO2 ? true : po2Buy
+                buySig := isPO2 ? buySig : true
+            else
+                po2Sell := isPO2 ? true : po2Sell
+                sellSig := isPO2 ? sellSig : true
+            lastSigBar := bar_index
+            // Every target is a zone that is ALREADY on the chart and still
+            // unbroken. No second zone ahead means no TP2 — the whole
+            // position comes off at TP1. The 2x/3x fallback that used to sit
+            // here named a price the chart never did.
+            array.push(orders, Ord.new(isBuy, isPO2, z.uid, bar_index, entry,
+                 isBuy ? entry - risk : entry + risk, t1, na(t2) ? t1 : t2,
+                 na(t3) ? (na(t2) ? t1 : t2) : t3,
+                 zoneText(z), -9, false, chartMin >= 60, risk))
     refreshZone(z)
 
 // SRR / RSS qualification (book): a Support whose move broke ≥2 Resistances

@@ -124,6 +124,12 @@ input bool   InpEntryAtZone   = true;  // Entry = LIMIT order on the zone (p41/p
 input bool   InpEntryEdge     = true;  // ...at the near EDGE of the zone, not its middle
 input double InpSlBufferATR   = 0.8;   // How far beyond the zone the stop sits (ATR x)
 input double InpMaxSlATR      = 3.0;   // Maximum stop distance (ATR x) - 0 = no ceiling.
+// The limit is placed BEFORE price reaches the zone, so "how far before" has
+// to be bounded. Without it every live zone on the chart arms an order,
+// including ones half a session away whose order expires before price
+// arrives. On M1 this took order churn from 401 a day to 55 a day without
+// losing the setups that mattered.
+input double InpArmWithinATR  = 2.0;   // Arm an order only within this of the zone (ATR x) - 0 = no limit.
 // The stop sits behind the WICK, but the wick is read from the last 3 bars,
 // and when price spiked far below the zone and closed back inside (a false
 // break, which the book calls a good sign) that wick can sit ten zone-heights
@@ -735,7 +741,7 @@ void AddZone(double top, double bot, const int role, const int bornH, const doub
    g_zones[n].dead       = false;
    g_zones[n].flips      = 0;
    g_zones[n].htf        = htf;
-   g_zones[n].sigTouch   = 0;
+   g_zones[n].sigTouch   = -1;
    g_zones[n].bornH      = bornH;
    g_zones[n].bornTime   = t1;
    g_zones[n].activeFrom = t2;
@@ -1762,7 +1768,7 @@ int OnCalculate(const int rates_total,
                   g_zones[i].state = 2;
                   g_zones[i].awaitPull = InpFlipNeedsPullback ? bar : -1;
                   g_zones[i].touches  = 0;
-                  g_zones[i].sigTouch = 0;
+                  g_zones[i].sigTouch = -1;
                   g_zones[i].srr      = false;
                   g_zones[i].fba      = false;
                   g_zones[i].falseBreaks = 0;
@@ -1789,56 +1795,6 @@ int OnCalculate(const int rates_total,
                   if((g_zones[i].state != 2 && g_zones[i].touches > InpMaxTouches) ||
                      (g_zones[i].state == 2 && g_zones[i].touches > 2))
                      g_zones[i].dead = true; // 3-touch rule: zone exhausted
-                 }
-               // tradable only: VALID (touch>=2), SRR, or INVERSION (touch 1-2)
-               // p24/p35: a paired zone was drawn FROM two touches, so the
-               // RETURN to it is already the entry — it does not need a third.
-               int needT = g_zones[i].paired ? 1 : 2;
-               bool tradable = !g_zones[i].dead && g_zones[i].pendDir == 0 &&
-                               g_zones[i].awaitPull < 0 &&
-                               ((g_zones[i].state == 1 && g_zones[i].touches >= needT) ||
-                                g_zones[i].srr ||
-                                (g_zones[i].state == 2 && g_zones[i].touches >= 1 && g_zones[i].touches <= 2)) &&
-                               (!InpEntriesHtfOnly || g_zones[i].htf) &&
-                               (!InpRequireNested  || ZoneNested(i));
-               bool okTrend = (!InpTrendFilter || trendUp || trendUnknown ||
-                               (InpAllowCounterInv && g_zones[i].state == 2)) && !sweptHigh;
-               // one order per zone, placed while price is still ABOVE it and
-               // aimed at the NEXT zone up. The book puts a LIMIT on the zone
-               // BEFORE price gets there — no rejection candle is waited for.
-               if(tradable && okTrend && canFire && !HasOrder(g_zones[i].id) && c > g_zones[i].top)
-                 {
-                  double swingLo = MathMin(MathMin(low[bar], low[bar - 1]), low[bar - 2]);
-                  double zAtr    = g_zones[i].htf ? atrA : atr;
-                  double entry   = g_zones[i].top;
-                  double rawSl   = MathMin(g_zones[i].bot, swingLo) - zAtr * InpSlBufferATR;
-                  double risk    = MathMax(MathAbs(entry - rawSl), atr * InpMinSlATR);
-                  bool   tooWide = (InpMaxSlATR > 0.0 && risk > atr * InpMaxSlATR);
-                  double t1 = NextZone(true, entry, 0);
-                  if(t1 > 0.0 && !tooWide && (t1 - entry) >= risk * InpMinRR)
-                    {
-                     double t2 = NextZone(true, entry, 1);
-                     double t3 = NextZone(true, entry, 2);
-                     // Every target is a zone that is ALREADY on the chart
-                     // and still unbroken. No second zone ahead means no TP2:
-                     // the whole position comes off at TP1.
-                     if(t2 <= 0.0) t2 = t1;
-                     if(t3 <= 0.0) t3 = t2;
-                     bool isPO2 = (g_zones[i].state == 2 && g_zones[i].touches == 1); // image 55
-                     if(isPO2)
-                       {
-                        BufPO2Buy[bar] = l - atr * 0.4;
-                        Notify("PO2 BUY limit at " + ZoneText(g_zones[i]), live);
-                       }
-                     else
-                       {
-                        BufBuy[bar] = l - atr * 0.3;
-                        Notify("BUY limit at " + ZoneText(g_zones[i]), live);
-                       }
-                     PushOrder(true, isPO2, g_zones[i].id, bar, time[bar], entry,
-                               entry - risk, t1, t2, t3, ZoneText(g_zones[i]),
-                               risk, PeriodSeconds(_Period) >= 3600);
-                    }
                  }
               }
            }
@@ -1869,7 +1825,7 @@ int OnCalculate(const int rates_total,
                   g_zones[i].state = 2;
                   g_zones[i].awaitPull = InpFlipNeedsPullback ? bar : -1;
                   g_zones[i].touches  = 0;
-                  g_zones[i].sigTouch = 0;
+                  g_zones[i].sigTouch = -1;
                   g_zones[i].srr      = false;
                   g_zones[i].fba      = false;
                   g_zones[i].falseBreaks = 0;
@@ -1896,50 +1852,85 @@ int OnCalculate(const int rates_total,
                      (g_zones[i].state == 2 && g_zones[i].touches > 2))
                      g_zones[i].dead = true;
                  }
-               // p24/p35: a paired zone was drawn FROM two touches, so the
-               // RETURN to it is already the entry — it does not need a third.
-               int needT = g_zones[i].paired ? 1 : 2;
-               bool tradable = !g_zones[i].dead && g_zones[i].pendDir == 0 &&
-                               g_zones[i].awaitPull < 0 &&
-                               ((g_zones[i].state == 1 && g_zones[i].touches >= needT) ||
-                                g_zones[i].srr ||
-                                (g_zones[i].state == 2 && g_zones[i].touches >= 1 && g_zones[i].touches <= 2)) &&
-                               (!InpEntriesHtfOnly || g_zones[i].htf) &&
-                               (!InpRequireNested  || ZoneNested(i));
-               bool okTrend = (!InpTrendFilter || trendDown || trendUnknown ||
-                               (InpAllowCounterInv && g_zones[i].state == 2)) && !sweptLow;
-               if(tradable && okTrend && canFire && !HasOrder(g_zones[i].id) && c < g_zones[i].bot)
+              }
+           }
+         //--- the entry -----------------------------------------------------
+         // This used to sit INSIDE the "else if(inZone ...)" branch on each
+         // side, so an order could only be armed on a bar where price was
+         // already touching the zone. But the entry is a LIMIT resting AT the
+         // zone: if price has to be there for the order to exist, it then has
+         // to come back a SECOND time to fill it, and every setup needed two
+         // visits instead of one. The book puts the order on the zone and
+         // waits for the pullback -- one visit. So it is evaluated for every
+         // live zone on every bar, and being on the correct SIDE of the zone
+         // is what qualifies it, not standing in it.
+         //
+         // Same shape as SnrzEngine.on_candle() in the Python bot and as the
+         // Pine script; the three are meant to be read side by side.
+         bool isBuy = (g_zones[i].role == 1);
+         // p24/p35: a paired zone was drawn FROM two touches, so the RETURN
+         // to it is already the entry -- it does not need a third.
+         int  needT = g_zones[i].paired ? 1 : 2;
+         bool tradable = !g_zones[i].dead && g_zones[i].pendDir == 0 &&
+                         g_zones[i].awaitPull < 0 &&
+                         ((g_zones[i].state == 1 && g_zones[i].touches >= needT) ||
+                          g_zones[i].srr ||
+                          (g_zones[i].state == 2 && g_zones[i].touches >= 1 && g_zones[i].touches <= 2)) &&
+                         (!InpEntriesHtfOnly || g_zones[i].htf) &&
+                         (!InpRequireNested  || ZoneNested(i));
+         bool okTrend = (!InpTrendFilter || (isBuy ? trendUp : trendDown) || trendUnknown ||
+                         (InpAllowCounterInv && g_zones[i].state == 2)) &&
+                        !(isBuy ? sweptHigh : sweptLow);
+         // price must be on the side the trade comes FROM: above a support,
+         // below a resistance -- and near enough that the order is still
+         // alive when price arrives, not resting on a zone half a session away
+         double gapToZone = isBuy ? (c - g_zones[i].top) : (g_zones[i].bot - c);
+         bool   sideOk = (gapToZone > 0.0) &&
+                         (InpArmWithinATR <= 0.0 || gapToZone <= atr * InpArmWithinATR);
+         // ...and only ONCE per touch, or the zone re-arms the moment its
+         // order expires and offers the same setup over and over.
+         if(tradable && okTrend && canFire && sideOk &&
+            g_zones[i].sigTouch != g_zones[i].touches && !HasOrder(g_zones[i].id))
+           {
+            double entry = isBuy ? g_zones[i].top : g_zones[i].bot;
+            // The stop belongs to the ZONE, not to wherever price happens to
+            // be now. This read the last three bars' extreme, which was right
+            // while the order was armed on the touch bar because those bars
+            // were then AT the zone. Armed from a distance they can be
+            // anywhere, and one unrelated spike dragged the stop past the
+            // ceiling and killed the setup. The zone's own edge already IS
+            // the wick that drew it.
+            double rawSl = isBuy ? g_zones[i].bot - atr * InpSlBufferATR
+                                 : g_zones[i].top + atr * InpSlBufferATR;
+            double risk  = MathMax(MathAbs(entry - rawSl), atr * InpMinSlATR);
+            bool   tooWide = (InpMaxSlATR > 0.0 && risk > atr * InpMaxSlATR);
+            double t1 = NextZone(isBuy, entry, 0);
+            double reward = isBuy ? (t1 - entry) : (entry - t1);
+            if(t1 > 0.0 && !tooWide && reward >= risk * InpMinRR)
+              {
+               double t2 = NextZone(isBuy, entry, 1);
+               double t3 = NextZone(isBuy, entry, 2);
+               // Every target is a zone that is ALREADY on the chart and
+               // still unbroken. No second zone ahead means no TP2: the whole
+               // position comes off at TP1.
+               if(t2 <= 0.0) t2 = t1;
+               if(t3 <= 0.0) t3 = t2;
+               bool isPO2 = (g_zones[i].state == 2 && g_zones[i].touches == 1); // image 55
+               g_zones[i].sigTouch = g_zones[i].touches;
+               if(isBuy)
                  {
-                  double swingHi = MathMax(MathMax(high[bar], high[bar - 1]), high[bar - 2]);
-                  double zAtr    = g_zones[i].htf ? atrA : atr;
-                  double entry   = g_zones[i].bot;
-                  double rawSl   = MathMax(g_zones[i].top, swingHi) + zAtr * InpSlBufferATR;
-                  double risk    = MathMax(MathAbs(rawSl - entry), atr * InpMinSlATR);
-                  bool   tooWide = (InpMaxSlATR > 0.0 && risk > atr * InpMaxSlATR);
-                  double t1 = NextZone(false, entry, 0);
-                  if(t1 > 0.0 && !tooWide && (entry - t1) >= risk * InpMinRR)
-                    {
-                     double t2 = NextZone(false, entry, 1);
-                     double t3 = NextZone(false, entry, 2);
-                     // same rule on the sell side: no zone, no target
-                     if(t2 <= 0.0) t2 = t1;
-                     if(t3 <= 0.0) t3 = t2;
-                     bool isPO2 = (g_zones[i].state == 2 && g_zones[i].touches == 1); // image 55
-                     if(isPO2)
-                       {
-                        BufPO2Sell[bar] = h + atr * 0.4;
-                        Notify("PO2 SELL limit at " + ZoneText(g_zones[i]), live);
-                       }
-                     else
-                       {
-                        BufSell[bar] = h + atr * 0.3;
-                        Notify("SELL limit at " + ZoneText(g_zones[i]), live);
-                       }
-                     PushOrder(false, isPO2, g_zones[i].id, bar, time[bar], entry,
-                               entry + risk, t1, t2, t3, ZoneText(g_zones[i]),
-                               risk, PeriodSeconds(_Period) >= 3600);
-                    }
+                  if(isPO2) { BufPO2Buy[bar] = l - atr * 0.4; Notify("PO2 BUY limit at "  + ZoneText(g_zones[i]), live); }
+                  else      { BufBuy[bar]    = l - atr * 0.3; Notify("BUY limit at "      + ZoneText(g_zones[i]), live); }
                  }
+               else
+                 {
+                  if(isPO2) { BufPO2Sell[bar] = h + atr * 0.4; Notify("PO2 SELL limit at " + ZoneText(g_zones[i]), live); }
+                  else      { BufSell[bar]    = h + atr * 0.3; Notify("SELL limit at "     + ZoneText(g_zones[i]), live); }
+                 }
+               PushOrder(isBuy, isPO2, g_zones[i].id, bar, time[bar], entry,
+                         isBuy ? entry - risk : entry + risk, t1, t2, t3,
+                         ZoneText(g_zones[i]), risk,
+                         PeriodSeconds(_Period) >= 3600);
               }
            }
          g_zones[i].inZonePrev = inZone;
