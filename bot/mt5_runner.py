@@ -376,6 +376,90 @@ def _same_price(a: float, b: float, info) -> bool:
     return abs(a - b) <= tol
 
 
+def rank_candidates(sigs, symbol: str):
+    """Score every setup on this bar and hand them back strongest first.
+
+    The runner used to walk the signals in whatever order the zone loop
+    produced them and try to send each one, so a bar with three setups printed
+    three SKIPPED lines and took none -- while one of the three may well have
+    fitted. Nothing was ever CHOSEN.
+
+    What "strongest" means here is measured, not assumed. The book's own
+    strength order (image 54) was checked against 3632 real trades and does not
+    predict the outcome at all: correlation -0.003, and its weakest class
+    ("fresh S/R", +0.094R) actually beat its "VALID S/R" class (+0.037R). So it
+    is kept only as a tie-break.
+
+    What DOES decide things on a small account is the forced risk. Where the
+    balance leaves room to size, every setup risks the same target percentage
+    and this ties -- the book order then picks. Where the minimum lot is the
+    only position available, the setup with the tighter stop risks less of the
+    account for the same R, so it is strictly the better trade to spend a slot
+    on. Returns (fits, risk_pct, signal, volume, why_not) tuples."""
+    acc = mt5.account_info()
+    bal = acc.balance if acc else 0.0
+    out = []
+    for s in sigs:
+        sl_d = abs(s.price - s.sl)
+        vol, info = lots_for_risk(symbol, sl_d, RISK_PCT)
+        if vol is None:
+            out.append((False, 999.0, s, None, info))
+            continue
+        pct = 100.0 * info / bal if bal > 0 else 999.0
+        out.append((True, pct, s, vol, ""))
+    out.sort(key=lambda t: (not t[0], t[1], t[2].rank))
+    return out
+
+
+def choose_and_place(sigs, symbol: str, tf_minutes: int, room: int):
+    """Take the strongest setups this bar, up to the slots that are free."""
+    if not sigs:
+        return
+    ranked = rank_candidates(sigs, symbol)
+    fits = [r for r in ranked if r[0]]
+    print(f"  {len(sigs)} setup(s) on this bar · {len(fits)} the account can "
+          f"take · {room} slot(s) free")
+    for n, (ok, pct, s, vol, why) in enumerate(ranked):
+        sl_d = abs(s.price - s.sl)
+        rr = abs(s.tp1 - s.price) / sl_d if sl_d > 0 else 0.0
+        head = f"   {'>' if ok and n < room else ' '} {s.side.upper():4s} {s.zone:5s} @ {s.price:9.2f}"
+        if ok:
+            print(f"{head}  stop ${sl_d:.2f} = {pct:.1f}% · {rr:.1f}R to TP1 · "
+                  f"{vol} lots" + ("   <- taking this one" if n < room else
+                                   "   (waiting: no slot)"))
+        else:
+            print(f"{head}  stop ${sl_d:.2f} · {rr:.1f}R to TP1 · CANNOT SIZE: {why}")
+    taken = 0
+    for ok, pct, s, vol, why in ranked:
+        if taken >= room:
+            break
+        if not ok:
+            continue
+        if not DRY_RUN:
+            resting, _ = broker_state(symbol)
+            info = mt5.symbol_info(symbol)
+            if info and any(_same_price(o.price_open, s.price, info)
+                            for o in resting):
+                print("  already resting at the broker — not duplicated")
+                continue
+        place(s, symbol, tf_minutes)
+        taken += 1
+    if not fits:
+        print(f"  nothing taken: every setup on this bar needs a wider stop "
+              f"than ${bal_cap(symbol):.2f}, which is all this balance allows "
+              f"at the {MAX_RISK_PCT:g}% ceiling. This is the bot picking the "
+              f"trades it can afford, not failing to trade.")
+
+
+def bal_cap(symbol: str) -> float:
+    """The widest stop this balance can carry at the minimum lot."""
+    acc = mt5.account_info()
+    per = cheapest_lot_risk(symbol)
+    if acc is None or not per:
+        return 0.0
+    return acc.balance * MAX_RISK_PCT / 100.0 / per
+
+
 def place(signal, symbol: str, tf_minutes: int):
     """Book p41/p42: the entry is a LIMIT order resting AT the zone, not a
     market order. signal.price is that zone price -- the engine and the
@@ -646,9 +730,20 @@ def sync_orders(engine, symbol: str, tf_minutes: int):
                    and _same_price(r.price_open, o.entry, info) for r in resting)
         if here or any(_same_price(p.price_open, o.entry, info) for p in holding):
             continue
+        # Affordability is checked HERE rather than inside place(), because
+        # this runs every bar for every unsent order: an order the balance
+        # cannot carry used to reprint the same SKIPPED paragraph on every
+        # single bar for as long as it lived. Three unaffordable orders filled
+        # the console with the same three refusals over and over, which is what
+        # made a working bot look broken. The state is reported once, on the
+        # waiting line, instead of being shouted here.
+        vol, _why = lots_for_risk(symbol, abs(o.entry - o.sl), RISK_PCT)
+        if vol is None:
+            continue
         print(f"  syncing to broker: {o.side.upper()} {o.zone} @ {o.entry:.2f}")
         place(Signal(o.bar, o.side, "PO2" if o.po2 else "limit", o.zone,
-                     o.entry, o.sl, o.tp1, o.tp2, o.tp3), symbol, tf_minutes)
+                     o.entry, o.sl, o.tp1, o.tp2, o.tp3, o.rank),
+              symbol, tf_minutes)
 
 
 def reconcile(engine, symbol: str):
@@ -694,16 +789,27 @@ def reconcile(engine, symbol: str):
             continue
         phantom = t.stat == 0
         t.closed = True
-        if phantom:
+        # Was this setup ever one the account could have taken? That decides
+        # whether the zone gets its turn back.
+        vol, _ = lots_for_risk(symbol, t.risk0, RISK_PCT)
+        if phantom and vol is not None:
             t.exit_px = t.entry          # never happened: neither win nor loss
-            # ...and the setup was never actually offered to the market, so the
-            # zone gets its turn back. sig_touch is what holds a zone to one
-            # order per touch; leaving it set would retire a zone over a trade
-            # that did not take place. A trade the engine closed ITSELF on a
-            # target or a stop is a real result and keeps its mark.
+            # It COULD have been sent and was not, so the zone gets its turn
+            # back. sig_touch is what holds a zone to one order per touch;
+            # leaving it set would retire a zone over a trade that did not take
+            # place. A trade the engine closed ITSELF on a target or a stop is
+            # a real result and keeps its mark.
             for z in engine.zones:
                 if z.uid == t.uid:
                     z.sig_touch = -1
+        elif phantom:
+            # The stop was wider than this balance can carry. Freeing the zone
+            # here made it re-arm on the very next bar, be refused again, and
+            # print the same refusal for as long as price stayed on that side
+            # of it -- the wall of SKIPPED. The zone keeps its mark and gets a
+            # fresh chance on its next real touch, when the stop will be
+            # measured again and may well be narrower.
+            t.exit_px = t.entry
         print(f"  reconciled: the {t.side.upper()} {t.zone} @ {t.entry:.2f} "
               f"is not at the broker — freeing its zone to arm again")
 
@@ -774,6 +880,20 @@ def waiting_line(engine, symbol: str, price: float) -> str:
     engine_orders = len(engine.orders)
     if engine_orders:
         bits.append(f"{engine_orders} order(s) armed")
+        # ...and how many of those the balance can actually carry. Without this
+        # the line said "2 order(s) armed" next to an empty Trade tab and gave
+        # no hint why, while the reason -- the stop is wider than this account
+        # can pay for -- never appeared again after the first bar.
+        if not DRY_RUN:
+            try:
+                afford = sum(1 for o in engine.orders
+                             if lots_for_risk(symbol, abs(o.entry - o.sl),
+                                              RISK_PCT)[0] is not None)
+                if afford < engine_orders:
+                    bits.append(f"{engine_orders - afford} too wide for "
+                                f"${bal_cap(symbol):.2f} max stop")
+            except Exception:
+                pass
     if not DRY_RUN:
         try:
             resting, holding = broker_state(symbol)
@@ -1056,20 +1176,19 @@ def main():
         else:
             print(f"[{stamp:%Y-%m-%d %H:%M} UTC] {b['close']:.2f}  "
                   f"no setup — {waiting_line(engine, SYMBOL, b['close'])}")
-        for sig in sigs:
-            print(f"  SIGNAL {sig.side.upper()} {sig.zone} @ {sig.price:.2f}  "
-                  f"SL {sig.sl:.2f}  TP1 {sig.tp1:.2f} (next zone)")
-            if not DRY_RUN:
-                # After a restart the engine rebuilds its orders from history
-                # and would happily stack a second set on top of the ones still
-                # resting at the broker. The broker is the only truth here.
-                resting, _ = broker_state(SYMBOL)
-                info = mt5.symbol_info(SYMBOL)
-                if info and any(_same_price(o.price_open, sig.price, info)
-                                for o in resting):
-                    print("  already resting at the broker — not duplicated")
-                    continue
-            place(sig, SYMBOL, TIMEFRAME_MIN)
+        if sigs:
+            # How many slots are actually free at the BROKER, not in the
+            # engine's book -- that is what decides whether a new order can go
+            # out. Choosing happens once, over all of this bar's setups
+            # together, so the strongest one gets the slot.
+            if DRY_RUN:
+                free = engine.cfg.max_open
+            else:
+                resting, holding = broker_state(SYMBOL)
+                prices = {round(o.price_open, 2) for o in resting}
+                prices |= {round(p.price_open, 2) for p in holding}
+                free = max(0, engine.cfg.max_open - len(prices))
+            choose_and_place(sigs, SYMBOL, TIMEFRAME_MIN, free)
         reconcile(engine, SYMBOL)
         sync_orders(engine, SYMBOL, TIMEFRAME_MIN)
         if sigs:

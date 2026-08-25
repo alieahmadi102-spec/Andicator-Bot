@@ -115,6 +115,10 @@ class Signal:
     tp1: float
     tp2: float = 0.0
     tp3: float = 0.0
+    # Image 54's strength order, lower = stronger. Carried out of the engine so
+    # the runner can rank what it is holding instead of taking whatever the
+    # zone loop happened to reach first.
+    rank: int = 99
 
 
 @dataclass
@@ -222,7 +226,18 @@ class Config:
     # of the setups and takes the median from +0.056 to +0.064.
     max_sl_atr: float = 3.0
     max_open: int = 3           # how many zones may carry a live order/trade
-    min_rr: float = 1.0         # the next zone must be at least this many R away
+    min_rr: float = 2.5         # the next zone must be at least this many R away
+    # ...and not absurdly far either. Measured over 3632 real trades, what a
+    # setup pays is NOT predicted by the book's strength order (image 54 --
+    # correlation -0.003, i.e. none) but it IS predicted by how far the target
+    # sits from the stop, and the relationship is a hump, not a line:
+    #   TP1 under 1.5R   -0.079R      TP3 under 2R     -0.050R
+    #   TP1 2.0 - 3.0R   +0.103R      TP3 4R - 8R      +0.119R
+    #   TP1 over 5.0R    +0.015R      TP3 over 8R      -0.062R
+    # A target too close does not pay for the stop; one too far is a price the
+    # market does not reach before the trade runs out of bars. So both ends are
+    # cut. 0 disables the ceiling.
+    max_rr: float = 8.0
     # Master class image 54 — the setups ranked by strength, "the market
     # respects these more and it is better to use them":
     #   1 Trend · 2 PO2 · 3 PO2 inversion · 4 V.S/V.R Inversion · 5 GAP
@@ -362,6 +377,7 @@ class PendingOrder:
     tp1: float
     tp2: float
     tp3: float
+    rank: int = 99
 
 
 @dataclass
@@ -385,6 +401,7 @@ class Position:
     closed: bool = False
     be: bool = False       # stop already moved to entry
     uid: int = 0           # the zone that produced this setup
+    rank: int = 99         # image 54 strength at the moment it was armed
 
     @property
     def open(self) -> bool:
@@ -1211,7 +1228,8 @@ class SnrzEngine:
 
         ahead = self._zones_ahead(is_buy, entry)
         # the first target must be worth the risk, or the setup is not one
-        ahead = [t for t in ahead if abs(t[0] - entry) >= risk * cfg.min_rr]
+        ahead = [t for t in ahead if abs(t[0] - entry) >= risk * cfg.min_rr
+                 and (cfg.max_rr <= 0 or abs(t[0] - entry) <= risk * cfg.max_rr)]
         if not ahead:
             return None
         # image 44: TP1 from the chart timeframe, TP2 from the analysis one
@@ -1326,7 +1344,8 @@ class SnrzEngine:
             if c.low <= o.entry <= c.high:
                 t = Position(idx, o.side, o.zone, o.po2, o.entry, o.sl,
                              o.tp1, o.tp2, o.tp3,
-                             risk0=abs(o.entry - o.sl), uid=o.uid)
+                             risk0=abs(o.entry - o.sl), uid=o.uid,
+                             rank=o.rank)
                 self.trades.append(t)
                 self.position = t
                 continue                          # order consumed
@@ -1689,9 +1708,9 @@ class SnrzEngine:
             taken.add(key)
             room -= 1
             out.append(Signal(idx, side, "PO2" if po2 else "limit",
-                              kind, entry, sl, tp1, tp2, tp3))
+                              kind, entry, sl, tp1, tp2, tp3, rank))
             self.orders.append(PendingOrder(idx, side, kind, po2, uid,
-                                            entry, sl, tp1, tp2, tp3))
+                                            entry, sl, tp1, tp2, tp3, rank))
 
         # SRR / RSS qualification (book): a Support whose move broke >=2
         # Resistances becomes SRR (buy); a Resistance whose move broke >=2

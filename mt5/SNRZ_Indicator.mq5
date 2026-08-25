@@ -116,7 +116,15 @@ input bool   InpSingleTf     = true;  // Everything on THIS timeframe (no separa
 // else in the rules changes.
 input int    InpRangeBars    = 10;    // Range lockout (analysis-TF bars since opposite BOS)
 input int    InpMaxOpen      = 3;     // How many zones may carry a live order/trade at once
-input double InpMinRR        = 1.0;   // The next zone must be at least this many R away
+// Measured over 3632 real trades: what a setup pays is NOT predicted by the
+// book's strength order (image 54 -- correlation -0.003, i.e. none), but it IS
+// predicted by how far the target sits from the stop, as a hump not a line:
+//   TP1 under 1.5R  -0.079R  |  2.0-3.0R  +0.103R  |  over 5.0R  +0.015R
+//   TP3 under 2.0R  -0.050R  |  4.0-8.0R  +0.119R  |  over 8.0R  -0.062R
+// A target too close does not pay for the stop; one too far is a price the
+// market does not reach before the trade runs out of bars. Both ends are cut.
+input double InpMinRR        = 2.5;   // The next zone must be at least this many R away
+input double InpMaxRR        = 8.0;   // ...and at most this many. 0 = no ceiling.
 input int    InpMaxTradeBars = 60;   // Close an open trade after N chart bars
 input double InpMinSlATR     = 0.0;   // Minimum stop distance (ATR x) - 0 = the WICK decides, nothing widens it
 input double InpTpMaxR       = 6.0;   // Max R for TP1/TP2 (farther zone -> TP3)
@@ -1906,7 +1914,8 @@ int OnCalculate(const int rates_total,
             bool   tooWide = (InpMaxSlATR > 0.0 && risk > atr * InpMaxSlATR);
             double t1 = NextZone(isBuy, entry, 0);
             double reward = isBuy ? (t1 - entry) : (entry - t1);
-            if(t1 > 0.0 && !tooWide && reward >= risk * InpMinRR)
+            if(t1 > 0.0 && !tooWide && reward >= risk * InpMinRR &&
+               (InpMaxRR <= 0.0 || reward <= risk * InpMaxRR))
               {
                double t2 = NextZone(isBuy, entry, 1);
                double t3 = NextZone(isBuy, entry, 2);

@@ -83,7 +83,8 @@ maxFlips       = input.int(2,      "Max role flips before a zone is finished", m
 killOnStop     = input.bool(true,  "A zone that got stopped out is finished",  group = grpS)
 rangeBars      = input.int(10,     "Range lockout (analysis bars since opposite BOS)", minval = 2, group = grpS, tooltip = "کتاب: بازار Sideway خطرناک است — No Setup, No Trade.")
 maxOpen        = input.int(3,     "چند زون هم‌زمان اردر زنده داشته باشند", minval = 1, maxval = 20, group = grpS, tooltip = "هر زون اردر خودش را دارد. این فقط سقفِ تعداد اردرِ هم‌زمان است.")
-minRR          = input.float(1.0, "زون بعدی حداقل چند برابر استاپ دور باشد", minval = 0.2, step = 0.1, group = grpS, tooltip = "اگر زون بعدی نزدیک‌تر از این باشد، ستاپ ارزش ریسک را ندارد و اردری گذاشته نمی‌شود. کتاب: No Setup, No Trade.")
+minRR          = input.float(2.5, "زون بعدی حداقل چند برابر استاپ دور باشد", minval = 0.2, step = 0.1, group = grpS, tooltip = "اندازه‌گیری روی ۳۶۳۲ معامله‌ی واقعی: آنچه یک ستاپ می‌پردازد را **رتبه‌بندیِ قدرتِ کتاب (عکس ۵۴) پیش‌بینی نمی‌کند** — همبستگی ‎-۰٫۰۰۳، یعنی هیچ. ولی فاصله‌ی تارگت تا استاپ پیش‌بینی می‌کند، و رابطه‌اش قوس است نه خط:\n\nTP1 زیر ۱٫۵R ← ‎-۰٫۰۷۹R · بین ۲ تا ۳R ← ‎+۰٫۱۰۳R · بالای ۵R ← ‎+۰٫۰۱۵R\nTP3 زیر ۲R ← ‎-۰٫۰۵۰R · بین ۴ تا ۸R ← ‎+۰٫۱۱۹R · بالای ۸R ← ‎-۰٫۰۶۲R\n\nتارگتِ خیلی نزدیک پولِ استاپ را درنمی‌آورد؛ تارگتِ خیلی دور قیمتی است که بازار قبل از تمام شدنِ معامله به آن نمی‌رسد. پس هر دو سر بریده شد: ۲٫۵ تا ۸ برابر.")
+maxRR          = input.float(8.0, "…و حداکثر چند برابر (۰ یعنی بی‌سقف)", minval = 0.0, step = 0.5, group = grpS, tooltip = "اندازه‌گیری روی ۳۶۳۲ معامله‌ی واقعی: آنچه یک ستاپ می‌پردازد را **رتبه‌بندیِ قدرتِ کتاب (عکس ۵۴) پیش‌بینی نمی‌کند** — همبستگی ‎-۰٫۰۰۳، یعنی هیچ. ولی فاصله‌ی تارگت تا استاپ پیش‌بینی می‌کند، و رابطه‌اش قوس است نه خط:\n\nTP1 زیر ۱٫۵R ← ‎-۰٫۰۷۹R · بین ۲ تا ۳R ← ‎+۰٫۱۰۳R · بالای ۵R ← ‎+۰٫۰۱۵R\nTP3 زیر ۲R ← ‎-۰٫۰۵۰R · بین ۴ تا ۸R ← ‎+۰٫۱۱۹R · بالای ۸R ← ‎-۰٫۰۶۲R\n\nتارگتِ خیلی نزدیک پولِ استاپ را درنمی‌آورد؛ تارگتِ خیلی دور قیمتی است که بازار قبل از تمام شدنِ معامله به آن نمی‌رسد. پس هر دو سر بریده شد: ۲٫۵ تا ۸ برابر.")
 maxTradeBars   = input.int(60,     "Close an open trade after N chart bars", minval = 20, group = grpS)
 minSlAtr       = input.float(0.0,   "حداقل فاصله‌ی استاپ (ATR ×)",          minval = 0.0, step = 0.1, group = grpS, tooltip = "استاپ پشتِ **سایه** است و هیچ‌چیز نباید پهن‌ترش کند. این عدد قبلاً ۲٫۵ ATR بود و در ۹۷ تا ۱۰۰ درصد معامله‌ها **به‌جای سایه** استاپ را تعیین می‌کرد — سایه معمولاً ۱٫۳ ATR فاصله دارد، پس این کف بی‌سروصدا هر استاپ را دو برابر می‌کرد. با برداشتنش میانه از −۰٫۰۳۸R به +۰٫۰۵۷R رفت.")
 tpMaxR         = input.float(6.0,  "Max R for TP1 (farther zone → TP2/TP3)", minval = 1, step = 0.5, group = grpS)
@@ -1115,7 +1116,7 @@ for z in zones
         tooWide = maxSlAtr > 0 and risk > atr * maxSlAtr
         t1 = nextZone(isBuy, entry, 0)
         reward = isBuy ? t1 - entry : entry - t1
-        if not na(t1) and not tooWide and reward >= risk * minRR
+        if not na(t1) and not tooWide and reward >= risk * minRR and (maxRR <= 0 or reward <= risk * maxRR)
             t2 = nextZone(isBuy, entry, 1)
             t3 = nextZone(isBuy, entry, 2)
             isPO2 = z.state == 2 and z.touches == 1   // image 55: the fill IS the 2nd touch
