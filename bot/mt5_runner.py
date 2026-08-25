@@ -8,7 +8,9 @@ Requirements (Windows, or Linux+Wine):
 """
 from __future__ import annotations
 
+import json
 import math
+import os
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -45,7 +47,13 @@ MAX_SPREAD_R = 0.10
 # The timeframe is added so each bot owns exactly its own trades.
 MAGIC_BASE = 20260819
 MAGIC = MAGIC_BASE          # read_args() adds the timeframe
-ORDER_EXPIRY_BARS = 40      # same as Config.order_expiry_bars in snrz_core
+# How long a resting limit is given to fill. This used to be its own number
+# here -- 40, against the engine's 10 -- and the two disagreeing is worse than
+# either value: the engine dropped its order after 10 bars while the broker
+# kept it for 40, so the engine re-armed the same zone into an order that was
+# still sitting there. It is read from the engine's own config now, so there is
+# one value and it cannot drift again.
+ORDER_EXPIRY_BARS = Config().order_expiry_bars
 
 # Nothing is sent to the broker while this is True. Turn it off only after you
 # have watched it print signals for a while ON A DEMO ACCOUNT and you agree
@@ -131,26 +139,241 @@ def lots_for_risk(symbol: str, sl_distance: float, risk_pct: float):
         f"this one does not.")
 
 
-def what_fits(symbol: str) -> str:
-    """What this balance can actually trade, worked out at startup.
+def cheapest_lot_risk(symbol: str):
+    """What the SMALLEST position this symbol sells loses per $1 of stop.
 
-    So the answer to "can I run this with $10 / $50 / $500" comes from the
-    account itself instead of being guessed."""
+    This one number decides whether a balance can trade a symbol at all. On a
+    standard XAUUSD contract (100 ounces) the minimum 0.01 lots is 1 ounce, so
+    it is $1.00 -- a $3 stop costs $3 whether you like it or not. A broker's
+    micro gold (contract 10) makes the same stop cost $0.30, and a cent-sized
+    contract less again."""
     info = mt5.symbol_info(symbol)
+    if info is None or info.trade_tick_size <= 0 or info.volume_min <= 0:
+        return None
+    return info.volume_min * info.trade_tick_value / info.trade_tick_size
+
+
+def affordable_symbols(balance: float, need_stop: float, like: str = "XAU"):
+    """Every symbol on this account the balance could actually trade, cheapest
+    first.
+
+    A small balance on standard gold does not take "fewer trades" -- it takes
+    NONE, because the minimum lot's risk is fixed and the strategy's stops are
+    what they are. That is arithmetic and no rule change reaches it. What CAN
+    reach it is a smaller contract, and brokers very often list one right next
+    to the standard symbol (XAUUSD.m, XAUUSDm, XAUUSD.micro, GOLDmicro). So
+    rather than telling someone their account is too small, this looks."""
+    out = []
+    for s in (mt5.symbols_get() or []):
+        name = s.name
+        if like.lower() not in name.lower():
+            continue
+        if not mt5.symbol_select(name, True):
+            continue
+        per = cheapest_lot_risk(name)
+        if not per or per <= 0:
+            continue
+        forced = per * need_stop
+        out.append((forced, name, per, 100.0 * forced / balance if balance > 0 else 999.0))
+    out.sort()
+    return out
+
+
+# What this strategy's stop actually measures, per timeframe, on real XAUUSD:
+# the median setup's stop distance in dollars. Sizing is not a matter of
+# opinion once these are known -- the minimum lot's risk is the stop distance
+# times the per-dollar cost, and either the balance covers it or it does not.
+MEDIAN_STOP = {1: 1.75, 5: 5.03, 15: 9.12, 30: 12.75, 60: 20.35, 240: 35.86}
+
+
+def what_fits(symbol: str, tf_minutes: int) -> str:
+    """Whether this balance can trade this symbol on this timeframe — answered
+    against the stop sizes the strategy actually produces, not in the abstract.
+
+    The old version of this printed the widest stop that would fit and left the
+    reader to guess whether the strategy ever produces one that narrow. It
+    does not, on a small account, and saying so plainly is the whole point:
+    a bot that silently skips every setup looks exactly like a broken one."""
     acc = mt5.account_info()
-    if info is None or acc is None or info.trade_tick_size <= 0:
+    per = cheapest_lot_risk(symbol)
+    info = mt5.symbol_info(symbol)
+    if acc is None or per is None or info is None:
         return ""
-    per_dollar = info.volume_min * info.trade_tick_value / info.trade_tick_size
-    # the widest stop whose minimum-lot risk still sits under the ceiling
-    max_stop = acc.balance * MAX_RISK_PCT / 100.0 / per_dollar
-    # ...and the balance at which the target risk becomes reachable on its own
-    need = 100.0 * per_dollar / RISK_PCT       # balance for a $1 stop at target
-    return (f"sizing: target {RISK_PCT:g}%, ceiling {MAX_RISK_PCT:g}% · "
-            f"smallest lot {info.volume_min} risks ${per_dollar:.2f} per $1 of "
-            f"stop\n         with ${acc.balance:.2f} that means stops up to "
-            f"${max_stop:.2f} fit; wider ones are skipped\n         (sizing "
-            f"becomes free rather than forced above about "
-            f"${need * 3:.0f} for a typical $3 stop)")
+    typical = MEDIAN_STOP.get(tf_minutes, 5.0)
+    forced = per * typical                       # what the minimum lot must risk
+    pct = 100.0 * forced / acc.balance if acc.balance > 0 else 999.0
+    target_lots = (acc.balance * RISK_PCT / 100.0) / (per / info.volume_min)
+
+    lines = [f"sizing: target {RISK_PCT:g}% of the balance, hard ceiling "
+             f"{MAX_RISK_PCT:g}%",
+             f"        smallest lot {info.volume_min} risks ${per:.2f} for every "
+             f"$1 the stop is wide",
+             f"        a typical {tf_minutes}m setup here stops ${typical:.2f} "
+             f"away, so that lot risks ${forced:.2f} = {pct:.1f}% of "
+             f"${acc.balance:.2f}"]
+    if target_lots >= info.volume_min:
+        lines.append(f"        -> there is room to size: about "
+                     f"{target_lots:.2f} lots on the typical setup")
+    elif pct <= MAX_RISK_PCT:
+        lines.append(f"        -> no room to size down, but {pct:.1f}% is under "
+                     f"the ceiling: it trades at the minimum lot")
+    else:
+        need = forced * 100.0 / MAX_RISK_PCT
+        lines.append(f"        -> {pct:.1f}% is OVER the {MAX_RISK_PCT:g}% "
+                     f"ceiling, so most setups here will be SKIPPED.")
+        lines.append(f"           On {symbol} this timeframe needs about "
+                     f"${need:.0f} to trade properly.")
+        # ...and rather than stopping at that, look for a smaller contract.
+        try:
+            opts = [o for o in affordable_symbols(acc.balance, typical)
+                    if o[3] <= MAX_RISK_PCT]
+        except Exception:
+            opts = []
+        if opts:
+            lines.append("           This account DOES carry a smaller gold "
+                         "contract that fits:")
+            for forced2, name, per2, pct2 in opts[:4]:
+                lines.append(f"             --symbol {name:<16} minimum lot "
+                             f"risks ${forced2:.2f} = {pct2:.1f}%")
+        else:
+            lines.append("           No smaller gold contract on this account "
+                         "fits either — checked every XAU symbol in Market Watch.")
+    return "\n".join(lines)
+
+
+# ── the pieces the order path is built from ────────────────────────────────
+# These four -- LADDER, split_volume, _filling, _retcode -- were CALLED by
+# place() and manage_open_positions() and defined nowhere. Python resolves a
+# global name when the line runs, not when the file loads, so the module
+# imported cleanly, the bot started, printed its banner, found zones and
+# announced signals -- and then raised NameError on the first signal that got
+# as far as sizing. That is why no order was ever sent: not a rule that was too
+# strict, a function that did not exist.
+LADDER: dict = {}
+
+
+def _ladder_path() -> str:
+    """One file per bot. The magic carries the timeframe, so five bots running
+    together keep five ladders instead of overwriting one."""
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        f".snrz_ladder_{MAGIC}.json")
+
+
+def ladder_load():
+    """The rungs have to survive a restart.
+
+    A position carries only its own SL and TP. When one undivided position is
+    aiming at TP3, the two prices its stop is meant to climb to exist nowhere
+    but here -- so a restart used to leave a running trade managed as a plain
+    break-even, silently trading a different plan from the measured one."""
+    global LADDER
+    try:
+        with open(_ladder_path()) as f:
+            LADDER = {k: tuple(v) for k, v in json.load(f).items()}
+    except Exception:
+        LADDER = {}
+
+
+def ladder_save():
+    try:
+        with open(_ladder_path(), "w") as f:
+            json.dump({k: list(v) for k, v in LADDER.items()}, f)
+    except Exception:
+        pass                      # a lost ladder degrades to break-even, not worse
+
+
+def split_volume(volume: float, info):
+    """Image 41's exit: half off at TP1, a quarter at TP2, a quarter at TP3.
+
+    A broker position cannot be closed in pieces by its own TP, so the plan is
+    three separate orders at one price, each with its own target. Every leg has
+    to be a whole number of volume steps AND clear the minimum lot, which takes
+    at least four steps to divide -- below that there is nothing to split and
+    the caller falls back to the ratchet.
+
+    The remainder goes to the FIRST leg rather than being rounded away, so the
+    three legs always add back up to exactly `volume`. Rounding each leg on its
+    own turned 0.05 lots into 0.02+0.01+0.01 and quietly traded 0.04. Giving it
+    to the first leg is also the safe direction to be wrong in: TP1 is the
+    target that actually gets reached, TP3 the one that mostly does not."""
+    step = getattr(info, "volume_step", 0.0)
+    if step <= 0:
+        return None
+    steps = int(round(volume / step))
+    if steps < 4:                            # nothing to halve and quarter
+        return None
+    q2 = q3 = max(1, steps // 4)
+    half = steps - q2 - q3
+    if half < max(q2, q3):
+        return None
+    legs = [round(n * step, 8) for n in (half, q2, q3)]
+    if any(l < info.volume_min - 1e-12 for l in legs):
+        return None
+    return legs
+
+
+def _filling(info, pending: bool = False):
+    """Which fill policy this symbol accepts.
+
+    symbol_info.filling_mode is a BITMASK of what the broker allows, and
+    order_send is refused outright with "Unsupported filling mode" when asked
+    for one that is not in it. A PENDING order is filled when price arrives, so
+    RETURN is the only policy that means anything for it and is what brokers
+    take for pendings whatever the mask says; a market order has to follow the
+    mask."""
+    if pending:
+        return mt5.ORDER_FILLING_RETURN
+    mask = getattr(info, "filling_mode", 0)
+    if mask & getattr(mt5, "SYMBOL_FILLING_FOK", 1):
+        return mt5.ORDER_FILLING_FOK
+    if mask & getattr(mt5, "SYMBOL_FILLING_IOC", 2):
+        return mt5.ORDER_FILLING_IOC
+    return mt5.ORDER_FILLING_RETURN
+
+
+def _retcode(res):
+    """None when the order went through, otherwise a sentence saying why not.
+
+    res is None whenever the terminal refused the request before it ever left
+    the machine -- and reading res.retcode there raises AttributeError, which
+    buries the actual reason where nobody sees it. The reason in that case is
+    in mt5.last_error(), so that is what gets printed."""
+    if res is None:
+        return f"the terminal rejected the request outright: {mt5.last_error()}"
+    ok = {getattr(mt5, n) for n in ("TRADE_RETCODE_DONE", "TRADE_RETCODE_PLACED",
+                                    "TRADE_RETCODE_DONE_PARTIAL")
+          if hasattr(mt5, n)}
+    if res.retcode in ok:
+        return None
+    said = {
+        "TRADE_RETCODE_NO_MONEY": "not enough free margin for this size",
+        "TRADE_RETCODE_INVALID_VOLUME": "the volume is outside what this symbol allows",
+        "TRADE_RETCODE_INVALID_PRICE": "that price is not valid for this order type",
+        "TRADE_RETCODE_INVALID_STOPS": "the SL or TP is inside the broker's minimum distance",
+        "TRADE_RETCODE_INVALID_FILL": "this symbol does not accept that filling mode",
+        "TRADE_RETCODE_INVALID_EXPIRATION": "this symbol does not accept an expiry time",
+        "TRADE_RETCODE_TRADE_DISABLED": "trading is disabled for this symbol or account",
+        "TRADE_RETCODE_MARKET_CLOSED": "the market is closed",
+        "TRADE_RETCODE_REQUOTE": "requote — price moved while the order was travelling",
+        "TRADE_RETCODE_PRICE_OFF": "no quote to trade against right now",
+        "TRADE_RETCODE_TOO_MANY_REQUESTS": "too many requests, the terminal is throttling",
+    }
+    known = {getattr(mt5, n): why for n, why in said.items() if hasattr(mt5, n)}
+    why = known.get(res.retcode) or getattr(res, "comment", "") or "no reason given"
+    return f"retcode {res.retcode}: {why}"
+
+
+def _same_price(a: float, b: float, info) -> bool:
+    """Is this the same price, as far as the broker is concerned?
+
+    The engine's entry is a raw zone edge -- 4650.3847 -- and the broker stores
+    what it was sent, rounded to the symbol's digits: 4650.38. Comparing those
+    with a 1e-6 tolerance says "different", which is what produced the three
+    identical orders on one price: sync_orders looked for its order at the
+    broker, the rounded copy did not match, so it decided the send had never
+    happened and sent it again. Every bar. One point of tolerance ends it."""
+    tol = max(getattr(info, "point", 0.0), 1e-9) * 1.5
+    return abs(a - b) <= tol
 
 
 def place(signal, symbol: str, tf_minutes: int):
@@ -220,14 +443,21 @@ def place(signal, symbol: str, tf_minutes: int):
     else:
         kind = mt5.ORDER_TYPE_SELL_LIMIT if market < signal.price else mt5.ORDER_TYPE_SELL
     pending = kind in (mt5.ORDER_TYPE_BUY_LIMIT, mt5.ORDER_TYPE_SELL_LIMIT)
+    # Price is already past the zone -- so the limit would fill instantly and a
+    # market order is the same trade. Only while it is still NEAR the zone,
+    # though: sync_orders retries a failed send every bar, and without this a
+    # setup from an hour ago could be entered at market a long way past its
+    # price, on a stop that was measured for the zone edge. A quarter of the
+    # risk is the most that entry may be worse by.
+    if not pending:
+        slip = abs(market - signal.price)
+        if slip > 0.25 * sl_distance:
+            print(f"  SKIPPED - price is already {slip:.{digits}f} past the "
+                  f"{rnd(signal.price)} entry, more than a quarter of the "
+                  f"{sl_distance:.{digits}f} risk. Chasing it is a different trade.")
+            return
     # A single position aims at the far target and ratchets its way there.
     targets = [signal.tp3] if ratchet else [signal.tp1, signal.tp2, signal.tp3]
-    if ratchet:
-        # manage_open_positions needs the intermediate targets to ratchet
-        # against, and a position carries only its own sl/tp. Keyed by side and
-        # entry price, which is what a filled position can be matched on.
-        LADDER[(signal.side, rnd(signal.price))] = (rnd(signal.tp1),
-                                                    rnd(signal.tp2))
 
     if DRY_RUN:
         for vol, tp, n in zip(legs, targets, (3,) if ratchet else (1, 2, 3)):
@@ -236,6 +466,7 @@ def place(signal, symbol: str, tf_minutes: int):
                   f"@ {rnd(signal.price)}  SL {rnd(signal.sl)}  TP{n} {rnd(tp)}")
         return
 
+    sent = 0
     for vol, tp, n in zip(legs, targets, (3,) if ratchet else (1, 2, 3)):
         req = {
             "action": mt5.TRADE_ACTION_PENDING if pending else mt5.TRADE_ACTION_DEAL,
@@ -247,7 +478,7 @@ def place(signal, symbol: str, tf_minutes: int):
             "tp": rnd(tp),
             "magic": MAGIC,
             "comment": f"SNRZ {signal.zone} T{n}"[:31],
-            "type_filling": _filling(info),
+            "type_filling": _filling(info, pending),
         }
         if pending:
             req["type_time"] = mt5.ORDER_TIME_SPECIFIED
@@ -257,10 +488,33 @@ def place(signal, symbol: str, tf_minutes: int):
             req["type_time"] = mt5.ORDER_TIME_GTC
         res = mt5.order_send(req)
         bad = _retcode(res)
+        # Not every broker takes a timed pending order. Refusing the trade over
+        # the EXPIRY would be throwing away the setup for a housekeeping
+        # detail, so it is re-sent as good-till-cancelled -- the engine expires
+        # its own copy on schedule either way, and reconcile() cancels the one
+        # at the broker with it.
+        if bad and pending and "expir" in bad.lower():
+            req["type_time"] = mt5.ORDER_TIME_GTC
+            req.pop("expiration", None)
+            res = mt5.order_send(req)
+            bad = _retcode(res)
         if bad:
             print(f"  TP{n} leg FAILED - {bad}")
-        else:
-            print(f"  TP{n} leg placed: {vol} lots, ticket {res.order}")
+            continue
+        sent += 1
+        print(f"  TP{n} leg placed: {vol} lots, ticket {res.order}")
+        if ratchet:
+            # manage_open_positions needs the two targets under TP3 to ratchet
+            # against, and a position carries only its own sl/tp. Keyed by the
+            # ORDER ticket: when a pending order triggers, the position it
+            # opens carries that same ticket, so this survives a fill at a
+            # price that is not exactly the one requested. The price key is
+            # kept beside it as a fallback for a market entry.
+            rungs = [rnd(signal.tp1), rnd(signal.tp2)]
+            LADDER[str(res.order)] = rungs
+            LADDER[f"{signal.side}@{rnd(signal.price)}"] = rungs
+    if sent:
+        ladder_save()
 
 
 def manage_open_positions(symbol: str):
@@ -295,7 +549,7 @@ def manage_open_positions(symbol: str):
         want = None
         if (px >= entry + risk) if is_buy else (px <= entry - risk):
             want = entry
-        rungs = LADDER.get((side, entry))
+        rungs = LADDER.get(str(p.ticket)) or LADDER.get(f"{side}@{entry}")
         if rungs:
             tp1, tp2 = rungs
             for reached, lock in (((px >= tp2) if is_buy else (px <= tp2), tp1),
@@ -376,16 +630,98 @@ def sync_orders(engine, symbol: str, tf_minutes: int):
     because it runs every bar it also retries an order whose send failed."""
     if DRY_RUN or not engine.orders:
         return
+    info = mt5.symbol_info(symbol)
+    if info is None:
+        return
     resting, holding = broker_state(symbol)
     for o in list(engine.orders):
+        # Matched at the broker's own precision. The engine's entry is a raw
+        # zone edge (4650.3847) and the broker stores what it was sent, rounded
+        # to the symbol's digits (4650.38) -- so the old 1e-6 comparison always
+        # said "not there", and this function re-sent the same order on every
+        # single bar. That is where the three identical orders on one price
+        # came from; it was this line, not the engine.
         here = any(o.side == ("buy" if r.type in (mt5.ORDER_TYPE_BUY_LIMIT,
                                                   mt5.ORDER_TYPE_BUY) else "sell")
-                   and abs(r.price_open - o.entry) < 1e-6 for r in resting)
-        if here or any(abs(p.price_open - o.entry) < 1e-6 for p in holding):
+                   and _same_price(r.price_open, o.entry, info) for r in resting)
+        if here or any(_same_price(p.price_open, o.entry, info) for p in holding):
             continue
         print(f"  syncing to broker: {o.side.upper()} {o.zone} @ {o.entry:.2f}")
         place(Signal(o.bar, o.side, "PO2" if o.po2 else "limit", o.zone,
                      o.entry, o.sl, o.tp1, o.tp2, o.tp3), symbol, tf_minutes)
+
+
+def reconcile(engine, symbol: str):
+    """Make the engine's book agree with the broker's, every bar.
+
+    The engine simulates its own fills from candle data: a limit "fills" when a
+    bar's wick reaches it, and from then on it holds a trade. That is exactly
+    right in a backtest and dangerously wrong live, because it happens whether
+    or not the order ever reached the broker. When a send failed -- and until
+    this commit every send failed, on a NameError -- the engine still opened
+    its imaginary trade, and _has_order_or_trade then blocked that zone for as
+    long as the trade "ran". The console said it plainly and nobody could
+    read it:
+
+        AT THE BROKER: 0 order(s), 0 position(s)
+        trades running: 1
+        BLOCKED: already has an order or a running trade
+
+    A zone in that state never re-arms. So each bar, any engine trade with no
+    matching position at the broker is closed in the engine's book. Both cases
+    that produce it want the same answer: if the trade never existed the zone
+    must be freed, and if it existed and has since closed the zone must be
+    freed too.
+
+    The reverse direction is handled as well -- a resting order at the broker
+    that the engine has expired is cancelled, so the two expiries cannot drift
+    apart and leave an order nobody is managing."""
+    if DRY_RUN:
+        return
+    info = mt5.symbol_info(symbol)
+    if info is None:
+        return
+    resting, holding = broker_state(symbol)
+
+    for t in engine.trades:
+        if t.closed:
+            continue
+        if any(_same_price(p.price_open, t.entry, info) for p in holding):
+            continue
+        # Still resting means it simply has not filled yet -- the engine is
+        # early, not wrong, and the order is where it should be.
+        if any(_same_price(r.price_open, t.entry, info) for r in resting):
+            continue
+        phantom = t.stat == 0
+        t.closed = True
+        if phantom:
+            t.exit_px = t.entry          # never happened: neither win nor loss
+            # ...and the setup was never actually offered to the market, so the
+            # zone gets its turn back. sig_touch is what holds a zone to one
+            # order per touch; leaving it set would retire a zone over a trade
+            # that did not take place. A trade the engine closed ITSELF on a
+            # target or a stop is a real result and keeps its mark.
+            for z in engine.zones:
+                if z.uid == t.uid:
+                    z.sig_touch = -1
+        print(f"  reconciled: the {t.side.upper()} {t.zone} @ {t.entry:.2f} "
+              f"is not at the broker — freeing its zone to arm again")
+
+    # Everything the engine still expects to be at the broker: its own resting
+    # orders AND the entries of trades it has already filled -- because a fill
+    # the engine reads off a closed bar can be a tick ahead of the broker's,
+    # and cancelling that order would delete a live setup a moment before it
+    # triggered. The three legs of a split entry all rest at one price, so one
+    # engine order covers all three.
+    mine = {round(o.entry, info.digits) for o in engine.orders}
+    mine |= {round(t.entry, info.digits) for t in engine.trades if not t.closed}
+    for r in resting:
+        if round(r.price_open, info.digits) in mine:
+            continue
+        res = mt5.order_send({"action": mt5.TRADE_ACTION_REMOVE, "order": r.ticket})
+        bad = _retcode(res)
+        print(f"  cancelling #{r.ticket} @ {r.price_open} — the engine has "
+              f"expired this setup" + (f"  FAILED - {bad}" if bad else ""))
 
 
 def waiting_line(engine, symbol: str, price: float) -> str:
@@ -544,6 +880,7 @@ def read_args():
 
 def main():
     read_args()
+    ladder_load()               # the rungs of any trade that outlived a restart
     if mt5 is None:
         raise SystemExit("MetaTrader5 package not installed (Windows only): pip install MetaTrader5")
     if not mt5.initialize():
@@ -566,7 +903,7 @@ def main():
     print(f"MT5 connected: account {acc.login} ({acc.server}), "
           f"balance {acc.balance} {acc.currency}")
     print(f"account type: *** {kind} ***")
-    line = what_fits(SYMBOL)
+    line = what_fits(SYMBOL, TIMEFRAME_MIN)
     if line:
         print(line)
     try:
@@ -648,8 +985,11 @@ def main():
         print(f"(could not read the trade history: {e})")
 
     show_state(engine, SYMBOL)
-    # Orders the warm-up left resting are live setups at today's prices, so
-    # they belong at the broker before the first new bar arrives.
+    # The warm-up rebuilt the engine's book from history and knows nothing
+    # about what is actually at the broker, so the two are squared up before a
+    # single order is sent. Orders the warm-up left resting are live setups at
+    # today's prices and belong at the broker before the first new bar arrives.
+    reconcile(engine, SYMBOL)
     sync_orders(engine, SYMBOL, TIMEFRAME_MIN)
     print(f"\nwatching for the next closed {TIMEFRAME_MIN}m bar — on this timeframe "
           f"that is one check every {TIMEFRAME_MIN} minutes, so silence is normal.")
@@ -708,10 +1048,13 @@ def main():
                 # and would happily stack a second set on top of the ones still
                 # resting at the broker. The broker is the only truth here.
                 resting, _ = broker_state(SYMBOL)
-                if any(abs(o.price_open - sig.price) < 1e-6 for o in resting):
+                info = mt5.symbol_info(SYMBOL)
+                if info and any(_same_price(o.price_open, sig.price, info)
+                                for o in resting):
                     print("  already resting at the broker — not duplicated")
                     continue
             place(sig, SYMBOL, TIMEFRAME_MIN)
+        reconcile(engine, SYMBOL)
         sync_orders(engine, SYMBOL, TIMEFRAME_MIN)
         if sigs:
             show_state(engine, SYMBOL)

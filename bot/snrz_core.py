@@ -504,6 +504,12 @@ class SnrzEngine:
             top, bot = mid + mn / 2, mid - mn / 2
         if top - bot > mx:
             if role == Role.SUPPORT:
+                # Keep the wick extreme and trim the entry edge, never the
+                # reverse. Clamping the other way (keeping the entry edge and
+                # pulling the stop in) sounds tidier -- tighter risk, same
+                # entry -- and measures clearly worse: pooled +0.050 -> +0.029R,
+                # median +0.046 -> +0.002R. The stop then sits INSIDE the range
+                # the zone's own wick already proved price moves through.
                 top = bot + mx
             else:
                 bot = top - mx
@@ -1181,14 +1187,23 @@ class SnrzEngine:
         Setup, No Trade". Inventing a 1R target where the chart offers nothing
         is exactly the guesswork this is meant to remove."""
         cfg = self.cfg
-        wick_lo = min(w.low for w in self.candles[-3:])
-        wick_hi = max(w.high for w in self.candles[-3:])
+        # The stop belongs to the ZONE, not to wherever price happens to be now.
+        #
+        # These two lines used to read the last three candles of the series and
+        # push the stop out to their extreme. That made sense while the order
+        # was armed on the touch bar, because then the last three candles WERE
+        # the candles at the zone. Since the entry was hoisted out of the touch
+        # branch the order is armed while price is away from the zone, so those
+        # three candles can be anywhere -- and one unrelated spike on the far
+        # side dragged the stop out past max_sl_atr and killed the setup with
+        # "no zone ahead worth the risk". The zone's own edge is already the
+        # wick that drew it.
         if is_buy:
             entry = z.top                      # the edge price meets first
-            raw_sl = min(z.bot, wick_lo) - atr * cfg.sl_buffer_atr
+            raw_sl = z.bot - atr * cfg.sl_buffer_atr
         else:
             entry = z.bot
-            raw_sl = max(z.top, wick_hi) + atr * cfg.sl_buffer_atr
+            raw_sl = z.top + atr * cfg.sl_buffer_atr
         risk = max(abs(entry - raw_sl), atr * cfg.min_sl_atr)
         if cfg.max_sl_atr > 0 and risk > atr * cfg.max_sl_atr:
             return None          # the wick is too far away — no setup, no trade
@@ -1272,6 +1287,20 @@ class SnrzEngine:
             return (f"the bar closed {where} the zone — the entry needs a close "
                     f"back {'above' if is_sup else 'below'} it")
         atr = self._atr()
+        # These two were missing, and they are the two most common answers now.
+        # A diagnostic that walks a DIFFERENT list of conditions from the code
+        # it is explaining is worse than none: it sent me looking at the trend
+        # filter for hours while the real answer was that the zone had already
+        # had its one order for this touch.
+        if atr and cfg.arm_within_atr > 0:
+            gap = (c.close - z.top) if is_sup else (z.bot - c.close)
+            if gap > atr * cfg.arm_within_atr:
+                return (f"price is {gap:.2f} away, further than the "
+                        f"{atr * cfg.arm_within_atr:.2f} an order is armed "
+                        f"within — it would expire before price arrived")
+        if z.sig_touch == z.touches:
+            return ("this zone already had its order for this touch — it re-arms "
+                    "on the next one")
         if atr:
             lv = self._levels(is_sup, z, c, atr)
             if lv is None:
