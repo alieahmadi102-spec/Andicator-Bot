@@ -723,6 +723,22 @@ def reconcile(engine, symbol: str):
         print(f"  cancelling #{r.ticket} @ {r.price_open} — the engine has "
               f"expired this setup" + (f"  FAILED - {bad}" if bad else ""))
 
+    # The ratchet's rungs are only needed while the trade they belong to is
+    # open. Nothing removed them, so the file grew by two entries per trade
+    # for as long as the bot ran and was reloaded in full at every restart.
+    if LADDER:
+        alive = {str(p.ticket) for p in holding}
+        alive |= {f"{'buy' if p.type == mt5.POSITION_TYPE_BUY else 'sell'}@"
+                  f"{round(p.price_open, info.digits)}" for p in holding}
+        alive |= {str(r.ticket) for r in resting}
+        alive |= {f"{'buy' if r.type in (mt5.ORDER_TYPE_BUY_LIMIT, mt5.ORDER_TYPE_BUY) else 'sell'}@"
+                  f"{round(r.price_open, info.digits)}" for r in resting}
+        stale = [k for k in LADDER if k not in alive]
+        if stale:
+            for k in stale:
+                LADDER.pop(k, None)
+            ladder_save()
+
 
 def waiting_line(engine, symbol: str, price: float) -> str:
     """One line saying what the bot is waiting FOR.
