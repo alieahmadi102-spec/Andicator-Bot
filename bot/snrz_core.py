@@ -225,7 +225,19 @@ class Config:
     # makes it a real effect rather than a fitted number; 3.0 turns away 1.7%
     # of the setups and takes the median from +0.056 to +0.064.
     max_sl_atr: float = 3.0
-    max_open: int = 3           # how many zones may carry a live order/trade
+    # The book's own words, which this file quoted and then contradicted:
+    # "don't overtrade -- while a setup is running, no new signal". It was 3.
+    #
+    # Three at once is three ways to be wrong about the same market at the same
+    # time, and on a small account it is also three times the margin: a $104
+    # account holding two 0.01-lot gold positions has no margin for a third,
+    # which is exactly the "retcode 10019: not enough free margin" the live run
+    # printed. Measured over real XAUUSD, one at a time beats three on every
+    # timeframe but M30:
+    #   pooled +0.129 -> +0.162R   median +0.198 -> +0.216R
+    #   M1 +0.060 -> +0.082  ·  M5 +0.242 -> +0.287  ·  M15 +0.201 -> +0.278
+    #   H1 +0.199 -> +0.368  ·  H4 -0.178 -> +0.132  ·  M30 +0.198 -> +0.154
+    max_open: int = 1           # how many zones may carry a live order/trade
     min_rr: float = 2.5         # the next zone must be at least this many R away
     # ...and not absurdly far either. Measured over 3632 real trades, what a
     # setup pays is NOT predicted by the book's strength order (image 54 --

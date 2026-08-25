@@ -14,7 +14,7 @@
 //|   • One position at a time with SL / TP1 / TP2 / TP3 drawn       |
 //+------------------------------------------------------------------+
 #property copyright   "SNRZ (Zindan The Gold Chaser) — indicator port"
-#property version     "14.00"
+#property version     "15.00"
 #property description "SNRZ: chart zones AND analysis zones together (book p.41/p.44), one trade at a time"
 #property indicator_chart_window
 #property indicator_buffers 4
@@ -115,7 +115,12 @@ input bool   InpSingleTf     = true;  // Everything on THIS timeframe (no separa
 // CHART's own structure and TP2 falls back to the next chart zone. Nothing
 // else in the rules changes.
 input int    InpRangeBars    = 10;    // Range lockout (analysis-TF bars since opposite BOS)
-input int    InpMaxOpen      = 3;     // How many zones may carry a live order/trade at once
+// The book: "don't overtrade -- while a setup is running, no new signal".
+// Three at once is three ways to be wrong about the same market at the same
+// moment, and on a small account three times the margin. Measured 3 vs 1 on
+// real XAUUSD: pooled +0.129 -> +0.162R, median +0.198 -> +0.216R,
+// M1 +0.060->+0.082, M5 +0.242->+0.287, M15 +0.201->+0.278, H1 +0.199->+0.368.
+input int    InpMaxOpen      = 1;     // How many zones may carry a live order/trade at once
 // Measured over 3632 real trades: what a setup pays is NOT predicted by the
 // book's strength order (image 54 -- correlation -0.003, i.e. none), but it IS
 // predicted by how far the target sits from the stop, as a hump not a line:

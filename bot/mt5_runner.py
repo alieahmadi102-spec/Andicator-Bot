@@ -94,6 +94,16 @@ ENTRY_MODE = "market"
 # faster way down.
 MAX_RISK_PCT = 3.0
 
+# How often the loop wakes. The stop and the target sit AT the broker and are
+# enforced tick by tick regardless -- but the break-even move and the ratchet
+# are decided here, so a slow loop leaves a trade riskier than the plan for as
+# long as it sleeps. This was 5 seconds.
+#
+# Entries deliberately stay on the CLOSED bar. Zones, ATR and touch counts are
+# all built from finished candles; deciding from half a candle would be trading
+# something that was never measured.
+POLL_SECONDS = 1.0
+
 
 def mt5_timeframe(minutes: int):
     """MT5 has no TIMEFRAME_M60 — anything from an hour up has its own name."""
@@ -536,6 +546,23 @@ def place(signal, symbol: str, tf_minutes: int):
     volume, why = lots_for_risk(symbol, sl_distance, RISK_PCT)
     if volume is None:
         print(f"  SKIPPED - {why}")
+        return
+
+    # Can the account actually CARRY this position? Risk and margin are two
+    # different limits and only risk was being checked. A $104 account holding
+    # two 0.01-lot gold positions has about $12 of free margin left, and gold
+    # wants roughly $46 per 0.01 lot at 1:100 -- so the third send came back
+    # "retcode 10019: not enough free margin for this size" after the engine
+    # had already opened its own side of the trade. Asking first turns a failed
+    # order into a clean, explained skip.
+    need = mt5.order_calc_margin(
+        mt5.ORDER_TYPE_BUY if signal.side == "buy" else mt5.ORDER_TYPE_SELL,
+        symbol, volume, market)
+    acc = mt5.account_info()
+    if need is not None and acc is not None and need > acc.margin_free:
+        print(f"  SKIPPED - {volume} lots needs ${need:.2f} of margin and only "
+              f"${acc.margin_free:.2f} is free. Close something, or wait for "
+              f"the open trade to finish.")
         return
 
     legs = split_volume(volume, info)
@@ -1192,7 +1219,14 @@ def main():
 
     beat = 0
     while True:
-        time.sleep(5)
+        # One second, not five. The stop and the target are already AT the
+        # broker, so those are enforced tick by tick whatever this loop does --
+        # but the break-even move and the ratchet are decided HERE, and every
+        # second they are late is a second the trade is riskier than the plan
+        # says. Entries stay on the closed bar: the zones, the ATR and the
+        # touch counts are all built from finished candles, and deciding from
+        # half a candle would be trading something nobody measured.
+        time.sleep(POLL_SECONDS)
         # Image 41's break-even is software in the backtest; live, nothing moves
         # a stop unless it is asked to. The measured numbers assume it happens,
         # so it is checked every pass, not once a bar.
@@ -1217,7 +1251,29 @@ def main():
         b = bars[0]
         if b["time"] == last_time:
             beat += 1
-            if beat % 60 == 0:            # every ~5 minutes, prove it is alive
+            # A live line every second WHILE A TRADE IS ON, so the seconds
+            # between bars are not a black box: where price is, what the trade
+            # is worth, and how far it has left to run either way. It rewrites
+            # one line instead of scrolling.
+            if not DRY_RUN and beat % max(1, int(1 / POLL_SECONDS)) == 0:
+                try:
+                    _, holding = broker_state(SYMBOL)
+                    tick = mt5.symbol_info_tick(SYMBOL)
+                    if holding and tick:
+                        p = holding[0]
+                        px = tick.bid if p.type == mt5.POSITION_TYPE_BUY else tick.ask
+                        to_sl = abs(px - p.sl) if p.sl else 0.0
+                        to_tp = abs(p.tp - px) if p.tp else 0.0
+                        way = "BUY " if p.type == mt5.POSITION_TYPE_BUY else "SELL"
+                        print(f"\r  live · {way} from {p.price_open:.2f} · now "
+                              f"{px:.2f} · P/L {p.profit:+.2f} · "
+                              f"{to_sl:.2f} to the stop, {to_tp:.2f} to target"
+                              f"   ", end="", flush=True)
+                        beat = beat % 100000
+                        continue
+                except Exception:
+                    pass
+            if beat % max(1, int(300 / POLL_SECONDS)) == 0:   # every ~5 minutes
                 nxt = datetime.fromtimestamp(last_time + TIMEFRAME_MIN * 60,
                                              tz=timezone.utc)
                 print(f"  … alive, price {mt5.symbol_info_tick(SYMBOL).bid:.2f}, "
