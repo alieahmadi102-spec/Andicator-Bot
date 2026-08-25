@@ -59,6 +59,15 @@ DRY_RUN = True
 # +0.002, M1 from -0.059 to +0.001, M5 from +0.104 to +0.075.
 NO_TREND = False
 
+# The ceiling on what ONE trade may risk when the broker's minimum lot leaves
+# no room to scale down. Below some balance 0.01 lots is the only position
+# there is, so the choice is take it at whatever it risks or take nothing.
+# Measured on a $114 account over 83 days: a 2% ceiling took 13 trades, 3% took
+# 75 and finished flat with a 23% drawdown, 5% took 617 and lost a quarter of
+# the account with a 75% drawdown. 3 is the last value that is not simply a
+# faster way down.
+MAX_RISK_PCT = 3.0
+
 
 def mt5_timeframe(minutes: int):
     """MT5 has no TIMEFRAME_M60 — anything from an hour up has its own name."""
@@ -73,107 +82,75 @@ def mt5_timeframe(minutes: int):
 
 
 def lots_for_risk(symbol: str, sl_distance: float, risk_pct: float):
-    """Returns (lots, risk_money) or (None, why) when the account is too small.
+    """Size this trade for this account, automatically.
 
-    The old version quietly fell back to the broker minimum. On a $150 account
-    with an H1 gold stop of about $70, the smallest lot the broker allows
-    (0.01) risks the whole $70 — 47% of the account, when the book's rule is
-    1%. Two losses and the account is gone. Refusing the trade is the only
-    honest answer; silently taking 47% risk is not."""
+    Two numbers, not one:
+
+      RISK_PCT      what to risk when there is room to choose. Sizing scales
+                    the lot down as the stop gets wider, so this is honoured
+                    exactly whenever the arithmetic allows it.
+      MAX_RISK_PCT  the ceiling. Below some balance the broker's minimum lot
+                    already risks more than the target and there is nothing to
+                    scale down to -- 0.01 lots is 0.01 lots. The trade is taken
+                    anyway while the forced risk stays under this, and refused
+                    once it does not.
+
+    That is what makes it adapt on its own. A $10 account and a $500 account
+    run the same file: the big one sizes to the target, the small one takes the
+    tight-stop setups its minimum lot can afford and passes on the rest. No
+    knob to guess, and no silent 47%-of-the-account trade either, which is what
+    the very first version did by quietly falling back to the minimum lot."""
     info = mt5.symbol_info(symbol)
     acc = mt5.account_info()
-    risk_money = acc.balance * risk_pct / 100.0
+    if info is None or acc is None:
+        return None, "the terminal gave no symbol or account information"
     tick_value = info.trade_tick_value
     tick_size = info.trade_tick_size
     if sl_distance <= 0 or tick_value <= 0 or tick_size <= 0:
         return None, "cannot size the trade (broker gave no tick value)"
 
     loss_per_lot = sl_distance / tick_size * tick_value
-    want = risk_money / loss_per_lot
-    steps = math.floor(want / info.volume_step)
+    target = acc.balance * risk_pct / 100.0
+    steps = math.floor((target / loss_per_lot) / info.volume_step)
     lots = round(steps * info.volume_step, 8)
 
-    if lots < info.volume_min:
-        min_loss = info.volume_min * loss_per_lot
-        need = 100.0 * min_loss / acc.balance
-        # Say what would actually let this trade through, rather than what kind
-        # of account to go and open. The number is exact: it is the risk this
-        # one trade represents at the smallest position the broker sells.
-        return None, (
-            f"needs risk {need:.1f}% — the smallest lot ({info.volume_min}) "
-            f"risks ${min_loss:.2f} on a ${sl_distance:.2f} stop, and "
-            f"{risk_pct}% of your ${acc.balance:.2f} is only ${risk_money:.2f}. "
-            f"To take trades like this: --risk {math.ceil(need * 2) / 2:g}")
-    return min(lots, info.volume_max), risk_money
+    if lots >= info.volume_min:
+        lots = min(lots, info.volume_max)
+        return lots, lots * loss_per_lot
+
+    # No room to scale: the smallest position the broker sells is the only one.
+    floor_lots = info.volume_min
+    floor_risk = floor_lots * loss_per_lot
+    floor_pct = 100.0 * floor_risk / acc.balance if acc.balance > 0 else 999.0
+    if floor_pct <= MAX_RISK_PCT:
+        return floor_lots, floor_risk
+    return None, (
+        f"would risk {floor_pct:.1f}% of the account and the ceiling is "
+        f"{MAX_RISK_PCT:.1f}% — the smallest lot ({floor_lots}) risks "
+        f"${floor_risk:.2f} on a ${sl_distance:.2f} stop. A tighter stop fits; "
+        f"this one does not.")
 
 
-# Intermediate targets for positions that could not be split, so the stop can
-# be ratcheted behind them.  {(side, entry): (tp1, tp2)}
-LADDER: dict = {}
+def what_fits(symbol: str) -> str:
+    """What this balance can actually trade, worked out at startup.
 
-
-def _retcode(res) -> str:
-    """order_send returns a struct, not an exception. Printing it raw hides the
-    one field that matters."""
-    if res is None:
-        return f"no reply from the terminal ({mt5.last_error()})"
-    ok = (mt5.TRADE_RETCODE_DONE, getattr(mt5, "TRADE_RETCODE_PLACED", 10008))
-    if res.retcode in ok:
+    So the answer to "can I run this with $10 / $50 / $500" comes from the
+    account itself instead of being guessed."""
+    info = mt5.symbol_info(symbol)
+    acc = mt5.account_info()
+    if info is None or acc is None or info.trade_tick_size <= 0:
         return ""
-    known = {
-        10004: "requote",
-        10006: "the broker rejected it",
-        10013: "invalid request",
-        10014: "invalid volume",
-        10015: "invalid price",
-        10016: "invalid stops — SL/TP too close to the price",
-        10018: "the market is closed",
-        10019: "not enough money",
-        10027: "algo trading is DISABLED in the terminal (the Algo Trading button)",
-        10030: "this filling mode is not supported by the broker",
-    }
-    return known.get(res.retcode, f"retcode {res.retcode}") + f" [{res.comment}]"
-
-
-def _filling(info):
-    """The broker publishes which filling modes it accepts as a bitmask. Sending
-    IOC to a broker that only takes FOK is retcode 10030, which used to come
-    back as an unreadable struct."""
-    mask = getattr(info, "filling_mode", 0)
-    if mask & 2:
-        return mt5.ORDER_FILLING_IOC
-    if mask & 1:
-        return mt5.ORDER_FILLING_FOK
-    return mt5.ORDER_FILLING_RETURN
-
-
-def split_volume(total: float, info):
-    """The book's exit plan is HALF at TP1, a QUARTER at TP2, a QUARTER at TP3,
-    and that split is where the whole edge lives. Measured on 83 days with the
-    real spread:
-
-        exit plan                 median E
-        half / quarter / quarter    -0.008     (M5 +0.120)
-        everything at TP1           -0.078
-        everything at TP2           -0.105
-        everything at TP3           -0.088
-
-    Every single-exit plan loses. So the runner must place THREE orders at the
-    same price with the same stop and different targets, not one order with one
-    TP -- one order IS the -0.078 plan.
-
-    That needs at least four volume steps to divide up. Returns None when the
-    account cannot be split that finely, because taking the trade anyway would
-    be running the losing plan."""
-    step = info.volume_step
-    units = int(round(total / step))
-    if units < 4:
-        return None
-    half = (units // 2) * step
-    rest = units - (units // 2)
-    q1 = (rest // 2) * step
-    q2 = (rest - rest // 2) * step
-    return [round(half, 8), round(q1, 8), round(q2, 8)]
+    per_dollar = info.volume_min * info.trade_tick_value / info.trade_tick_size
+    # the widest stop whose minimum-lot risk still sits under the ceiling
+    max_stop = acc.balance * MAX_RISK_PCT / 100.0 / per_dollar
+    # ...and the balance at which the target risk becomes reachable on its own
+    need = 100.0 * per_dollar / RISK_PCT       # balance for a $1 stop at target
+    return (f"sizing: target {RISK_PCT:g}%, ceiling {MAX_RISK_PCT:g}% · "
+            f"smallest lot {info.volume_min} risks ${per_dollar:.2f} per $1 of "
+            f"stop\n         with ${acc.balance:.2f} that means stops up to "
+            f"${max_stop:.2f} fit; wider ones are skipped\n         (sizing "
+            f"becomes free rather than forced above about "
+            f"${need * 3:.0f} for a typical $3 stop)")
 
 
 def place(signal, symbol: str, tf_minutes: int):
@@ -534,7 +511,7 @@ def read_args():
         python mt5_runner.py --tf 5 --no-trend  # ignore "Trend is King": ~4x
                                                 # the trades, slightly worse
     """
-    global SYMBOL, TIMEFRAME_MIN, RISK_PCT, DRY_RUN, MAGIC, NO_TREND
+    global SYMBOL, TIMEFRAME_MIN, RISK_PCT, DRY_RUN, MAGIC, NO_TREND, MAX_RISK_PCT
     args = sys.argv[1:]
     i = 0
     while i < len(args):
@@ -554,6 +531,8 @@ def read_args():
                 SYMBOL = v
             elif a == "--risk":
                 RISK_PCT = float(v)
+            elif a == "--max-risk":
+                MAX_RISK_PCT = float(v)
             else:
                 raise SystemExit(f"unknown option: {a}   (try --help)")
             i += 1
@@ -587,6 +566,9 @@ def main():
     print(f"MT5 connected: account {acc.login} ({acc.server}), "
           f"balance {acc.balance} {acc.currency}")
     print(f"account type: *** {kind} ***")
+    line = what_fits(SYMBOL)
+    if line:
+        print(line)
     try:
         allpos, others = family_exposure(SYMBOL)
         if others:

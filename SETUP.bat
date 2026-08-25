@@ -62,8 +62,16 @@ echo       RUN_30m.bat   RUN_1h.bat    RUN_4h.bat
 echo.
 echo       LIVE_5m.bat   LIVE_15m.bat  ...                REAL orders
 echo.
-echo   RUN_5m.bat is the one to start with: on 83 days of real XAUUSD the
-echo   5-minute chart measured best, and it is the captain's own timeframe.
+echo   The bot sizes itself from the account balance -- no risk setting to
+echo   pick. It scales the lot down as the stop widens, and where the
+echo   broker's minimum lot leaves nothing to scale it takes the trade only
+echo   while the forced risk stays under 3%%, skipping the rest.
+echo.
+echo   Simulated on 156 days of real XAUUSD, M5, sizing itself:
+echo       $50   -^> no trades fit
+echo       $115  -^> 256 trades, +149%%, worst drawdown 25%%
+echo       $300  -^> 867 trades, +192%%, worst drawdown 41%%
+echo   M1 was measured NEGATIVE at every balance -- use RUN_5m / LIVE_5m.
 echo.
 echo   Next:
 echo     1. open MetaTrader 5 and log in
