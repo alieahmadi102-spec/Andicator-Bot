@@ -238,6 +238,24 @@ class Config:
     # market does not reach before the trade runs out of bars. So both ends are
     # cut. 0 disables the ceiling.
     max_rr: float = 8.0
+    # How the trade is entered.
+    #
+    #   "limit"  the book's own way (p41/p42): the order RESTS at the zone
+    #            edge and fills when price pulls back to it. Entry is exactly
+    #            the zone price, so the stop is only the zone's own height
+    #            plus the buffer -- the tightest stop the setup can have.
+    #
+    #   "market" enter straight away, at the price the signal bar closed at,
+    #            without waiting for the pullback. The stop still has to sit
+    #            beyond the far edge of the zone, so it now has to cover the
+    #            distance price is STILL away from the zone as well -- and the
+    #            target has not moved, so the reward shrinks by the same
+    #            amount. Both ends of the ratio get worse at once.
+    entry_mode: str = "market"
+    # ...which is why market entries are only worth taking close to the zone.
+    # This caps how far price may be from the zone for a MARKET entry, in ATR,
+    # independently of arm_within_atr (which governs where a limit may rest).
+    market_within_atr: float = 0.5
     # Master class image 54 — the setups ranked by strength, "the market
     # respects these more and it is better to use them":
     #   1 Trend · 2 PO2 · 3 PO2 inversion · 4 V.S/V.R Inversion · 5 GAP
@@ -1215,12 +1233,24 @@ class SnrzEngine:
         # side dragged the stop out past max_sl_atr and killed the setup with
         # "no zone ahead worth the risk". The zone's own edge is already the
         # wick that drew it.
+        market = cfg.entry_mode == "market"
         if is_buy:
-            entry = z.top                      # the edge price meets first
+            # A limit rests ON the zone; a market order is filled where price
+            # is NOW, which is above it. The stop is the same price either way
+            # -- beyond the zone's far edge -- so entering early buys the trade
+            # nothing and pays for the gap twice: a wider stop and, since the
+            # target has not moved, a shorter run to it.
+            entry = c.close if market else z.top
             raw_sl = z.bot - atr * cfg.sl_buffer_atr
         else:
-            entry = z.bot
+            entry = c.close if market else z.bot
             raw_sl = z.top + atr * cfg.sl_buffer_atr
+        if market:
+            # Too far from the zone and the stop is mostly empty air. Judged
+            # here rather than at arming time so a limit run is unaffected.
+            gap = (entry - z.top) if is_buy else (z.bot - entry)
+            if cfg.market_within_atr > 0 and gap > atr * cfg.market_within_atr:
+                return None
         risk = max(abs(entry - raw_sl), atr * cfg.min_sl_atr)
         if cfg.max_sl_atr > 0 and risk > atr * cfg.max_sl_atr:
             return None          # the wick is too far away — no setup, no trade
@@ -1707,10 +1737,21 @@ class SnrzEngine:
                 continue
             taken.add(key)
             room -= 1
-            out.append(Signal(idx, side, "PO2" if po2 else "limit",
+            out.append(Signal(idx, side,
+                              "PO2" if po2 else cfg.entry_mode,
                               kind, entry, sl, tp1, tp2, tp3, rank))
-            self.orders.append(PendingOrder(idx, side, kind, po2, uid,
-                                            entry, sl, tp1, tp2, tp3, rank))
+            if cfg.entry_mode == "market":
+                # No resting order at all: the trade is on from this bar. It
+                # is entered at the close, so the bar that produced the signal
+                # cannot also be the bar that resolves it -- _update_trades
+                # guards the entry bar the same way it does for a fill.
+                t = Position(idx, side, kind, po2, entry, sl, tp1, tp2, tp3,
+                             risk0=abs(entry - sl), uid=uid, rank=rank)
+                self.trades.append(t)
+                self.position = t
+            else:
+                self.orders.append(PendingOrder(idx, side, kind, po2, uid,
+                                                entry, sl, tp1, tp2, tp3, rank))
 
         # SRR / RSS qualification (book): a Support whose move broke >=2
         # Resistances becomes SRR (buy); a Resistance whose move broke >=2

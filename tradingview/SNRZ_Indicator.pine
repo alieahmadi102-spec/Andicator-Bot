@@ -31,7 +31,7 @@
 //                  TP3 = the one beyond. 1R/2R/3R when no zone sits there.
 //  SCALP vs SWING (book): M5/M15 = SCALP · H1/H4/Daily = SWING.
 // ═══════════════════════════════════════════════════════════════════════════
-indicator("SNRZ Strategy [Zindan] v13", "SNRZ v13.0", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500, max_bars_back = 500)
+indicator("SNRZ Strategy [Zindan] v14", "SNRZ v14.0", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500, max_bars_back = 500)
 
 // ───────────────────────────── Inputs ──────────────────────────────────────
 grpZ  = "Zones (SNRZ)"
@@ -85,6 +85,8 @@ rangeBars      = input.int(10,     "Range lockout (analysis bars since opposite 
 maxOpen        = input.int(3,     "چند زون هم‌زمان اردر زنده داشته باشند", minval = 1, maxval = 20, group = grpS, tooltip = "هر زون اردر خودش را دارد. این فقط سقفِ تعداد اردرِ هم‌زمان است.")
 minRR          = input.float(2.5, "زون بعدی حداقل چند برابر استاپ دور باشد", minval = 0.2, step = 0.1, group = grpS, tooltip = "اندازه‌گیری روی ۳۶۳۲ معامله‌ی واقعی: آنچه یک ستاپ می‌پردازد را **رتبه‌بندیِ قدرتِ کتاب (عکس ۵۴) پیش‌بینی نمی‌کند** — همبستگی ‎-۰٫۰۰۳، یعنی هیچ. ولی فاصله‌ی تارگت تا استاپ پیش‌بینی می‌کند، و رابطه‌اش قوس است نه خط:\n\nTP1 زیر ۱٫۵R ← ‎-۰٫۰۷۹R · بین ۲ تا ۳R ← ‎+۰٫۱۰۳R · بالای ۵R ← ‎+۰٫۰۱۵R\nTP3 زیر ۲R ← ‎-۰٫۰۵۰R · بین ۴ تا ۸R ← ‎+۰٫۱۱۹R · بالای ۸R ← ‎-۰٫۰۶۲R\n\nتارگتِ خیلی نزدیک پولِ استاپ را درنمی‌آورد؛ تارگتِ خیلی دور قیمتی است که بازار قبل از تمام شدنِ معامله به آن نمی‌رسد. پس هر دو سر بریده شد: ۲٫۵ تا ۸ برابر.")
 maxRR          = input.float(8.0, "…و حداکثر چند برابر (۰ یعنی بی‌سقف)", minval = 0.0, step = 0.5, group = grpS, tooltip = "اندازه‌گیری روی ۳۶۳۲ معامله‌ی واقعی: آنچه یک ستاپ می‌پردازد را **رتبه‌بندیِ قدرتِ کتاب (عکس ۵۴) پیش‌بینی نمی‌کند** — همبستگی ‎-۰٫۰۰۳، یعنی هیچ. ولی فاصله‌ی تارگت تا استاپ پیش‌بینی می‌کند، و رابطه‌اش قوس است نه خط:\n\nTP1 زیر ۱٫۵R ← ‎-۰٫۰۷۹R · بین ۲ تا ۳R ← ‎+۰٫۱۰۳R · بالای ۵R ← ‎+۰٫۰۱۵R\nTP3 زیر ۲R ← ‎-۰٫۰۵۰R · بین ۴ تا ۸R ← ‎+۰٫۱۱۹R · بالای ۸R ← ‎-۰٫۰۶۲R\n\nتارگتِ خیلی نزدیک پولِ استاپ را درنمی‌آورد؛ تارگتِ خیلی دور قیمتی است که بازار قبل از تمام شدنِ معامله به آن نمی‌رسد. پس هر دو سر بریده شد: ۲٫۵ تا ۸ برابر.")
+entryMarket    = input.bool(true,  "ورود مستقیم با مارکت (نه اردر لیمیت روی زون)", group = grpS, tooltip = "ورودِ **مارکت** یعنی همان لحظه‌ای که ستاپ چاپ می‌شود وارد می‌شویم، روی کلوزِ همان کندل — بدون منتظر ماندنِ پول‌بک. اندازه‌گیری روی XAUUSD واقعی، هر معامله:\n\nM5 ‎+۰٫۲۰۶ ← ‎+۰٫۲۴۲R · M15 ‎+۰٫۰۸۲ ← ‎+۰٫۲۰۱R · M30 ‎+۰٫۰۹۶ ← ‎+۰٫۱۹۸R · H1 از **ضرر** ‎-۰٫۰۷۰ به ‎+۰٫۱۹۹R\n\nدلیلش: اردرِ لیمیت فقط وقتی پُر می‌شود که قیمت به زون برگردد — و بخشِ خوبی از دفعات برمی‌گردد چون زون دارد **می‌شکند**. پس لیمیت روی بازنده‌ها انتخاب می‌شود و ستاپ‌هایی که از همان اول جواب دادند اصلاً پُر نمی‌شوند.\n\nهزینه‌اش: استاپ پهن‌تر است (قیمت هنوز به زون نرسیده ولی استاپ باید آن‌طرفِ زون بماند)، پس حسابِ کوچک تعدادِ کمتری از آن‌ها را می‌تواند بردارد.")
+marketWithin   = input.float(0.5, "…فقط وقتی قیمت تا این فاصله‌ی زون است (ATR ×)", minval = 0.0, step = 0.25, group = grpS, tooltip = "دورتر از این، استاپ بیشترش هوای خالی است و ورودِ مارکت نمی‌ارزد.")
 maxTradeBars   = input.int(60,     "Close an open trade after N chart bars", minval = 20, group = grpS)
 minSlAtr       = input.float(0.0,   "حداقل فاصله‌ی استاپ (ATR ×)",          minval = 0.0, step = 0.1, group = grpS, tooltip = "استاپ پشتِ **سایه** است و هیچ‌چیز نباید پهن‌ترش کند. این عدد قبلاً ۲٫۵ ATR بود و در ۹۷ تا ۱۰۰ درصد معامله‌ها **به‌جای سایه** استاپ را تعیین می‌کرد — سایه معمولاً ۱٫۳ ATR فاصله دارد، پس این کف بی‌سروصدا هر استاپ را دو برابر می‌کرد. با برداشتنش میانه از −۰٫۰۳۸R به +۰٫۰۵۷R رفت.")
 tpMaxR         = input.float(6.0,  "Max R for TP1 (farther zone → TP2/TP3)", minval = 1, step = 0.5, group = grpS)
@@ -1104,7 +1106,13 @@ for z in zones
     // order expired and offered the same setup over and over while price sat
     // on the same side of it.
     if tradable and okTrend and canFire and sideOk and z.sigTouch != z.touches and not hasOrder(z.uid)
-        entry = isBuy ? z.top : z.bot
+        // A limit rests ON the zone; a market order is filled where price is
+        // NOW. The stop is the same price either way -- beyond the zone's far
+        // edge -- so entering early pays for the gap twice: a wider stop and,
+        // since the target has not moved, a shorter run to it. It still
+        // measures better per trade, because a limit only fills when price
+        // comes back and it often comes back because the zone is failing.
+        entry = entryMarket ? close : (isBuy ? z.top : z.bot)
         // The stop belongs to the ZONE, not to wherever price happens to be.
         // This read a 3-bar swing, which was right while the order was armed
         // on the touch bar because those bars were then AT the zone. Armed
@@ -1112,11 +1120,13 @@ for z in zones
         // dragged the stop past the ceiling and killed the setup. The zone's
         // own edge already IS the wick that drew it.
         rawSl = isBuy ? z.bot - atr * slBufferATR : z.top + atr * slBufferATR
+        // too far from the zone and the stop is mostly empty air
+        marketTooFar = entryMarket and marketWithin > 0 and gapToZone > atr * marketWithin
         risk  = math.max(math.abs(entry - rawSl), atr * minSlAtr)
         tooWide = maxSlAtr > 0 and risk > atr * maxSlAtr
         t1 = nextZone(isBuy, entry, 0)
         reward = isBuy ? t1 - entry : entry - t1
-        if not na(t1) and not tooWide and reward >= risk * minRR and (maxRR <= 0 or reward <= risk * maxRR)
+        if not na(t1) and not tooWide and not marketTooFar and reward >= risk * minRR and (maxRR <= 0 or reward <= risk * maxRR)
             t2 = nextZone(isBuy, entry, 1)
             t3 = nextZone(isBuy, entry, 2)
             isPO2 = z.state == 2 and z.touches == 1   // image 55: the fill IS the 2nd touch

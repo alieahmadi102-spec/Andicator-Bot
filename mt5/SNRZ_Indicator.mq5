@@ -14,7 +14,7 @@
 //|   • One position at a time with SL / TP1 / TP2 / TP3 drawn       |
 //+------------------------------------------------------------------+
 #property copyright   "SNRZ (Zindan The Gold Chaser) — indicator port"
-#property version     "13.00"
+#property version     "14.00"
 #property description "SNRZ: chart zones AND analysis zones together (book p.41/p.44), one trade at a time"
 #property indicator_chart_window
 #property indicator_buffers 4
@@ -125,6 +125,15 @@ input int    InpMaxOpen      = 3;     // How many zones may carry a live order/t
 // market does not reach before the trade runs out of bars. Both ends are cut.
 input double InpMinRR        = 2.5;   // The next zone must be at least this many R away
 input double InpMaxRR        = 8.0;   // ...and at most this many. 0 = no ceiling.
+// Enter AT MARKET the moment the setup prints, instead of resting a limit on
+// the zone. Measured per trade on real XAUUSD: M5 +0.206 -> +0.242R, M15
+// +0.082 -> +0.201R, M30 +0.096 -> +0.198R, and H1 from LOSING -0.070R to
+// +0.199R. A limit only fills when price comes back to the zone, and a good
+// part of the time it comes back because the zone is FAILING -- so the limit
+// is selected into the losers while the setups that worked straight away never
+// fill. The cost is a wider stop, so a small account affords fewer of them.
+input bool   InpEntryMarket  = true;  // Enter at market instead of a limit on the zone
+input double InpMarketWithin = 0.5;   // ...only while price is this close to the zone (ATR x)
 input int    InpMaxTradeBars = 60;   // Close an open trade after N chart bars
 input double InpMinSlATR     = 0.0;   // Minimum stop distance (ATR x) - 0 = the WICK decides, nothing widens it
 input double InpTpMaxR       = 6.0;   // Max R for TP1/TP2 (farther zone -> TP3)
@@ -1900,7 +1909,7 @@ int OnCalculate(const int rates_total,
          if(tradable && okTrend && canFire && sideOk &&
             g_zones[i].sigTouch != g_zones[i].touches && !HasOrder(g_zones[i].id))
            {
-            double entry = isBuy ? g_zones[i].top : g_zones[i].bot;
+            double entry = InpEntryMarket ? c : (isBuy ? g_zones[i].top : g_zones[i].bot);
             // The stop belongs to the ZONE, not to wherever price happens to
             // be now. This read the last three bars' extreme, which was right
             // while the order was armed on the touch bar because those bars
@@ -1912,6 +1921,10 @@ int OnCalculate(const int rates_total,
                                  : g_zones[i].top + atr * InpSlBufferATR;
             double risk  = MathMax(MathAbs(entry - rawSl), atr * InpMinSlATR);
             bool   tooWide = (InpMaxSlATR > 0.0 && risk > atr * InpMaxSlATR);
+            // too far from the zone and the stop is mostly empty air
+            if(InpEntryMarket && InpMarketWithin > 0.0 &&
+               gapToZone > atr * InpMarketWithin)
+               tooWide = true;
             double t1 = NextZone(isBuy, entry, 0);
             double reward = isBuy ? (t1 - entry) : (entry - t1);
             if(t1 > 0.0 && !tooWide && reward >= risk * InpMinRR &&

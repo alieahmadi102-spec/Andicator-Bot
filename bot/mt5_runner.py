@@ -67,6 +67,24 @@ DRY_RUN = True
 # +0.002, M1 from -0.059 to +0.001, M5 from +0.104 to +0.075.
 NO_TREND = False
 
+# How the trade is entered, mirrored from the engine's Config so place() does
+# not have to infer it from where price happens to be at send time.
+#
+#   "market"  open the position straight away, at the price the signal bar
+#             closed at. Measured better PER TRADE on real XAUUSD -- M5
+#             +0.206 -> +0.242R, M15 +0.082 -> +0.201R, and H1 goes from
+#             LOSING (-0.070R) to +0.199R. A resting limit only ever fills
+#             when price comes back to the zone, and a good part of the time
+#             it comes back because the zone is failing -- so the limit is
+#             selected into the losers while the setups that worked
+#             immediately never fill at all.
+#
+#   "limit"   the book's own way. Fewer R per trade but MORE trades, because
+#             the entry sits on the zone and the stop is only the zone's own
+#             height -- so more setups fit under a small account's risk
+#             ceiling. Over the whole run that still totalled more.
+ENTRY_MODE = "market"
+
 # The ceiling on what ONE trade may risk when the broker's minimum lot leaves
 # no room to scale down. Below some balance 0.01 lots is the only position
 # there is, so the choice is take it at whatever it risks or take nothing.
@@ -363,6 +381,24 @@ def _retcode(res):
     return f"retcode {res.retcode}: {why}"
 
 
+def _fill_matches(broker_px: float, t, info) -> bool:
+    """Is this broker position the engine's trade `t`?
+
+    A resting limit fills at exactly the price it was placed at, so an exact
+    comparison was fine while every entry was a limit. A MARKET order does not:
+    it is filled at the live ask (or bid), which is already the spread away
+    from the close the engine priced the setup at, plus whatever the market
+    moved in between. Matching those to the point would have called every
+    single market entry a phantom, and reconcile would have closed the engine's
+    side of a position that was really open -- then let the zone arm a second
+    one on top of it.
+
+    So the tolerance is a share of the trade's own risk: wide enough for a fill
+    that slipped, far narrower than the gap between two different setups."""
+    tol = max(getattr(info, "point", 0.0) * 1.5, 0.25 * t.risk0)
+    return abs(broker_px - t.entry) <= tol
+
+
 def _same_price(a: float, b: float, info) -> bool:
     """Is this the same price, as far as the broker is concerned?
 
@@ -522,7 +558,12 @@ def place(signal, symbol: str, tf_minutes: int):
     expiry = datetime.now(timezone.utc) + timedelta(
         minutes=tf_minutes * ORDER_EXPIRY_BARS)
 
-    if signal.side == "buy":
+    # In market mode the engine already priced the setup AT the signal bar's
+    # close, so there is nothing to rest and nothing to wait for -- sending a
+    # limit here would be trading a different plan from the measured one.
+    if ENTRY_MODE == "market":
+        kind = mt5.ORDER_TYPE_BUY if signal.side == "buy" else mt5.ORDER_TYPE_SELL
+    elif signal.side == "buy":
         kind = mt5.ORDER_TYPE_BUY_LIMIT if market > signal.price else mt5.ORDER_TYPE_BUY
     else:
         kind = mt5.ORDER_TYPE_SELL_LIMIT if market < signal.price else mt5.ORDER_TYPE_SELL
@@ -781,11 +822,11 @@ def reconcile(engine, symbol: str):
     for t in engine.trades:
         if t.closed:
             continue
-        if any(_same_price(p.price_open, t.entry, info) for p in holding):
+        if any(_fill_matches(p.price_open, t, info) for p in holding):
             continue
         # Still resting means it simply has not filled yet -- the engine is
         # early, not wrong, and the order is where it should be.
-        if any(_same_price(r.price_open, t.entry, info) for r in resting):
+        if any(_fill_matches(r.price_open, t, info) for r in resting):
             continue
         phantom = t.stat == 0
         t.closed = True
@@ -982,8 +1023,11 @@ def read_args():
         python mt5_runner.py --tf 5 --live      # ...and send real orders
         python mt5_runner.py --tf 5 --no-trend  # ignore "Trend is King": ~4x
                                                 # the trades, slightly worse
+        python mt5_runner.py --tf 5 --limit     # rest a limit on the zone
+                                                # instead of entering at market
     """
     global SYMBOL, TIMEFRAME_MIN, RISK_PCT, DRY_RUN, MAGIC, NO_TREND, MAX_RISK_PCT
+    global ENTRY_MODE
     args = sys.argv[1:]
     i = 0
     while i < len(args):
@@ -992,6 +1036,10 @@ def read_args():
             DRY_RUN = False
         elif a == "--no-trend":
             NO_TREND = True
+        elif a == "--limit":
+            ENTRY_MODE = "limit"
+        elif a == "--market":
+            ENTRY_MODE = "market"
         elif a in ("-h", "--help"):
             print(read_args.__doc__)
             raise SystemExit(0)
@@ -1085,12 +1133,23 @@ def main():
     tf = mt5_timeframe(TIMEFRAME_MIN)
     # the analysis timeframe follows the captain's ladder from the chart we run
     # on — two rungs up, the middle one skipped
-    cfg = Config(chart_minutes=TIMEFRAME_MIN)
+    cfg = Config(chart_minutes=TIMEFRAME_MIN, entry_mode=ENTRY_MODE)
     if NO_TREND:
         cfg.trend_filter = False
         print("trend filter OFF — about 4x the trades, measured slightly "
               "lower quality each")
     engine = SnrzEngine(cfg)
+    if ENTRY_MODE == "market":
+        print("entry: AT MARKET the moment the setup prints — no resting order.\n"
+              "       Measured better per trade (M5 +0.206 -> +0.242R, M15\n"
+              "       +0.082 -> +0.201R, H1 -0.070 -> +0.199R) because a limit\n"
+              "       only fills when price comes back, and it often comes back\n"
+              "       because the zone is failing.\n"
+              "       It also needs a WIDER stop, so a small account can afford\n"
+              "       fewer of them. Use --limit for the book's resting order.")
+    else:
+        print("entry: a LIMIT resting on the zone (the book's way) — "
+              "use --market to enter straight away instead.")
     if cfg.single_tf:
         print(f"zones marked, confirmed and traded all on {TIMEFRAME_MIN}m")
     else:
