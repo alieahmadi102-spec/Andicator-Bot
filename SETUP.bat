@@ -55,27 +55,37 @@ echo   [ok] bot folder  %SRC%\bot
 if defined PUTIND echo   [ok] indicator   %PUTIND%
 if not defined PUTIND echo   [--] MT5 folder not found -- copy mt5\SNRZ_Indicator.mq5 by hand
 echo.
-echo   Ready-made launchers, one per timeframe -- just double-click one:
+echo   Ready-made launchers, one per timeframe -- just double-click one.
+echo   All of them send REAL orders to whatever account MetaTrader is logged
+echo   into, and all of them print the account and wait for Enter first.
 echo.
-echo       RUN_1m.bat    RUN_5m.bat    RUN_15m.bat        dry run, nothing sent
-echo       RUN_30m.bat   RUN_1h.bat    RUN_4h.bat
+echo       LIVE_1m.bat   LIVE_5m.bat   LIVE_15m.bat
+echo       LIVE_30m.bat  LIVE_1h.bat   LIVE_4h.bat
 echo.
-echo       LIVE_5m.bat   LIVE_15m.bat  ...                REAL orders
+echo       LIVE_5m_notrend.bat  ...   the same, ignoring "Trend is King":
+echo                                  about 4x the trades, each slightly worse
 echo.
-echo   The bot sizes itself from the account balance -- no risk setting to
-echo   pick. It scales the lot down as the stop widens, and where the
-echo   broker's minimum lot leaves nothing to scale it takes the trade only
-echo   while the forced risk stays under 3%%, skipping the rest.
+echo   DEMO or REAL is decided by the account you log MetaTrader into, NOT by
+echo   which file you click. The bot prints which one it found, every time.
 echo.
-echo   Simulated on 156 days of real XAUUSD, M5, sizing itself:
-echo       $50   -^> no trades fit
-echo       $115  -^> 256 trades, +149%%, worst drawdown 25%%
-echo       $300  -^> 867 trades, +192%%, worst drawdown 41%%
-echo   M1 was measured NEGATIVE at every balance -- use RUN_5m / LIVE_5m.
+echo   It sizes each trade from the balance on its own -- there is no risk
+echo   setting to pick. It targets 1%%, scales the lot down as the stop
+echo   widens, and where the broker's smallest lot leaves nothing to scale it
+echo   takes the trade only while the forced risk stays under 3%%.
+echo.
+echo   WHAT BALANCE THIS NEEDS, measured on real XAUUSD, not guessed:
+echo   standard gold moves $1 per $1 of stop at the smallest lot (0.01), and
+echo   a typical setup stops $5 away on the 5m chart, $1.75 on the 1m. So:
+echo       $10, $25, $50   -^> the 3%% ceiling is $0.30/$0.75/$1.50 and almost
+echo                          nothing fits. It will sit there taking no trades.
+echo       $100            -^> 5m works (+0.30R measured); 1m about break-even
+echo       $200 and up     -^> 5m is comfortable, 15m starts to fit
+echo   If the balance is too small the bot says so at startup and SEARCHES the
+echo   account for a smaller gold contract (XAUUSD.m and the like) that fits.
 echo.
 echo   Next:
 echo     1. open MetaTrader 5 and log in
-echo     2. double-click RUN_5m.bat in the folder that just opened
+echo     2. double-click LIVE_5m.bat in the folder that just opened
 echo.
 
 explorer "%SRC%\bot"
