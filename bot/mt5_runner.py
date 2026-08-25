@@ -95,12 +95,15 @@ def lots_for_risk(symbol: str, sl_distance: float, risk_pct: float):
 
     if lots < info.volume_min:
         min_loss = info.volume_min * loss_per_lot
+        need = 100.0 * min_loss / acc.balance
+        # Say what would actually let this trade through, rather than what kind
+        # of account to go and open. The number is exact: it is the risk this
+        # one trade represents at the smallest position the broker sells.
         return None, (
-            f"account too small for this stop: the smallest lot the broker "
-            f"allows ({info.volume_min}) risks ${min_loss:.2f} on a ${sl_distance:.2f} "
-            f"stop, which is {100 * min_loss / acc.balance:.0f}% of your "
-            f"${acc.balance:.2f} — the {risk_pct}% rule allows ${risk_money:.2f}. "
-            f"Use a CENT account, a smaller timeframe, or more balance.")
+            f"needs risk {need:.1f}% — the smallest lot ({info.volume_min}) "
+            f"risks ${min_loss:.2f} on a ${sl_distance:.2f} stop, and "
+            f"{risk_pct}% of your ${acc.balance:.2f} is only ${risk_money:.2f}. "
+            f"To take trades like this: --risk {math.ceil(need * 2) / 2:g}")
     return min(lots, info.volume_max), risk_money
 
 
