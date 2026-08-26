@@ -1386,7 +1386,12 @@ if showPanel and barstate.islast
     table.cell(info, 0, 0, "⚜  SNRZ v19.1 —  ZiNDAN", text_color = colGold, text_size = size.normal)
     table.cell(info, 0, 1, "The Gold Chaser", text_color = color.new(colGold, 35), text_size = size.tiny)
     table.cell(info, 0, 2, trendTxt, text_color = trendCol, text_size = size.small)
-    table.cell(info, 0, 3, "Zones: " + str.tostring(liveLtf) + " @ " + timeframe.period + "  +  " + str.tostring(liveHtf) + " @ " + htfTF, text_color = color.new(color.white, 20), text_size = size.small)
+    // With singleTf on there IS no analysis timeframe, so the second half of
+    // this line always read "+ 0 @ 15" -- which looks exactly like an analysis
+    // pass that is drawing nothing. Nothing is wrong; there is simply no second
+    // pass to report. Say so instead of printing a zero.
+    zonesTxt = singleTf ? "Zones: " + str.tostring(liveLtf) + " @ " + timeframe.period + "  (one timeframe)" : "Zones: " + str.tostring(liveLtf) + " @ " + timeframe.period + "  +  " + str.tostring(liveHtf) + " @ " + htfTF
+    table.cell(info, 0, 3, zonesTxt, text_color = color.new(color.white, 20), text_size = size.small)
     table.cell(info, 0, 4, "Position: " + posTxt, text_color = color.new(color.white, 20), text_size = size.small)
     // "why is there no new signal?" — this row answers it directly
     ageTxt = lastSigBar < 0 ? "Last signal: none yet on this chart"
