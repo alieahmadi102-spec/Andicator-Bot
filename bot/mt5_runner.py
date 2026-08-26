@@ -92,7 +92,10 @@ ENTRY_MODE = "market"
 # 75 and finished flat with a 23% drawdown, 5% took 617 and lost a quarter of
 # the account with a 75% drawdown. 3 is the last value that is not simply a
 # faster way down.
-MAX_RISK_PCT = 3.0
+# 0 = no ceiling, which is the default: the bot does not gate on the balance.
+# --risk-cap N restores the old behaviour of refusing a trade whose forced
+# risk exceeds N% of the account.
+MAX_RISK_PCT = 0.0
 
 # How often the loop wakes. The stop and the target sit AT the broker and are
 # enforced tick by tick regardless -- but the break-even move and the ratchet
@@ -182,17 +185,28 @@ def lots_for_risk(symbol: str, sl_distance: float, risk_pct: float):
         lots = min(lots, info.volume_max)
         return lots, lots * loss_per_lot
 
-    # No room to scale: the smallest position the broker sells is the only one.
+    # No room to scale: the smallest position the broker sells is the only one,
+    # and it is taken.
+    #
+    # There used to be a ceiling here -- refuse the trade when the minimum
+    # lot's forced risk went past MAX_RISK_PCT. On a $56 account that ceiling
+    # meant M5 could not place a single trade out of 580 and M1 was down to
+    # its tightest quarter, so the bot sat there declining everything. Asked
+    # about it, the account owner's answer was that the bot should not be
+    # gating on the balance at all, and this is that decision.
+    #
+    # The risk does not go away, it becomes VISIBLE instead of blocking: the
+    # caller prints what share of the account each trade puts at stake, and
+    # marks it when that is large. --risk-cap N puts the old ceiling back.
     floor_lots = info.volume_min
     floor_risk = floor_lots * loss_per_lot
     floor_pct = 100.0 * floor_risk / acc.balance if acc.balance > 0 else 999.0
-    if floor_pct <= MAX_RISK_PCT:
-        return floor_lots, floor_risk
-    return None, (
-        f"would risk {floor_pct:.1f}% of the account and the ceiling is "
-        f"{MAX_RISK_PCT:.1f}% — the smallest lot ({floor_lots}) risks "
-        f"${floor_risk:.2f} on a ${sl_distance:.2f} stop. A tighter stop fits; "
-        f"this one does not.")
+    if MAX_RISK_PCT > 0 and floor_pct > MAX_RISK_PCT:
+        return None, (
+            f"would risk {floor_pct:.1f}% and --risk-cap is set to "
+            f"{MAX_RISK_PCT:.1f}% — the smallest lot ({floor_lots}) risks "
+            f"${floor_risk:.2f} on a ${sl_distance:.2f} stop.")
+    return floor_lots, floor_risk
 
 
 def cheapest_lot_risk(symbol: str):
@@ -243,70 +257,43 @@ MEDIAN_STOP = {1: 1.75, 5: 5.03, 15: 9.12, 30: 12.75, 60: 20.35, 240: 35.86}
 
 
 def what_fits(symbol: str, tf_minutes: int) -> str:
-    """Whether this balance can trade this symbol on this timeframe — answered
-    against the stop sizes the strategy actually produces, not in the abstract.
+    """What one trade will actually put at stake on this account.
 
-    The old version of this printed the widest stop that would fit and left the
-    reader to guess whether the strategy ever produces one that narrow. It
-    does not, on a small account, and saying so plainly is the whole point:
-    a bot that silently skips every setup looks exactly like a broken one."""
+    This used to explain which setups the balance would REFUSE. It refuses
+    nothing now, so the job changed: say plainly what the smallest position
+    the broker sells costs when it loses, because on a small account that is
+    a large share of it and the number should be in front of you before the
+    first order goes out, not discovered afterwards."""
     acc = mt5.account_info()
     per = cheapest_lot_risk(symbol)
     info = mt5.symbol_info(symbol)
     if acc is None or per is None or info is None:
         return ""
     typical = MEDIAN_STOP.get(tf_minutes, 5.0)
-    forced = per * typical                       # what the minimum lot must risk
+    forced = per * typical
     pct = 100.0 * forced / acc.balance if acc.balance > 0 else 999.0
     target_lots = (acc.balance * RISK_PCT / 100.0) / (per / info.volume_min)
 
-    lines = [f"sizing: target {RISK_PCT:g}% of the balance, hard ceiling "
-             f"{MAX_RISK_PCT:g}%",
-             f"        smallest lot {info.volume_min} risks ${per:.2f} for every "
-             f"$1 the stop is wide",
-             f"        a typical {tf_minutes}m setup here stops ${typical:.2f} "
-             f"away, so that lot risks ${forced:.2f} = {pct:.1f}% of "
-             f"${acc.balance:.2f}"]
+    lines = [f"sizing: aiming for {RISK_PCT:g}% a trade, and the balance is "
+             f"never a reason to skip one",
+             f"        smallest lot {info.volume_min} loses ${per:.2f} for "
+             f"every $1 the stop is wide",
+             f"        a typical {tf_minutes}m setup stops ${typical:.2f} away "
+             f"= ${forced:.2f} = {pct:.1f}% of ${acc.balance:.2f}"]
     if target_lots >= info.volume_min:
         lines.append(f"        -> there is room to size: about "
                      f"{target_lots:.2f} lots on the typical setup")
-    elif pct <= MAX_RISK_PCT:
-        lines.append(f"        -> no room to size down, but {pct:.1f}% is under "
-                     f"the ceiling: it trades at the minimum lot")
     else:
-        need = forced * 100.0 / MAX_RISK_PCT
-        lines.append(f"        -> {pct:.1f}% is OVER the {MAX_RISK_PCT:g}% "
-                     f"ceiling, so most setups here will be SKIPPED.")
-        lines.append(f"           On {symbol} this timeframe needs about "
-                     f"${need:.0f} to trade properly.")
-        # ...and rather than stopping at that, look for a smaller contract.
-        try:
-            opts = [o for o in affordable_symbols(acc.balance, typical)
-                    if o[3] <= MAX_RISK_PCT]
-        except Exception:
-            opts = []
-        if opts:
-            lines.append("           This account DOES carry a smaller gold "
-                         "contract that fits:")
-            for forced2, name, per2, pct2 in opts[:4]:
-                lines.append(f"             --symbol {name:<16} minimum lot "
-                             f"risks ${forced2:.2f} = {pct2:.1f}%")
-        else:
-            lines.append("           No smaller gold contract on this account "
-                         "fits either — checked every XAU symbol in Market Watch.")
+        lines.append(f"        -> no room to size down. Every trade goes out "
+                     f"at the minimum lot")
+        if pct >= 5.0:
+            lines.append(f"           and risks about {pct:.0f}% of the "
+                         f"account EACH. Roughly half of all trades hit their")
+            lines.append(f"           stop, so a normal run of losses is a "
+                         f"large part of this balance.")
+            lines.append(f"           --risk-cap 3 makes it skip those "
+                         f"instead.")
     return "\n".join(lines)
-
-
-# ── the pieces the order path is built from ────────────────────────────────
-# These four -- LADDER, split_volume, _filling, _retcode -- were CALLED by
-# place() and manage_open_positions() and defined nowhere. Python resolves a
-# global name when the line runs, not when the file loads, so the module
-# imported cleanly, the bot started, printed its banner, found zones and
-# announced signals -- and then raised NameError on the first signal that got
-# as far as sizing. That is why no order was ever sent: not a rule that was too
-# strict, a function that did not exist.
-LADDER: dict = {}
-
 
 def _ladder_path() -> str:
     """One file per bot. The magic carries the timeframe, so five bots running
@@ -499,9 +486,13 @@ def choose_and_place(sigs, symbol: str, tf_minutes: int, room: int):
         rr = abs(s.tp1 - s.price) / sl_d if sl_d > 0 else 0.0
         head = f"   {'>' if ok and n < room else ' '} {s.side.upper():4s} {s.zone:5s} @ {s.price:9.2f}"
         if ok:
-            print(f"{head}  stop ${sl_d:.2f} = {pct:.1f}% · {rr:.1f}R to TP1 · "
-                  f"{vol} lots" + ("   <- taking this one" if n < room else
-                                   "   (waiting: no slot)"))
+            # a double-digit share of the account on one trade must never
+            # scroll past looking like an ordinary number
+            flag = "  !! " if pct >= 5.0 else " · "
+            print(f"{head}  stop ${sl_d:.2f} ={flag}{pct:.1f}% of the account"
+                  f" · {rr:.1f}R to TP1 · {vol} lots"
+                  + ("   <- taking this one" if n < room else
+                     "   (waiting: no slot)"))
         else:
             print(f"{head}  stop ${sl_d:.2f} · {rr:.1f}R to TP1 · CANNOT SIZE: {why}")
     taken = 0
@@ -524,11 +515,9 @@ def choose_and_place(sigs, symbol: str, tf_minutes: int, room: int):
                 continue
         place(s, symbol, tf_minutes)
         taken += 1
-    if not fits:
-        print(f"  nothing taken: every setup on this bar needs a wider stop "
-              f"than ${bal_cap(symbol):.2f}, which is all this balance allows "
-              f"at the {MAX_RISK_PCT:g}% ceiling. This is the bot picking the "
-              f"trades it can afford, not failing to trade.")
+    if not fits and MAX_RISK_PCT > 0:
+        print(f"  nothing taken: every setup on this bar risks more than the "
+              f"--risk-cap {MAX_RISK_PCT:g}% you asked for.")
 
 
 def bal_cap(symbol: str) -> float:
@@ -597,10 +586,13 @@ def place(signal, symbol: str, tf_minutes: int):
         symbol, volume, market)
     acc = mt5.account_info()
     if need is not None and acc is not None and need > acc.margin_free:
-        refuse("not enough margin",
-               f"{volume} lots needs ${need:.2f} of margin and only "
-               f"${acc.margin_free:.2f} is free. Close something, or wait for "
-               f"the open trade to finish.")
+        # The BROKER's limit, not a risk rule of this bot -- without free
+        # margin the order comes back retcode 10019 whether or not we ask
+        # first. Asking turns a failed send into a clean, explained skip.
+        refuse("no free margin (broker limit)",
+               f"the broker needs ${need:.2f} of margin for {volume} lots and "
+               f"only ${acc.margin_free:.2f} is free. This is the broker's "
+               f"limit, not a risk setting — it would reject the order anyway.")
         return
 
     legs = split_volume(volume, info)
@@ -1140,7 +1132,7 @@ def read_args():
                 SYMBOL = v
             elif a == "--risk":
                 RISK_PCT = float(v)
-            elif a == "--max-risk":
+            elif a in ("--max-risk", "--risk-cap"):
                 MAX_RISK_PCT = float(v)
             else:
                 raise SystemExit(f"unknown option: {a}   (try --help)")
@@ -1310,14 +1302,21 @@ def main():
               "      the settings, not the connection.")
     else:
         # ...and how many of them this balance could actually have sized.
-        fit = 0
+        acc2 = mt5.account_info()
+        risks = []
         for sg in engine.signals[-warm:]:
-            vol, _ = lots_for_risk(SYMBOL, abs(sg.price - sg.sl), RISK_PCT)
-            if vol is not None:
-                fit += 1
-        print(f"      {fit} of them this balance could size "
-              f"({100 * fit / warm:.0f}%)"
-              + ("" if fit else " — every one was too big for the account"))
+            vol, info2 = lots_for_risk(SYMBOL, abs(sg.price - sg.sl), RISK_PCT)
+            if vol is not None and acc2 and acc2.balance > 0:
+                risks.append(100.0 * info2 / acc2.balance)
+        if risks:
+            risks.sort()
+            mid = risks[len(risks) // 2]
+            print(f"      typical trade puts {mid:.1f}% of the account at "
+                  f"stake (worst here {risks[-1]:.1f}%)")
+            if mid >= 5.0:
+                print(f"      About half of all trades hit their stop, so "
+                      f"expect runs of\n      losses at that size. "
+                      f"--risk-cap 3 skips the big ones instead.")
         print("      If the live run now sends nothing while this says setups\n"
               "      exist, the reason is a guard at send time and the "
               "'since start:'\n      tally on each status line names which one.")
