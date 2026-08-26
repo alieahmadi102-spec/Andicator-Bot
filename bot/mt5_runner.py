@@ -106,6 +106,7 @@ MAX_RISK_PCT = 0.0
 # all built from finished candles; deciding from half a candle would be trading
 # something that was never measured.
 POLL_SECONDS = 1.0
+REPORT_ONLY = False
 
 # Why setups do not become orders, counted.
 #
@@ -800,6 +801,108 @@ def bot_ledger(symbol: str, days: int = 30):
     return mine, closing, pnl
 
 
+def report(symbol: str, days: int = 30):
+    """What the bot's OWN trades actually did, scored the way the backtest is.
+
+    The History tab answers "did the balance move" but not "is this working":
+    it mixes every timeframe together, counts money rather than R, and says
+    nothing about whether the result is inside the range the measurements
+    predict or outside it. This reads the same records, splits them by the
+    magic number (so each timeframe is judged separately and hand trades are
+    excluded), converts every result to R using the stop the order actually
+    went out with, and says plainly whether the run is consistent with the
+    backtest or genuinely worse.
+
+    Run it any time:   python mt5_runner.py --report
+    """
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    now = datetime.now(timezone.utc)
+    deals = mt5.history_deals_get(since, now) or []
+    orders = mt5.history_orders_get(since, now) or []
+    info = mt5.symbol_info(symbol)
+    if info is None:
+        print("no symbol info"); return
+    tick_v, tick_s = info.trade_tick_value, info.trade_tick_size
+
+    # the stop each position went out with, keyed by the position it opened
+    sl_of, vol_of = {}, {}
+    for o in orders:
+        pid = getattr(o, "position_id", 0)
+        if pid and getattr(o, "sl", 0.0):
+            sl_of.setdefault(pid, o.sl)
+            vol_of.setdefault(pid, getattr(o, "volume_initial", 0.01))
+
+    # opening and closing deal of each position
+    opens, closes = {}, {}
+    for d in deals:
+        if d.symbol != symbol or not (MAGIC_BASE <= d.magic <= MAGIC_BASE + 10080):
+            continue
+        if d.entry == mt5.DEAL_ENTRY_IN:
+            opens[d.position_id] = d
+        elif d.entry == mt5.DEAL_ENTRY_OUT:
+            closes[d.position_id] = d
+
+    by_tf: dict = {}
+    no_stop = 0
+    for pid, c in closes.items():
+        o = opens.get(pid)
+        if o is None:
+            continue
+        tf = c.magic - MAGIC_BASE
+        net = c.profit + c.swap + c.commission
+        sl = sl_of.get(pid)
+        if not sl:
+            no_stop += 1
+            r = None
+        else:
+            risk = abs(o.price - sl) / tick_s * tick_v * (vol_of.get(pid) or o.volume)
+            r = net / risk if risk > 0 else None
+        by_tf.setdefault(tf, []).append((net, r))
+
+    if not by_tf:
+        print(f"\nno trades from this bot on {symbol} in the last {days} days.")
+        return
+    print(f"\n{'=' * 66}\n  THIS BOT'S OWN TRADES on {symbol}, last {days} days\n{'=' * 66}")
+    # what the backtest says to expect, per timeframe, on data it never chose on
+    EXPECT = {1: (+0.096, 17), 5: (+0.367, 21), 15: (+0.278, 20),
+              30: (+0.154, 19), 60: (+0.368, 20), 240: (+0.132, 18)}
+    for tf in sorted(by_tf):
+        rows = by_tf[tf]
+        money = sum(n for n, _ in rows)
+        rs = [r for _, r in rows if r is not None]
+        wins = sum(1 for n, _ in rows if n > 0.01)
+        wr = 100.0 * wins / len(rows)
+        print(f"\n  {tf}m — {len(rows)} trades, net {money:+.2f} "
+              f"{mt5.account_info().currency}")
+        print(f"      {wins} finished green ({wr:.0f}%)")
+        if rs:
+            avg = sum(rs) / len(rs)
+            print(f"      average {avg:+.3f}R per trade")
+            exp_r, exp_w = EXPECT.get(tf, (None, None))
+            if exp_r is not None:
+                # is this run inside the range chance would produce anyway?
+                # spread of R is roughly 1.4 per trade for this strategy
+                se = 1.4 / max(1, len(rs)) ** 0.5
+                lo, hi = exp_r - 2 * se, exp_r + 2 * se
+                verdict = ("consistent with the backtest"
+                           if lo <= avg <= hi else
+                           "OUTSIDE what the backtest predicts")
+                print(f"      backtest expects {exp_r:+.3f}R and {exp_w}% green;"
+                      f" over {len(rs)} trades\n"
+                      f"      anything from {lo:+.3f} to {hi:+.3f}R is normal "
+                      f"variation -> {verdict}")
+                if len(rs) < 100:
+                    print(f"      NOTE: {len(rs)} trades is too few to judge. "
+                          f"About 150 are needed\n            before this "
+                          f"number means anything.")
+    if no_stop:
+        print(f"\n  WARNING: {no_stop} position(s) had NO stop loss recorded. "
+              f"Every order this\n           bot sends carries one, so these "
+              f"were either opened by hand or\n           had their stop "
+              f"removed — they are excluded from the R figures.")
+    print()
+
+
 def sync_orders(engine, symbol: str, tf_minutes: int):
     """Send any order the engine is holding that the broker does not have.
 
@@ -1106,9 +1209,11 @@ def read_args():
                                                 # the trades, slightly worse
         python mt5_runner.py --tf 5 --limit     # rest a limit on the zone
                                                 # instead of entering at market
+        python mt5_runner.py --report           # score this bot's OWN closed
+                                                # trades against the backtest
     """
     global SYMBOL, TIMEFRAME_MIN, RISK_PCT, DRY_RUN, MAGIC, NO_TREND, MAX_RISK_PCT
-    global ENTRY_MODE
+    global ENTRY_MODE, REPORT_ONLY
     args = sys.argv[1:]
     i = 0
     while i < len(args):
@@ -1117,6 +1222,8 @@ def read_args():
             DRY_RUN = False
         elif a == "--no-trend":
             NO_TREND = True
+        elif a == "--report":
+            REPORT_ONLY = True
         elif a == "--limit":
             ENTRY_MODE = "limit"
         elif a == "--market":
@@ -1157,6 +1264,13 @@ def main():
         raise SystemExit(f"{SYMBOL} is not available on this account "
                          f"({mt5.last_error()}). Check the exact name in "
                          f"Market Watch — some brokers use XAUUSD.fix / .zero.")
+
+    if REPORT_ONLY:
+        # --report is a question about history, not a trading session: no
+        # warm-up, no orders, no waiting for a bar.
+        report(SYMBOL)
+        mt5.shutdown()
+        return
 
     acc = mt5.account_info()
     # DEMO or REAL is decided by the account MetaTrader is logged into, NOT by
