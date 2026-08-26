@@ -31,7 +31,7 @@
 //                  TP3 = the one beyond. 1R/2R/3R when no zone sits there.
 //  SCALP vs SWING (book): M5/M15 = SCALP · H1/H4/Daily = SWING.
 // ═══════════════════════════════════════════════════════════════════════════
-indicator("SNRZ Strategy [Zindan] v19.5", "SNRZ v19.5", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500, max_bars_back = 500)
+indicator("SNRZ Strategy [Zindan] v20.0", "SNRZ v20.0", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500, max_bars_back = 500)
 
 // ───────────────────────────── Inputs ──────────────────────────────────────
 grpZ  = "Zones (SNRZ)"
@@ -51,6 +51,10 @@ bigMoveRule   = input.string("either", "حرکتِ بزرگ: کدام‌شان �
 needBigMove   = input.bool(true, "زون جفت‌شده هم باید حرکت بزرگ داشته باشد",  group = grpZ, tooltip = "عکس ۳۶: «تفاوتش با ساپورت معمولی فقط این است که First Movement و Second Movement دارد — و اگر **هرکدام** از حرکت‌ها یک **Big Movement** باشد، بازار خودبه‌خود به آن زون **بیشتر احترام** می‌گذارد.» مسیر جفت‌سازی این را چک نمی‌کرد، پس زون از دو سوئینگی ساخته می‌شد که بازار به‌سختی به آن‌ها واکنش نشان داده بود.")
 breakoutPct   = input.float(75, "Breakout rule (%)",                       minval = 50, maxval = 100, group = grpZ)
 minZoneATR    = input.float(0.15,"Min zone height (ATR ×)",                minval = 0.05, step = 0.05, group = grpZ)
+pairsFromLine = input.bool(true, "زون‌های جفتی (R+R · S+S · S+R · R+S) از لاین‌چارت خوانده شوند", group = grpZ, tooltip = "قانونِ کاپیتان: این چهار روشِ جفتی «لاین‌چارت لازم دارند». لاین‌چارت سایه ندارد، پس سطحی که دو سوئینگ با هم می‌سازند سطحِ **کلوز** است نه سطحِ سایه.\n\nخاموش که باشد پاسِ کندلی هم سایه‌ها را جفت می‌کند و هر سطحِ جفتی دو بار و در دو قیمتِ متفاوت کشیده می‌شود.")
+zonePrevCandle= input.bool(true, "باندِ زون کندلِ سوئینگ و کندلِ قبلش را بپوشاند (سایه و بدنه)", group = grpZ, tooltip = "سطح روی لاین‌چارت **پیدا** می‌شود، ولی باکسی که **کشیده** می‌شود باید روی کندل‌های واقعی بنشیند: از های تا لوِ کندلِ سوئینگ و کندل‌های قبلش.\n\nبدون این، جفتِ کلوز-به-کلوز یک خطِ مو است که با کمینه‌ی ارتفاع به یک باندِ با ارتفاعِ ثابت باد می‌شود و هر جا که کلوزها افتاده‌اند می‌ایستد.")
+zonePrevBars  = input.int(1, "…چند کندل قبل از سوئینگ", minval = 0, maxval = 5, group = grpZ)
+maxZoneATRPair= input.float(0.8, "سقفِ ارتفاعِ زونِ جفتیِ پوشش‌داده‌شده (ATR ×)", minval = 0.1, step = 0.1, group = grpZ, tooltip = "سقفِ ۰٫۴ برای یک خطِ مو بینِ دو قیمت اندازه گرفته شده و باندی را که تازه روی کندل‌ها پهن شده دوباره از رویشان می‌بُرد. ۰٫۸ تقریباً همان چیزی است که یک کندل به‌اضافه‌ی کندلِ قبلش می‌گیرد.")
 maxZoneATR    = input.float(0.4, "Max zone height (ATR ×)",                minval = 0.1,  step = 0.05, group = grpZ, tooltip = "زون به ارتفاع یک ATR دیگر زون نیست، یک ناحیه است — روی ۴ ساعته باندهای ۲۸۷ دلاری روی کل چارت می‌کشید.")
 lifeLtf       = input.int(600,  "Chart zone lifetime (chart bars)",        minval = 30, group = grpZ)
 lifeHtf       = input.int(150,   "Analysis zone lifetime (analysis bars)",  minval = 10, group = grpZ)
@@ -528,7 +532,10 @@ newZone(float _top, float _bot, int _role, bool _htf, int _uid, float _atr, int 
     mn = _atr * minZoneATR
     // the analysis zones take their shape from the structure, so their cap is
     // only a sanity bound
-    mx = _atr * (_htf ? maxZoneATRHtf : maxZoneATR)
+    // A band drawn to COVER its candles needs more room than a hairline
+    // between two swing prices; trimming it to maxZoneATR undoes the very rule
+    // that widened it onto the structure.
+    mx = _atr * (_htf ? maxZoneATRHtf : (_paired and zonePrevCandle) ? maxZoneATRPair : maxZoneATR)
     t  = _top
     b  = _bot
     if h < mn
@@ -797,7 +804,14 @@ reanchorFlipped(float _price, bool _isHigh, float _atr, bool _htf, int _bar) =>
 addSwing(bool _htf, float _price, bool _isHigh, int _bar, int _back, float _atr, float _bodyHi, float _bodyLo, float _hiRun, float _loRun, int _uid, float _engT, float _engB, float _momBody, float _momHi, float _momLo, bool _line, float _stLo, float _stHi) =>
     reanchorFlipped(_price, _isHigh, _atr, _htf, _bar)
     mate = findMate(_htf, _price, _bar, _atr, _line)
-    mi   = pairZones ? mate : -1
+    // The captain's rule: the four PAIRED ways of drawing a zone -- R+R, S+S,
+    // S+R, R+S -- "need the line chart". A line chart has no wicks, so the
+    // level two swings share is a CLOSE level. The candle pass was pairing
+    // wick extremes as well, so every paired level existed TWICE at two
+    // different prices, and the wick copy is the one with no business there.
+    // The candle pass now keeps only what genuinely needs candles: engulf,
+    // momentum, GAP and the continuation bases.
+    mi   = pairZones and (_line or not pairsFromLine) ? mate : -1
     // an if-block, NOT a ternary: Pine evaluates both sides of `?:`, so an
     // array.get() there throws on an empty array even in the branch that is
     // not taken.
@@ -807,7 +821,9 @@ addSwing(bool _htf, float _price, bool _isHigh, int _bar, int _back, float _atr,
     float mateSegLo = na
     float mateStLo  = na
     float mateStHi  = na
+    int   mateBarIdx = bar_index
     if mi >= 0
+        mateBarIdx := array.get(_htf ? htfSwBar : ltfSwBar, mi)
         matePrice := array.get(_htf ? htfSwPrice : ltfSwPrice, mi)
         mateHigh  := array.get(_htf ? htfSwHigh  : ltfSwHigh,  mi)
         // read BEFORE the push: a push that trims the array shifts every index
@@ -881,6 +897,24 @@ addSwing(bool _htf, float _price, bool _isHigh, int _bar, int _back, float _atr,
             else
                 t := math.max(t, math.max(_stHi, mateStHi))
                 b := math.min(b, math.min(_stLo, mateStLo))
+        // The level is FOUND on the line chart; the band that gets DRAWN is
+        // on real candles -- "the zone has to be marked from one candle
+        // before, wick AND body". A close-to-close pair is a hairline, and
+        // minZoneATR then inflated it into a fixed-height band standing
+        // wherever the closes happened to fall. Chart zones only: with
+        // singleTf on there are no analysis zones, and high[]/low[] read the
+        // chart timeframe, not the analysis one.
+        if zonePrevCandle and not _htf
+            mateOff = bar_index - mateBarIdx
+            for k = 0 to zonePrevBars
+                oS = _back + k
+                oM = mateOff + k
+                if oS >= 0 and oS <= 4000
+                    t := math.max(t, high[oS])
+                    b := math.min(b, low[oS])
+                if oM >= 0 and oM <= 4000
+                    t := math.max(t, high[oM])
+                    b := math.min(b, low[oM])
         if not overlaps(t, b, _htf) and okBig
             array.push(zones, newZone(t, b, role, _htf, _uid, _atr, _back, true))
     else if _line
@@ -1507,7 +1541,7 @@ if showPanel and barstate.islast
             nRun += 1
     posTxt = nOrd + nRun == 0 ? "— no setup right now —" :
              str.tostring(nOrd) + " limit waiting · " + str.tostring(nRun) + " running"
-    table.cell(info, 0, 0, "⚜  SNRZ v19.5 —  ZiNDAN", text_color = colGold, text_size = size.normal)
+    table.cell(info, 0, 0, "⚜  SNRZ v20.0 —  ZiNDAN", text_color = colGold, text_size = size.normal)
     table.cell(info, 0, 1, "The Gold Chaser", text_color = color.new(colGold, 35), text_size = size.tiny)
     table.cell(info, 0, 2, trendTxt, text_color = trendCol, text_size = size.small)
     // With singleTf on there IS no analysis timeframe, so the second half of

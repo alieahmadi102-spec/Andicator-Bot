@@ -462,6 +462,27 @@ class Config:
     # does not survive into the trade result; this is the same lesson as
     # skip_sources below.
     line_single_levels: bool = True
+    # The captain: the four PAIRED ways of drawing a zone — R+R, S+S, S+R,
+    # R+S — "need the line chart". A line chart has no wicks, so the level two
+    # swings share is a CLOSE level. With this on, the candle pass stops
+    # pairing wick extremes and keeps only what genuinely needs candles
+    # (engulf, momentum, GAP, the continuation bases); the pairs come from the
+    # line pass alone, instead of every paired level existing twice at two
+    # different prices.
+    pairs_from_line: bool = True
+    # ...and once the level is FOUND on the line chart, the band that gets
+    # DRAWN covers real candles: the swing candle and the ones before it, full
+    # high to low, wick and body. Without this a close-to-close pair is a
+    # hairline that min_zone_atr inflates into a fixed-height band sitting
+    # wherever the closes happened to fall.
+    zone_prev_candle: bool = True
+    zone_prev_bars: int = 1      # how many candles BEFORE the swing to cover
+    # ...and the height cap those covered bands are held to. max_zone_atr
+    # (0.4) is sized for a hairline between two prices and cuts a covered band
+    # straight back off the candles it was just widened onto, so the paired
+    # zones get their own. 0.8 ATR is about what one candle plus the one
+    # before it spans.
+    max_zone_atr_pair: float = 0.8
     # The captain's 30m chart of an RBS: an R at 4,433.9 breaks upward, price
     # runs to 4,530 and pulls back to make an S at ~4,460 — ABOVE the broken
     # level, which price never returns to. "When an R breaks and on the way
@@ -787,7 +808,19 @@ class SnrzEngine:
                   idx: int, htf: bool, src: str = "pivot", valid: bool = False):
         # The captain draws the ANALYSIS zone wide and then tightens it on the
         # middle timeframe, so the two sets do not share one cap.
-        cap = self.cfg.max_zone_atr_htf if htf else self.cfg.max_zone_atr
+        # A zone drawn to COVER its candles needs more room than a hairline
+        # between two swing prices. Trimming it back to max_zone_atr undid the
+        # rule that put it there -- the band was widened onto the structure and
+        # then chopped off it again, which is why the boxes still did not line
+        # up with the candles they came from.
+        pair = self.cfg.zone_prev_candle and src.split()[-1] in (
+            "R+R", "S+S", "S+R", "R+S")
+        if htf:
+            cap = self.cfg.max_zone_atr_htf
+        elif pair:
+            cap = self.cfg.max_zone_atr_pair
+        else:
+            cap = self.cfg.max_zone_atr
         mn, mx = atr * self.cfg.min_zone_atr, atr * cap
         if top - bot < mn:
             mid = (top + bot) / 2
@@ -1126,6 +1159,20 @@ class SnrzEngine:
                                        valid=False)
                 continue
 
+            # The captain's rule, in his own words: the four PAIRED ways of
+            # drawing a zone -- R+R, S+S, S+R, R+S -- "need the line chart".
+            # A line chart has no wicks, so the level those two swings share is
+            # a CLOSE level, not a wick level. This engine was pairing wick
+            # extremes in the candle pass AND closes in the line pass, so every
+            # paired level existed twice, at two different prices, and the wick
+            # copy is the one that has no business being there. The candle pass
+            # keeps only the ways that genuinely need candles: engulf, momentum,
+            # GAP and the continuation bases.
+            if mate is not None and cfg.pairs_from_line and not use_close:
+                self._engulf_zone(series, p, is_high, atr, idx, htf,
+                                  hi_run, lo_run, big)
+                continue
+
             if mate is None:
                 # p24, the FIFTH way to draw a zone: "when there is no S/R pair
                 # to draw from, draw it from the ENGULF" — and images 27/28 say
@@ -1188,6 +1235,16 @@ class SnrzEngine:
             if htf and cfg.htf_struct_zone and not use_close:
                 top, bot = self._struct_expand(series, (mate.index, p), role,
                                                top, bot, cfg.htf_struct_bars)
+            # The level is FOUND on the line chart, but the zone that gets
+            # drawn is a real band on real candles: "the zone has to be marked
+            # from one candle before, wick AND body". A close-to-close pair is
+            # a hairline, and min_zone_atr then inflated it into a band of an
+            # arbitrary fixed height that sat wherever the closes happened to
+            # be. Covering the swing candle and the one before it, full high to
+            # low, puts the band on the structure it was read from instead.
+            if cfg.zone_prev_candle:
+                top, bot = self._cover_candles(series, (mate.index, p),
+                                               top, bot, cfg.zone_prev_bars)
             self._add_zone(top, bot, role, atr, idx, htf,
                            src=("line " + src) if use_close else src, valid=True)
 
@@ -1383,6 +1440,24 @@ class SnrzEngine:
             if not kept or p - kept[-1] > tol:
                 kept.append(p)
         return len(kept)
+
+    def _cover_candles(self, series: List[Candle], idxs, top: float,
+                       bot: float, back: int):
+        """Widen a band so it actually covers the candles it was read from.
+
+        «زون‌ها باید یک کندل قبل هم سایه و هم بدنه مشخص بشه» — for each swing
+        the zone is built on, take that candle and the `back` candles before
+        it, full HIGH to LOW: wick and body both. The level may have been found
+        on a line chart, but what gets drawn is a band on real candles."""
+        n = len(series)
+        lo, hi = bot, top
+        for i in idxs:
+            a = max(0, i - back)
+            b = min(n - 1, i)
+            for w in series[a: b + 1]:
+                hi = max(hi, w.high)
+                lo = min(lo, w.low)
+        return hi, lo
 
     def _struct_expand(self, series: List[Candle], idxs, role: Role,
                        top: float, bot: float, k: int):
