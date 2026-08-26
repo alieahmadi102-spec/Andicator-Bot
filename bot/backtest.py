@@ -1,4 +1,4 @@
-"""
+r"""
 SNRZ backtester — replays candles through snrz_core and reports how the setups
 actually resolved, so a rule change can be judged on numbers instead of on the
 look of one screenshot.
@@ -348,14 +348,15 @@ def main() -> None:
         # timeframe it found in data/ and get one line per timeframe.
         for path in args:
             mins = minutes_from_name(path)
+            name = path.replace("\\", "/").split("/")[-1]
             if not mins:
-                print(f"{path}: the file name does not end in M1/M5/M15/M30/"
-                      f"H1/H4/Daily, so the timeframe is unknown. Rename it "
-                      f"(XAUUSDM5.csv) or the rules will be tuned for the "
-                      f"wrong chart.")
+                # Skipped rather than guessed: chart_minutes drives the sweep
+                # guard and the analysis timeframe, so running it as "unknown"
+                # would report a number produced by the wrong rules.
+                print(f"{name:<32} skipped - rename it to end in M1, M5, M15, "
+                      f"M30, H1, H4 or Daily")
                 continue
             rows = split_rows(read_csv(path), which)
-            name = path.replace("\\", "/").split("/")[-1]
             label = f"{name} [{which}]" + (f" sp{spread:g}" if spread else "")
             print(run(rows, Config(chart_minutes=mins), spread).line(label))
         return
