@@ -5,7 +5,11 @@ look of one screenshot.
 
     python bot/backtest.py candles.csv                 # time,open,high,low,close
     python bot/backtest.py candles.csv --spread 0.14   # charge the real spread
+    python bot/backtest.py data/*.csv  --split test    # one line per timeframe
     python bot/backtest.py --synthetic                 # random-walk sanity run
+
+On Windows, double-click bot\BACKTEST.bat instead — it runs both halves of the
+split and keeps the window open so an error can be read.
 
 Outcomes follow the indicator: TP1/TP2/TP3 reached, stopped out, or closed at
 break-even after TP1 paid 1:1 (the book's Zero Float rule).
@@ -66,7 +70,7 @@ class Report:
         # split, a break-even trade pays nothing. Both are shown.
         hit = self.tp1 + self.tp2 + self.tp3
         green = 100.0 * hit / self.resolved if self.resolved else 0.0
-        return (f"{label:<28} n={self.resolved:<5} "
+        return (f"{label:<32} n={self.resolved:<5} "
                 f"TP={hit:<4} BE={self.breakeven:<4} SL={self.stopped:<4} "
                 f"TO={self.timeout:<3} "
                 f"green={green:5.1f}%  E={self.expectancy_r:+.3f}R")
@@ -125,7 +129,11 @@ def realized_r(p, spread: float = 0.0) -> float:
 
 
 TF_MINUTES = {"M1": 1, "M5": 5, "M15": 15, "M30": 30,
-              "H1": 60, "H4": 240, "Daily": 1440, "D1": 1440}
+              "H1": 60, "H4": 240, "Daily": 1440, "D1": 1440,
+              # MT5 exports these too, and the launcher hands over whatever is
+              # in the folder. Without them a Weekly file was reported as an
+              # unknown timeframe, which reads like a mistake by the user.
+              "Weekly": 10080, "W1": 10080, "Monthly": 43200, "MN1": 43200}
 
 
 def minutes_from_name(path: str) -> int:
@@ -184,43 +192,91 @@ def split_rows(rows: List[Candle], which: str) -> List[Candle]:
     return rows[:cut] if which == "train" else rows[cut:]
 
 
+HOW_TO_EXPORT = """
+How to get the candle file out of MetaTrader 5:
+
+    1. In MT5:  View > Symbols        (or press Ctrl+U)
+    2. Pick the symbol you trade      (XAUUSD, XAUUSDm, GOLD ... )
+    3. Open the "Bars" tab at the top
+    4. Set the period (M1, M5, M15 ...) and the date range, press Request
+    5. Press "Export Bars" and save it as
+           data\\XAUUSDM5.csv          (M1 -> XAUUSDM1.csv, and so on)
+
+The file name is what tells the backtester which timeframe it is, so keep
+the M1 / M5 / M15 / M30 / H1 / H4 ending exactly as above.
+"""
+
+
 def read_csv(path: str) -> List[Candle]:
     """Reads both TradingView exports (a header row with named columns) and
     MetaTrader 5 exports (UTF-16, no header, date[ time],O,H,L,C,vol,spread)."""
-    raw = open(path, "rb").read()
-    for enc in ("utf-16", "utf-8-sig", "utf-8"):
-        try:
-            text = raw.decode(enc)
-            break
-        except UnicodeDecodeError:
-            continue
+    # data/ is in .gitignore -- deliberately, the candle files are large and
+    # personal to the broker -- so a fresh clone has no data at all. Opening a
+    # missing file raised a bare FileNotFoundError, and run by double-click
+    # that closed the window before anyone could read it. It looked exactly
+    # like a crash. Say what is missing and how to make it instead.
+    try:
+        raw = open(path, "rb").read()
+    except FileNotFoundError:
+        raise SystemExit(f"there is no file at {path}\n{HOW_TO_EXPORT}")
+    except OSError as exc:
+        raise SystemExit(f"cannot open {path}: {exc}")
+    if not raw.strip():
+        raise SystemExit(f"{path} is empty.\n{HOW_TO_EXPORT}")
+    # Order matters, and getting it wrong is silent. UTF-16 was tried FIRST,
+    # and a plain ASCII file with an even number of bytes decodes as UTF-16
+    # without raising -- it just produces garbage. Every UTF-8 export then
+    # parsed to nothing and the run died on "no candles", which by
+    # double-click looks like a crash. The byte-order mark is what actually
+    # identifies UTF-16, so it is checked rather than guessed.
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        text = raw.decode("utf-16")
     else:
-        raise SystemExit(f"cannot decode {path}")
+        for enc in ("utf-8-sig", "utf-8", "latin-1"):
+            try:
+                text = raw.decode(enc)
+                break
+            except UnicodeDecodeError:
+                continue
+        else:
+            raise SystemExit(f"cannot decode {path}")
     lines = [ln for ln in text.replace("\r", "").split("\n") if ln.strip()]
 
     first = lines[0].lower()
-    if "open" in first and "high" in first:                    # TradingView
+    # MT5's export header is <DATE> <TIME> <OPEN> <HIGH> ... -- it contains the
+    # words "open" and "high" too, so testing for those alone sent every MT5
+    # file down the TradingView path, where DictReader found no usable columns
+    # and the run died on "no candles parsed". The angle brackets are what
+    # actually tells them apart.
+    if "<" not in first and "open" in first and "high" in first:  # TradingView
         rows = csv.DictReader(lines)
         return [Candle(int(float(r["time"])), float(r["open"]), float(r["high"]),
                        float(r["low"]), float(r["close"])) for r in rows]
 
-    out: List[Candle] = []                                     # MetaTrader 5
+    # MetaTrader 5's own "Export Bars" writes something different again:
+    # TAB separated, a <DATE> <TIME> header, and the date and time in TWO
+    # columns rather than one. Splitting on commas alone parsed none of it and
+    # the script died on "no candles parsed" -- which, run by double-click,
+    # looked like a crash. Both layouts and all three separators work now.
+    sep = max(("\t", ",", ";"), key=lambda d: len(lines[-1].split(d)))
+    out: List[Candle] = []
     for i, ln in enumerate(lines):
-        f = ln.split(",")
-        if len(f) < 5:
+        f = [x.strip() for x in ln.split(sep)]
+        if len(f) < 5 or f[0].startswith("<"):
+            continue                                  # header row
+        # where the prices start: "2026.01.02 01:00" is one field, but
+        # "2026.01.02" + "01:00:00" is two.
+        off = 2 if (":" in f[1] and " " not in f[0]) else 1
+        if len(f) < off + 4:
             continue
         try:
-            o, h, lo, cl = (float(f[1]), float(f[2]), float(f[3]), float(f[4]))
+            o, h, lo, cl = (float(f[off]), float(f[off + 1]),
+                            float(f[off + 2]), float(f[off + 3]))
         except ValueError:
-            continue                                           # skip a header
-        # The real timestamp was being thrown away and the ROW INDEX used as
-        # the candle time. That is harmless for zone logic, which only ever
-        # compares bars to each other -- and it silently makes any question
-        # about the clock unanswerable, which is why hour-of-day had never
-        # been tested. "2026.01.02 01:05" parses fine.
+            continue
         t = i
         try:
-            d, hm = f[0].strip().split()
+            d, hm = (f[0], f[1]) if off == 2 else f[0].split()
             y, mo, dy = (int(x) for x in d.replace("-", ".").split("."))
             hh, mm = (int(x) for x in hm.split(":")[:2])
             t = int(datetime(y, mo, dy, hh, mm,
@@ -229,7 +285,10 @@ def read_csv(path: str) -> List[Candle]:
             pass                       # no parsable stamp: fall back to the row
         out.append(Candle(t, o, h, lo, cl))
     if not out:
-        raise SystemExit(f"no candles parsed from {path}")
+        raise SystemExit(
+            f"no candles could be read from {path}.\n"
+            f"Expected columns: date, time, open, high, low, close - "
+            f"comma or tab separated.\n{HOW_TO_EXPORT}")
     return out
 
 
@@ -285,10 +344,20 @@ def main() -> None:
         del args[i:i + 2]
 
     if args and args[0] != "--synthetic":
-        rows = split_rows(read_csv(args[0]), which)
-        cfg = Config(chart_minutes=minutes_from_name(args[0]))
-        label = f"{args[0]} [{which}]" + (f" sp{spread:g}" if spread else "")
-        print(run(rows, cfg, spread).line(label))
+        # More than one file is allowed, so the launcher can hand over every
+        # timeframe it found in data/ and get one line per timeframe.
+        for path in args:
+            mins = minutes_from_name(path)
+            if not mins:
+                print(f"{path}: the file name does not end in M1/M5/M15/M30/"
+                      f"H1/H4/Daily, so the timeframe is unknown. Rename it "
+                      f"(XAUUSDM5.csv) or the rules will be tuned for the "
+                      f"wrong chart.")
+                continue
+            rows = split_rows(read_csv(path), which)
+            name = path.replace("\\", "/").split("/")[-1]
+            label = f"{name} [{which}]" + (f" sp{spread:g}" if spread else "")
+            print(run(rows, Config(chart_minutes=mins), spread).line(label))
         return
 
     sets = [
