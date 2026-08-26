@@ -107,21 +107,6 @@ MAX_RISK_PCT = 0.0
 # something that was never measured.
 POLL_SECONDS = 1.0
 REPORT_ONLY = False
-# Sub-minute charts. MT5 has no timeframe below M1 -- there is no
-# TIMEFRAME_S10 -- so these candles are built here, from ticks.
-#
-# Read the arithmetic before using one. The stop this strategy places scales
-# with the square root of the bar length: measured across M1/M5/M15/M30/H1 it
-# fits stop = 2.23 x minutes^0.58, which at 10 seconds is about $0.79. The
-# spread is $0.14, so it eats 18% of EVERY trade's R. M1 pays 6.6% and earns
-# +0.096R, so the extra spread alone is larger than the entire edge the
-# fastest measured timeframe has. MAX_SPREAD_R will refuse most of them.
-#
-# It is here because it was asked for. It has NOT been measured -- no
-# 10-second history exists to measure it on, unlike every other number in
-# this project.
-TIMEFRAME_SEC = 0
-
 # Where profit is taken, as a multiple of the stop. --tp N moves it.
 #
 # This is the scalping dial, and it was measured across both halves of both
@@ -174,11 +159,6 @@ def ledger_line() -> str:
             + (f" · refused: {bits}" if bits else ""))
 
 
-def tf_name() -> str:
-    """How to say this timeframe out loud."""
-    return f"{TIMEFRAME_SEC}s" if TIMEFRAME_SEC else f"{TIMEFRAME_MIN:g}m"
-
-
 def mt5_timeframe(minutes: int):
     """MT5 has no TIMEFRAME_M60 — anything from an hour up has its own name."""
     named = {60: "H1", 120: "H2", 180: "H3", 240: "H4", 360: "H6",
@@ -189,41 +169,6 @@ def mt5_timeframe(minutes: int):
     if tf is None:
         raise SystemExit(f"unsupported timeframe: {minutes} minutes")
     return tf
-
-
-def sec_bars(symbol: str, secs: int, count: int):
-    """N-second candles, aggregated from ticks.
-
-    MT5's smallest chart timeframe is one minute, so anything faster has to be
-    built. Ticks carry a bid and a millisecond stamp; bucketing them by
-    time // secs gives real OHLC rather than the crude approximation that
-    sampling the current price once a second would produce."""
-    end = datetime.now(timezone.utc)
-    start = end - timedelta(seconds=secs * (count + 2))
-    ticks = mt5.copy_ticks_range(symbol, start, end,
-                                 getattr(mt5, "COPY_TICKS_ALL", 3))
-    if ticks is None or len(ticks) == 0:
-        return []
-    buckets: dict = {}
-    for t in ticks:
-        px = float(t["bid"]) or float(t["last"])
-        if px <= 0:
-            continue
-        b = int(t["time"]) // secs * secs
-        cur = buckets.get(b)
-        if cur is None:
-            buckets[b] = [px, px, px, px]
-        else:
-            cur[1] = max(cur[1], px)
-            cur[2] = min(cur[2], px)
-            cur[3] = px
-    out = []
-    for b in sorted(buckets):
-        o, h, l, c = buckets[b]
-        out.append(Candle(b, o, h, l, c))
-    # the newest bucket is still forming -- only closed bars go to the engine
-    now_b = int(end.timestamp()) // secs * secs
-    return [c for c in out if c.time < now_b]
 
 
 def lots_for_risk(symbol: str, sl_distance: float, risk_pct: float):
@@ -1293,7 +1238,7 @@ def read_args():
                                                 # measurably less profit
     """
     global SYMBOL, TIMEFRAME_MIN, RISK_PCT, DRY_RUN, MAGIC, NO_TREND, MAX_RISK_PCT
-    global ENTRY_MODE, REPORT_ONLY, TIMEFRAME_SEC, TP_MULT, MAX_SPREAD_R
+    global ENTRY_MODE, REPORT_ONLY, TP_MULT, MAX_SPREAD_R
     args = sys.argv[1:]
     i = 0
     while i < len(args):
@@ -1319,13 +1264,7 @@ def read_args():
         elif i + 1 < len(args):
             v = args[i + 1]
             if a == "--tf":
-                # "10s" asks for a sub-minute chart, which MT5 has no such
-                # thing as -- sec_bars() builds it from ticks instead.
-                if v.lower().endswith("s"):
-                    TIMEFRAME_SEC = int(v[:-1])
-                    TIMEFRAME_MIN = TIMEFRAME_SEC / 60.0
-                else:
-                    TIMEFRAME_MIN = int(v)
+                TIMEFRAME_MIN = int(v)
             elif a == "--symbol":
                 SYMBOL = v
             elif a == "--risk":
@@ -1343,10 +1282,7 @@ def read_args():
         else:
             raise SystemExit(f"{a} needs a value   (try --help)")
         i += 1
-    # ...an int, and in its own range so a 10-SECOND bot and a 10-MINUTE bot
-    # never share a magic number and start managing each other's trades.
-    MAGIC = MAGIC_BASE + (10000 + TIMEFRAME_SEC if TIMEFRAME_SEC
-                          else int(TIMEFRAME_MIN))
+    MAGIC = MAGIC_BASE + TIMEFRAME_MIN
 
 
 def main():
@@ -1363,35 +1299,6 @@ def main():
         raise SystemExit(f"{SYMBOL} is not available on this account "
                          f"({mt5.last_error()}). Check the exact name in "
                          f"Market Watch — some brokers use XAUUSD.fix / .zero.")
-
-    if TIMEFRAME_SEC:
-        # Said once, loudly -- because unlike every other timeframe here there
-        # is no measurement behind it, and the arithmetic that CAN be done
-        # says it loses.
-        est = 2.23 * (TIMEFRAME_SEC / 60.0) ** 0.58
-        sp_r = 0.14 / est
-        tp = TP_MULT or Config().fixed_r_mult
-        need = (1.0 + sp_r) / (1.0 + tp)          # win rate to break even
-        print("\n" + "!" * 64)
-        print(f"  {TIMEFRAME_SEC}-SECOND SCALP — built from ticks, and NOT measured.")
-        print("!" * 64)
-        print(f"  MT5 has no timeframe under a minute, so these candles are\n"
-              f"  aggregated from ticks here. That part works and is tested.\n"
-              f"  What follows is arithmetic, not opinion:\n")
-        print(f"  The stop scales with the square root of the bar length —\n"
-              f"  fitted across M1/M5/M15/M30/H1 as stop = 2.23 x minutes^0.58,\n"
-              f"  which at {TIMEFRAME_SEC}s is about ${est:.2f}. A $0.14 spread is then\n"
-              f"  {100 * sp_r:.0f}% of EVERY trade's R, before the market moves at all.\n")
-        print(f"  Taking profit at {tp:g}R, that needs a {100 * need:.0f}% win rate just to\n"
-              f"  break even. At {tp:g}R the 1-minute chart — the fastest one that\n"
-              f"  HAS been measured — wins 25-27%, and the trend across\n"
-              f"  timeframes runs DOWNWARD as they get shorter.\n")
-        print(f"  Cutting the target further makes this worse, not better: a\n"
-              f"  smaller target does not shrink the spread, so it raises the\n"
-              f"  win rate you need rather than lowering it.\n")
-        print(f"  The spread guard is set to {100 * MAX_SPREAD_R:.0f}% for this run. Every\n"
-              f"  refusal still shows in the 'since start:' tally.\n")
-        input("  Press Enter to run it anyway, or Ctrl+C to stop: ")
 
     if REPORT_ONLY:
         # --report is a question about history, not a trading session: no
@@ -1428,7 +1335,7 @@ def main():
         raise SystemExit("this account cannot trade (trade_allowed is false) — "
                          "on the terminal side that is usually the Algo Trading "
                          "button being off.")
-    print(f"symbol {SYMBOL} · chart TF {tf_name()} · risk {RISK_PCT}% "
+    print(f"symbol {SYMBOL} · chart TF {TIMEFRAME_MIN}m · risk {RISK_PCT}% "
           f"· {'DRY RUN — nothing is sent' if DRY_RUN else 'SENDING ORDERS'}")
     if not DRY_RUN:
         info = mt5.symbol_info(SYMBOL)
@@ -1453,7 +1360,7 @@ def main():
                   f"{len(holding)} position(s) at the broker; they are left "
                   f"alone and managed, not duplicated.")
 
-    tf = None if TIMEFRAME_SEC else mt5_timeframe(TIMEFRAME_MIN)
+    tf = mt5_timeframe(TIMEFRAME_MIN)
     # the analysis timeframe follows the captain's ladder from the chart we run
     # on — two rungs up, the middle one skipped
     cfg = Config(chart_minutes=TIMEFRAME_MIN, entry_mode=ENTRY_MODE)
@@ -1515,30 +1422,17 @@ def main():
         print("entry: a LIMIT resting on the zone (the book's way) — "
               "use --market to enter straight away instead.")
     if cfg.single_tf:
-        print(f"zones marked, confirmed and traded all on {tf_name()}")
+        print(f"zones marked, confirmed and traded all on {TIMEFRAME_MIN}m")
     else:
         print(f"zones marked on {SnrzEngine.analysis_minutes(TIMEFRAME_MIN)}m, "
               f"refined and traded on {TIMEFRAME_MIN}m")
 
     # warm up with history
-    if TIMEFRAME_SEC:
-        # Ticks, not bars -- 400 buckets is enough for the engine's 200-bar
-        # minimum without asking the terminal for hours of tick history.
-        warm_bars = sec_bars(SYMBOL, TIMEFRAME_SEC, 400)
-        rates = [{"time": c.time, "open": c.open, "high": c.high,
-                  "low": c.low, "close": c.close} for c in warm_bars]
-        if len(rates) < 200:
-            raise SystemExit(
-                f"only {len(rates)} {TIMEFRAME_SEC}-second bars could be built "
-                f"from tick history for {SYMBOL}.\nThe terminal keeps ticks for "
-                f"a limited window — open the chart once, or use a slower "
-                f"timeframe.")
-    else:
-        rates = mt5.copy_rates_from_pos(SYMBOL, tf, 1, 1000)
-        if rates is None or len(rates) < 200:
-            raise SystemExit(f"only {0 if rates is None else len(rates)} candles "
-                             f"available for {SYMBOL} on this timeframe. Open that "
-                             f"chart in the terminal once so it downloads history.")
+    rates = mt5.copy_rates_from_pos(SYMBOL, tf, 1, 1000)
+    if rates is None or len(rates) < 200:
+        raise SystemExit(f"only {0 if rates is None else len(rates)} candles "
+                         f"available for {SYMBOL} on this timeframe. Open that "
+                         f"chart in the terminal once so it downloads history.")
     # The warm-up already replays history to build the zones; counting what it
     # produces on the way past turns "it has not traded all night, is it
     # broken?" into a number available in the first second.
@@ -1624,13 +1518,7 @@ def main():
             except Exception as e:            # never let housekeeping kill the run
                 print(f"  (break-even check failed this pass: {e})")
 
-        if TIMEFRAME_SEC:
-            got = sec_bars(SYMBOL, TIMEFRAME_SEC, 3)
-            bars = ([{"time": got[-1].time, "open": got[-1].open,
-                      "high": got[-1].high, "low": got[-1].low,
-                      "close": got[-1].close}] if got else [])
-        else:
-            bars = mt5.copy_rates_from_pos(SYMBOL, tf, 1, 1)  # last CLOSED bar
+        bars = mt5.copy_rates_from_pos(SYMBOL, tf, 1, 1)  # last CLOSED bar
         if bars is None or len(bars) == 0:
             # The terminal drops the connection on its own now and then. Without
             # this the bot span forever on None and looked alive while doing
