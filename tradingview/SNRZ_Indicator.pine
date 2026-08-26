@@ -31,7 +31,7 @@
 //                  TP3 = the one beyond. 1R/2R/3R when no zone sits there.
 //  SCALP vs SWING (book): M5/M15 = SCALP · H1/H4/Daily = SWING.
 // ═══════════════════════════════════════════════════════════════════════════
-indicator("SNRZ Strategy [Zindan] v19.2", "SNRZ v19.2", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500, max_bars_back = 500)
+indicator("SNRZ Strategy [Zindan] v19.3", "SNRZ v19.3", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500, max_bars_back = 500)
 
 // ───────────────────────────── Inputs ──────────────────────────────────────
 grpZ  = "Zones (SNRZ)"
@@ -1437,12 +1437,22 @@ if showPanel and barstate.islast
     trendCol = inRange ? colGold : trendUp ? colBuy : trendDown ? colSell : colGold
     liveLtf = 0
     liveHtf = 0
+    // ...and how many of those are actually PAINTED. Measured over the
+    // holdout, 38% of live zones are hidden on every timeframe -- a plain
+    // FRESH zone is created and tracked but not drawn, because images 39/44
+    // say it gives no entry and cannot be a target. That is the right rule and
+    // it is also invisible, so a swing forms, a zone IS made for it, and the
+    // chart shows nothing. The count says so now instead of leaving it a
+    // mystery; the "زون‌های تازه" switch draws them.
+    hiddenN = 0
     for z in zones
         if not z.dead
             if z.htf
                 liveHtf += 1
             else
                 liveLtf += 1
+            if zoneHidden(z)
+                hiddenN += 1
     nOrd = 0
     nRun = 0
     for o in orders
@@ -1452,14 +1462,15 @@ if showPanel and barstate.islast
             nRun += 1
     posTxt = nOrd + nRun == 0 ? "— no setup right now —" :
              str.tostring(nOrd) + " limit waiting · " + str.tostring(nRun) + " running"
-    table.cell(info, 0, 0, "⚜  SNRZ v19.2 —  ZiNDAN", text_color = colGold, text_size = size.normal)
+    table.cell(info, 0, 0, "⚜  SNRZ v19.3 —  ZiNDAN", text_color = colGold, text_size = size.normal)
     table.cell(info, 0, 1, "The Gold Chaser", text_color = color.new(colGold, 35), text_size = size.tiny)
     table.cell(info, 0, 2, trendTxt, text_color = trendCol, text_size = size.small)
     // With singleTf on there IS no analysis timeframe, so the second half of
     // this line always read "+ 0 @ 15" -- which looks exactly like an analysis
     // pass that is drawing nothing. Nothing is wrong; there is simply no second
     // pass to report. Say so instead of printing a zero.
-    zonesTxt = singleTf ? "Zones: " + str.tostring(liveLtf) + " @ " + timeframe.period + "  (one timeframe)" : "Zones: " + str.tostring(liveLtf) + " @ " + timeframe.period + "  +  " + str.tostring(liveHtf) + " @ " + htfTF
+    hidTxt   = hiddenN > 0 ? "  ·  " + str.tostring(hiddenN) + " hidden" : ""
+    zonesTxt = (singleTf ? "Zones: " + str.tostring(liveLtf) + " @ " + timeframe.period : "Zones: " + str.tostring(liveLtf) + " @ " + timeframe.period + "  +  " + str.tostring(liveHtf) + " @ " + htfTF) + hidTxt
     table.cell(info, 0, 3, zonesTxt, text_color = color.new(color.white, 20), text_size = size.small)
     table.cell(info, 0, 4, "Position: " + posTxt, text_color = color.new(color.white, 20), text_size = size.small)
     // "why is there no new signal?" — this row answers it directly

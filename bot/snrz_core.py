@@ -184,6 +184,29 @@ class Config:
     pivot_htf: int = 8
     max_zones_ltf: int = 14
     max_zones_htf: int = 8
+    # MEASURED AND REJECTED -- kept as a knob and as a warning.
+    #
+    # The zone list sits at its cap on EVERY bar (measured: 14.0 of 14 on M1),
+    # so the eviction runs constantly, and it takes the OLDEST zone once
+    # nothing is dead. Over the holdout that threw away 1272 zones on M1 while
+    # they were still alive -- 168 I.PO2 and 437 I.VR/I.VS among them, the 2nd
+    # and 4th strongest setups the book has. Evicting the WEAKEST by image
+    # 54's ranking instead looks obviously right.
+    #
+    # It is not. A FRESH zone ranks weakest of all, and a zone can only BECOME
+    # a V.S/V.R or an inversion by surviving as FRESH first, so ranking alone
+    # deletes every zone at birth: M1 fell from 1108 trades to 85. Exempting
+    # the fresh ones restores the count and still loses money, and raising the
+    # cap loses as well (one lot, spread 0.14):
+    #                            M1 test        M5 test
+    #   cap 14, oldest (now)     -0.084R        +0.171R
+    #   cap 14, weakest-grown    -0.149R        +0.119R
+    #   cap 20, weakest-grown    -0.134R        +0.074R
+    #   cap 20, oldest           -0.134R        +0.132R
+    # Every variant is worse on both timeframes. Age is doing something that
+    # the strength ranking is not: a zone that has been on the chart a long
+    # time without being touched is one price has moved away from. Leave False.
+    evict_weakest: bool = False
     # A zone is killed by a BREAK, not by a clock. These two stay only for
     # anyone who wants the old behaviour back; both are off by default.
     expire_by_age: bool = False
@@ -737,7 +760,34 @@ class SnrzEngine:
         cap = self.cfg.max_zones_htf if htf else self.cfg.max_zones_ltf
         while sum(1 for z in self.zones if z.htf == htf) > cap:
             same = [i for i, z in enumerate(self.zones) if z.htf == htf]
-            victim = next((i for i in same if self.zones[i].dead), same[0])
+            # Dead zones go first -- they are finished either way. After that
+            # this took same[0], the OLDEST zone, which is not the same thing
+            # as the weakest. Measured over the holdout the list sits at its
+            # cap on EVERY bar, so this fires constantly: on M1 it threw away
+            # 1272 zones that were still alive, among them 168 I.PO2 and 437
+            # I.VR/I.VS -- the 2nd and 4th strongest setups the book has -- to
+            # make room for zones that are often plain FRESH ones that cannot
+            # be traded or even drawn.
+            #
+            # The book ranks them (image 54) and _rank_book already implements
+            # that order, so the cap uses it: weakest out first, and the oldest
+            # of the weakest when several tie.
+            victim = next((i for i in same if self.zones[i].dead), None)
+            if victim is None:
+                if self.cfg.evict_weakest:
+                    # A FRESH zone ranks weakest of all, and a zone can ONLY
+                    # become V.S/V.R or an inversion by surviving as FRESH
+                    # first. Ranking without this exception deletes every new
+                    # zone the moment it is born and starves the whole
+                    # pipeline -- M1 went from 1108 trades to 85.
+                    grown = [i for i in same
+                             if self.zones[i].state != State.FRESH
+                             or self.zones[i].srr or self.zones[i].fba]
+                    pool = grown if grown else same
+                    victim = max(pool, key=lambda i: (self._rank_book(self.zones[i]),
+                                                      -self.zones[i].born_index))
+                else:
+                    victim = same[0]
             self.zones.pop(victim)
 
     def _engulf_zone(self, series: List[Candle], p: int, is_high: bool,
