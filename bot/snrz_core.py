@@ -207,6 +207,25 @@ class Config:
     # the strength ranking is not: a zone that has been on the chart a long
     # time without being touched is one price has moved away from. Leave False.
     evict_weakest: bool = False
+    # What happens when a new zone lands on top of a live one. See _overlaps.
+    #   "keep_old"    first there keeps the band (what has always shipped)
+    #   "replace"     the newcomer wins and the old zone is killed
+    #   "keep_strong" image 54's ranking decides, ties to the incumbent
+    #
+    # MEASURED. Both alternatives lose (one lot, spread 0.14):
+    #                   M1 train / test        M5 train / test
+    #   keep_old        -0.030 / -0.084        +0.039 / +0.171   <- keep
+    #   replace         -0.014 / -0.102        +0.006 / +0.083
+    #   keep_strong     -0.028 / -0.081        +0.031 / +0.110
+    #
+    # "replace" is worse on three of four columns. "keep_strong" is a wash on
+    # M1 and costs a third of M5's edge, and the reason is structural: a zone
+    # about to be BORN can never rank better than 5, because ranks 2-4 are the
+    # inversions and a zone only becomes one by being broken, which takes time
+    # it has not had. So "keep the stronger" collapses into "keep the older"
+    # for almost every collision, and where it does differ -- a GAP or a
+    # continuation base landing on a fresh S/R -- it loses money.
+    overlap_policy: str = "keep_old"
     # A zone is killed by a BREAK, not by a clock. These two stay only for
     # anyone who wants the old behaviour back; both are off by default.
     expire_by_age: bool = False
@@ -719,12 +738,50 @@ class SnrzEngine:
         return outside / length * 100.0 >= self.cfg.breakout_pct
 
     # ── confirmation candles (SNRZ style) ──────────────────────────────────
-    def _overlaps(self, top: float, bot: float, htf: bool) -> bool:
-        # Checked WITHIN a set only: a small chart zone is expected to sit
-        # inside a big analysis zone. An exhausted zone reserves nothing —
-        # once a zone has had its touches the book says you redraw it.
-        return any(z.htf == htf and not z.dead and not (bot > z.top or top < z.bot)
-                   for z in self.zones)
+    def _new_rank(self, src: str, valid: bool) -> int:
+        """Where a zone about to be BORN would sit in image 54's order.
+
+        It can never be an inversion (2/3/4) -- a zone only becomes one by
+        being broken, which takes time it has not had. So the best a newcomer
+        can do is 5 (GAP or a continuation base), then 6 (born valid from a
+        pair), then 7. This is the whole reason "keep the stronger zone" turns
+        out not to be a different rule from "keep the older one"."""
+        if "GAP" in src or src in ("PBP", "DBD"):
+            return 5
+        return 6 if valid else 7
+
+    def _overlaps(self, top: float, bot: float, htf: bool,
+                  rank: int = 99) -> bool:
+        """Is this band already taken?
+
+        Checked WITHIN a set only: a small chart zone is expected to sit inside
+        a big analysis zone. An exhausted zone reserves nothing — once a zone
+        has had its touches the book says you redraw it.
+
+        WHO WINS when two zones want the same price is a real rule and the
+        book does not state it, so overlap_policy makes it a choice:
+
+          "keep_old"    the band belongs to whoever got there first; the new
+                        zone is simply never created. This is what shipped.
+          "replace"     the newer reading of the level wins and the old zone
+                        is killed — "a zone that lands on another zone means
+                        the old one is finished".
+          "keep_strong" whichever ranks better by image 54 keeps the band, and
+                        the loser is killed. Ties go to the incumbent.
+        """
+        hit = [z for z in self.zones
+               if z.htf == htf and not z.dead
+               and not (bot > z.top or top < z.bot)]
+        if not hit:
+            return False
+        pol = self.cfg.overlap_policy
+        if pol == "keep_old":
+            return True
+        if pol == "keep_strong" and all(self._rank_book(z) <= rank for z in hit):
+            return True                       # the incumbents are at least as strong
+        for z in hit:
+            z.dead = True                     # the newcomer takes the band
+        return False
 
     def _add_zone(self, top: float, bot: float, role: Role, atr: float,
                   idx: int, htf: bool, src: str = "pivot", valid: bool = False):
@@ -831,7 +888,7 @@ class SnrzEngine:
                 continue
             role = Role.RESISTANCE if is_high else Role.SUPPORT
             away = (hi_run - bot) if role == Role.SUPPORT else (top - lo_run)
-            if away < big or self._overlaps(top, bot, htf):
+            if away < big or self._overlaps(top, bot, htf, self._new_rank("engulf", False)):
                 continue
             # unpaired, so it is born FRESH: it still owes its two touches
             self._add_zone(top, bot, role, atr, idx, htf,
@@ -856,7 +913,7 @@ class SnrzEngine:
                 else:
                     top, bot = min(pc.open, pc.close), pc.low
                     away = hi_run - bot
-                if top > bot and away >= big and not self._overlaps(top, bot, htf):
+                if top > bot and away >= big and not self._overlaps(top, bot, htf, self._new_rank("mom", False)):
                     self._add_zone(top, bot,
                                    Role.RESISTANCE if is_high else Role.SUPPORT,
                                    atr, idx, htf, src="mom", valid=False)
@@ -1009,12 +1066,12 @@ class SnrzEngine:
                 # the old behaviour: one pivot, one zone
                 if is_high:
                     top, bot = pc.high, max(pc.open, pc.close)
-                    if (top - lo_run) >= big and not self._overlaps(top, bot, htf):
+                    if (top - lo_run) >= big and not self._overlaps(top, bot, htf, self._new_rank("pivot", False)):
                         self._add_zone(top, bot, Role.RESISTANCE, atr, idx, htf,
                                        src="pivot", valid=False)
                 else:
                     top, bot = min(pc.open, pc.close), pc.low
-                    if (hi_run - bot) >= big and not self._overlaps(top, bot, htf):
+                    if (hi_run - bot) >= big and not self._overlaps(top, bot, htf, self._new_rank("pivot", False)):
                         self._add_zone(top, bot, Role.SUPPORT, atr, idx, htf,
                                        src="pivot", valid=False)
                 swings.append(sw)
@@ -1063,7 +1120,7 @@ class SnrzEngine:
                 # even have.)
                 if cfg.line_single_levels:
                     role = Role.RESISTANCE if is_high else Role.SUPPORT
-                    if not self._overlaps(price, price, htf):
+                    if not self._overlaps(price, price, htf, self._new_rank("pivot", False)):
                         self._add_zone(price, price, role, atr, idx, htf,
                                        src="line R" if is_high else "line S",
                                        valid=False)
@@ -1096,7 +1153,7 @@ class SnrzEngine:
                 role = Role.SUPPORT if series[j].close > mid else Role.RESISTANCE
                 # the MATE came first, so a resistance mate makes it R+S
                 src = "R+S" if mate.is_high else "S+R"
-            if self._overlaps(top, bot, htf):
+            if self._overlaps(top, bot, htf, self._new_rank("GAP", True)):
                 continue
             # Master class image 36: "the difference from an ordinary support
             # is only that it has a First Movement and a Second Movement — and
@@ -1221,7 +1278,7 @@ class SnrzEngine:
             role = Role.RESISTANCE
         else:
             return False
-        if self._overlaps(top, bot, htf):
+        if self._overlaps(top, bot, htf, self._new_rank("PBP", True)):
             return False
         self._add_zone(top, bot, role, atr, idx, htf, src="GAP", valid=True)
         return True
@@ -1293,7 +1350,7 @@ class SnrzEngine:
             role, src = Role.RESISTANCE, "DBD"       # dump · base · dump
         else:
             return
-        if self._overlaps(top, bot, htf):
+        if self._overlaps(top, bot, htf, self._new_rank("pivot", True)):
             return
         # the base already IS the two movements, so it is born valid
         self._add_zone(top, bot, role, atr, idx, htf, src=src, valid=True)
