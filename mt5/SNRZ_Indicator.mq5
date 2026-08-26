@@ -130,6 +130,14 @@ input int    InpMaxOpen      = 1;     // How many zones may carry a live order/t
 // market does not reach before the trade runs out of bars. Both ends are cut.
 input double InpMinRR        = 2.5;   // The next zone must be at least this many R away
 input double InpMaxRR        = 8.0;   // ...and at most this many. 0 = no ceiling.
+// Bank the whole position at a fixed multiple of risk instead of at the next
+// zone. The zone test still has to pass, so this changes only WHERE money
+// comes off. The only rule in this file validated on held-out data: banking
+// earlier buys winners and sells profit, monotonically --
+//   1R ~50% green but the account LOSES;  2R ~28%;  3R ~20% and the most
+//   profit;  zone targets only 12-16% green. 3R wins on both halves.
+input bool   InpFixedRExit   = true;  // Take profit at a multiple of the stop, not at the next zone
+input double InpFixedRMult   = 3.0;   // ...how many times the stop distance
 // Enter AT MARKET the moment the setup prints, instead of resting a limit on
 // the zone. Measured per trade on real XAUUSD: M5 +0.206 -> +0.242R, M15
 // +0.082 -> +0.201R, M30 +0.096 -> +0.198R, and H1 from LOSING -0.070R to
@@ -1942,6 +1950,12 @@ int OnCalculate(const int rates_total,
                // position comes off at TP1.
                if(t2 <= 0.0) t2 = t1;
                if(t3 <= 0.0) t3 = t2;
+               if(InpFixedRExit)
+                 {
+                  double fx = isBuy ? entry + risk * InpFixedRMult
+                                    : entry - risk * InpFixedRMult;
+                  t1 = fx; t2 = fx; t3 = fx;
+                 }
                bool isPO2 = (g_zones[i].state == 2 && g_zones[i].touches == 1); // image 55
                g_zones[i].sigTouch = g_zones[i].touches;
                if(isBuy)

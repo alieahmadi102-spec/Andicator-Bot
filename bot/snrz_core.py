@@ -205,7 +205,31 @@ class Config:
     #             comes off at TP3. This is the closest a single 0.01 lot can
     #             get to scaling out — it banks nothing early, but it stops
     #             giving back what it has already won.
-    exit_policy: str = "scale"
+    # "fixed_r": bank the WHOLE position at fixed_r_mult x risk. The zone test
+    # still has to pass, so this changes only WHERE money comes off, not which
+    # setups are taken -- and it is the direct lever on how many trades finish
+    # green, because 48% of trades reach 1R (that is what triggers the
+    # break-even move) and then hand it back for nothing.
+    #
+    # The whole curve replicates on the holdout, which is why this one is
+    # believed where the zone-selection rules were not. Banking earlier buys
+    # winners and sells profit, monotonically:
+    #
+    #        M1 train / test          M5 train / test        green rate
+    #   1.0R  -0.097 / -0.074        -0.007 / +0.074         48-55%
+    #   1.5R  -0.008 / +0.037        +0.115 / +0.202         33-39%
+    #   2.0R  +0.044 / +0.065        +0.169 / +0.257         25-31%
+    #   3.0R  +0.126 / +0.095        +0.308 / +0.318         17-22%
+    #   zone  +0.062 / +0.140        +0.294 / +0.271         12-16%
+    #
+    # 3.0R pooled over both halves beats the zone targets on both timeframes
+    # (M1 +0.084 -> +0.117R, M5 +0.287 -> +0.311R) while lifting the share of
+    # trades that finish green by about half again, and taking slightly MORE
+    # trades rather than fewer. Where the peak sits exactly is not settled --
+    # training says 3.0R, the holdout leans 4-5R on M1 -- so 3.0 is chosen as
+    # the value both halves agree is good, not as a fitted optimum.
+    exit_policy: str = "fixed_r"
+    fixed_r_mult: float = 3.0
     # ...and which target finally closes a single position. Only read in
     # "ratchet" mode, where there is one position and therefore one exit.
     final_tp: int = 3
@@ -250,6 +274,24 @@ class Config:
     # market does not reach before the trade runs out of bars. So both ends are
     # cut. 0 disables the ceiling.
     max_rr: float = 8.0
+    # MEASURED AND REJECTED -- kept as a knob, and as a warning.
+    #
+    # A feature study over the TRAINING half found SRR/RSS zones much worse
+    # than the rest, consistently on both timeframes:
+    #     M1  not-SRR +0.151R (485)  vs  SRR -0.094R (275)
+    #     M5  not-SRR +0.396R (246)  vs  SRR +0.045R (100)
+    # Refusing them lifted training M1 from +0.062 to +0.150R. Then the
+    # HOLDOUT -- the last 30% of the data, never used to choose anything --
+    # said +0.024R against a +0.140R baseline. The effect did not exist
+    # outside the sample it was found in.
+    #
+    # This is what the split is for. Leave it True.
+    trade_srr: bool = True
+    # Also measured and rejected. R+R and R+S paired zones lost on both
+    # timeframes in training (M1 -0.216R / -0.295R) and skipping them helped
+    # there; on the holdout the combination went NEGATIVE (-0.046R). Sources
+    # named here are not traded. Empty = trade everything, which is correct.
+    skip_sources: tuple = ()
     # How the trade is entered.
     #
     #   "limit"  the book's own way (p41/p42): the order RESTS at the zone
@@ -408,6 +450,7 @@ class PendingOrder:
     tp2: float
     tp3: float
     rank: int = 99
+    feat: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -432,6 +475,12 @@ class Position:
     be: bool = False       # stop already moved to entry
     uid: int = 0           # the zone that produced this setup
     rank: int = 99         # image 54 strength at the moment it was armed
+    # Everything about this setup that was knowable AT ENTRY, recorded so the
+    # question "which zones are worth taking" can be answered from measurement
+    # instead of from the book's strength order -- which was checked against
+    # 3632 real trades and correlates with the outcome at -0.003, i.e. not at
+    # all. Written once when the setup is armed and never touched again.
+    feat: dict = field(default_factory=dict)
 
     @property
     def open(self) -> bool:
@@ -1289,6 +1338,13 @@ class SnrzEngine:
                else (rest[0] if rest else tp1))
         beyond = [x for x in rest if (x > tp2 if is_buy else x < tp2)]
         tp3 = beyond[0] if beyond else tp2
+        # Bank at a fixed multiple of risk instead of at the zone. The zone
+        # test above still had to pass, so this changes only WHERE the money
+        # comes off -- not which setups are taken.
+        if cfg.exit_policy == "fixed_r":
+            t = entry + risk * cfg.fixed_r_mult if is_buy \
+                else entry - risk * cfg.fixed_r_mult
+            return entry, sl, t, t, t
         # A single position has one exit, so the further targets collapse onto
         # whichever one is meant to close it.
         if cfg.exit_policy == "ratchet":
@@ -1324,6 +1380,53 @@ class SnrzEngine:
                       or (z.state == State.INVERTED and 1 <= z.touches <= 2))
                 out["armed" if ok else "touches"] += 1
         return out
+
+    def _features(self, z: "Zone", c: Candle, idx: int, atr: float,
+                  lv) -> dict:
+        """Everything about this setup that is knowable AT ENTRY.
+
+        The point is to be able to answer "which of these many zones is worth
+        taking" from measurement. The book's own strength order (image 54) was
+        checked against 3632 real trades and correlates with the outcome at
+        -0.003 -- it does not discriminate at all. So the engine currently has
+        no working way to tell a good zone from a bad one, and takes them in
+        whatever order they appear.
+
+        Recorded once, never updated: a feature that reads the zone's LATER
+        state would be looking at the future and every conclusion drawn from it
+        would be worthless."""
+        entry, sl, tp1 = lv[0], lv[1], lv[2]
+        risk = abs(entry - sl)
+        is_buy = z.role == Role.SUPPORT
+        gap = (c.close - z.top) if is_buy else (z.bot - c.close)
+        # how many OTHER live zones sit on this same band -- the console prints
+        # this as "(x2 on this band)" and it has never been tested
+        conf = sum(1 for o in self.zones
+                   if not o.dead and o.uid != z.uid
+                   and not (o.bot > z.top or o.top < z.bot))
+        # where this ATR sits against the recent past: quiet market or violent
+        recent = self._tr[-200:] if len(self._tr) >= 20 else []
+        pct = (100.0 * sum(1 for x in recent if x < atr) / len(recent)) \
+            if recent else 50.0
+        return {
+            "src": z.src.split()[0] if z.src else "pivot",
+            "kind": z.kind,
+            "side": "buy" if is_buy else "sell",
+            "height_atr": (z.top - z.bot) / atr if atr > 0 else 0.0,
+            "touches": z.touches,
+            "age": idx - z.born_index,
+            "gap_atr": gap / atr if atr > 0 else 0.0,
+            "stop_atr": risk / atr if atr > 0 else 0.0,
+            "confluence": conf,
+            "nested": 1 if self._nested(z) else 0,
+            "hour": (c.time // 3600) % 24 if c.time > 100000 else -1,
+            "atr_pct": pct,
+            "rr1": abs(tp1 - entry) / risk if risk > 0 else 0.0,
+            "flips": z.flips,
+            "fba": 1 if z.fba else 0,
+            "srr": 1 if z.srr else 0,
+            "htf": 1 if z.htf else 0,
+        }
 
     def why_blocked(self, z: "Zone", c: Candle, idx: int) -> str:
         """Why this zone did NOT produce a signal on this bar.
@@ -1414,7 +1517,7 @@ class SnrzEngine:
                 t = Position(idx, o.side, o.zone, o.po2, o.entry, o.sl,
                              o.tp1, o.tp2, o.tp3,
                              risk0=abs(o.entry - o.sl), uid=o.uid,
-                             rank=o.rank)
+                             rank=o.rank, feat=o.feat)
                 self.trades.append(t)
                 self.position = t
                 continue                          # order consumed
@@ -1710,6 +1813,10 @@ class SnrzEngine:
                 (z.state == State.INVERTED and 1 <= z.touches <= 2))
             if cfg.entries_htf_only and not z.htf:
                 tradable = False        # p39: entries only from W/D/4H/1H
+            if not cfg.trade_srr and z.srr:
+                tradable = False        # measured: the weakest class there is
+            if cfg.skip_sources and z.src.split()[0] in cfg.skip_sources:
+                tradable = False
             if cfg.require_nested and not self._nested(z):
                 tradable = False        # p14/p35: small zone inside big
             ok_trend = (not cfg.trend_filter) \
@@ -1742,7 +1849,7 @@ class SnrzEngine:
                                  # price is away, so the fill IS that second
                                  # touch -- the zone must have ONE touch now.
                                  z.state == State.INVERTED and z.touches == 1,
-                                 lv))
+                                 lv, self._features(z, c, idx, atr, lv)))
             z.in_zone_prev = in_zone
 
         # image 54: when more zones qualify than there are slots, the
@@ -1767,7 +1874,7 @@ class SnrzEngine:
         taken |= {(t.side, round(t.entry, 5))
                   for t in self.trades if not t.closed}
         room = max(0, cfg.max_open - live)
-        for rank, uid, side, kind, po2, lv in cand:
+        for rank, uid, side, kind, po2, lv, feat in cand:
             if room <= 0:
                 break
             entry, sl, tp1, tp2, tp3 = lv
@@ -1785,12 +1892,14 @@ class SnrzEngine:
                 # cannot also be the bar that resolves it -- _update_trades
                 # guards the entry bar the same way it does for a fill.
                 t = Position(idx, side, kind, po2, entry, sl, tp1, tp2, tp3,
-                             risk0=abs(entry - sl), uid=uid, rank=rank)
+                             risk0=abs(entry - sl), uid=uid, rank=rank,
+                             feat=feat)
                 self.trades.append(t)
                 self.position = t
             else:
                 self.orders.append(PendingOrder(idx, side, kind, po2, uid,
-                                                entry, sl, tp1, tp2, tp3, rank))
+                                                entry, sl, tp1, tp2, tp3, rank,
+                                                feat))
 
         # SRR / RSS qualification (book): a Support whose move broke >=2
         # Resistances becomes SRR (buy); a Resistance whose move broke >=2

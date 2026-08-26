@@ -1191,8 +1191,12 @@ def main():
     # They measure almost the same (M1 +0.082 vs +0.085R, M5 +0.287 vs
     # +0.282R), so this is not about returns -- it is about the console and
     # the reconciler describing the trade that actually exists.
+    #
+    # Only the SCALED plan needs replacing -- a fixed-R exit is one target at
+    # one price, which an undividable position runs exactly as written.
     info0 = mt5.symbol_info(SYMBOL)
-    if info0 is not None and split_volume(info0.volume_min, info0) is None:
+    if info0 is not None and cfg.exit_policy == "scale" \
+            and split_volume(info0.volume_min, info0) is None:
         cfg.exit_policy = "ratchet"
     if NO_TREND:
         cfg.trend_filter = False
@@ -1203,11 +1207,21 @@ def main():
         print("exit: ONE position, stop ratcheting up behind each target —\n"
               "      this balance cannot split a position into half/quarter/\n"
               "      quarter, so that is the plan, and the engine now runs it too.")
-    print("what to expect, measured on real XAUUSD (this is the strategy's\n"
-          "shape, not a fault): about half of all trades hit the stop, about a\n"
-          "third come back to break-even for nothing, and roughly one in eight\n"
-          "runs to target. It is profitable because the winners are large, so\n"
-          "a run of losses is normal and not a sign the bot is broken.")
+    if cfg.exit_policy == "fixed_r":
+        print(f"exit: the whole position comes off at {cfg.fixed_r_mult:g}x the "
+              f"stop distance.\n"
+              f"      Measured on data the choice was NOT made on: about one "
+              f"trade in five\n"
+              f"      finishes green (was one in eight), on the same number of "
+              f"trades.\n"
+              f"      Banking earlier buys more winners and sells profit -- at "
+              f"1R about half\n"
+              f"      finish green but the account LOSES money. 3R is where "
+              f"both halves agree.")
+    print("what to expect: roughly half of all trades still hit the stop and "
+          "about a\nthird come back to break-even for nothing. It is "
+          "profitable because the\nwinners are larger than the losers, so a "
+          "run of losses is normal here and\nis not a sign the bot is broken.")
     if ENTRY_MODE == "market":
         print("entry: AT MARKET the moment the setup prints — no resting order.\n"
               "       Measured better per trade (M5 +0.206 -> +0.242R, M15\n"

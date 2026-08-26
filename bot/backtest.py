@@ -15,6 +15,7 @@ from __future__ import annotations
 import csv
 import random
 import sys
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import Iterable, List
 
@@ -59,11 +60,16 @@ class Report:
         return self.r_total / self.resolved if self.resolved else 0.0
 
     def line(self, label: str) -> str:
-        return (f"{label:<28} signals={self.signals:<4} "
-                f"TP1={self.tp1:<3} TP2={self.tp2:<3} TP3={self.tp3:<3} "
-                f"BE={self.breakeven:<3} SL={self.stopped:<3} "
+        # "hit a target" is the number the user actually watches -- the
+        # break-even trades count as wins in win_rate because half the position
+        # was banked at 1R under the book's plan, but on an account that cannot
+        # split, a break-even trade pays nothing. Both are shown.
+        hit = self.tp1 + self.tp2 + self.tp3
+        green = 100.0 * hit / self.resolved if self.resolved else 0.0
+        return (f"{label:<28} n={self.resolved:<5} "
+                f"TP={hit:<4} BE={self.breakeven:<4} SL={self.stopped:<4} "
                 f"TO={self.timeout:<3} "
-                f"win={self.win_rate:5.1f}%  E={self.expectancy_r:+.2f}R")
+                f"green={green:5.1f}%  E={self.expectancy_r:+.3f}R")
 
 
 def realized_r(p, spread: float = 0.0) -> float:
@@ -160,6 +166,24 @@ def run(candles: Iterable[Candle], cfg: Config, spread: float = 0.0) -> Report:
     return rep
 
 
+# Everything in this project was measured in-sample until now: the same
+# candles were used to choose a rule and to judge it, across dozens of
+# experiments on one dataset. That is how a backtest flatters itself, and the
+# live account is out-of-sample. So the data is split once, here, and the last
+# slice is never used to choose anything.
+SPLIT_AT = 0.70
+
+
+def split_rows(rows: List[Candle], which: str) -> List[Candle]:
+    """"train" = the first 70%, where rules are discovered and chosen.
+    "test"  = the last 30%, touched only to confirm what training picked.
+    "all"   = everything, which is what every earlier measurement did."""
+    if which == "all":
+        return rows
+    cut = int(len(rows) * SPLIT_AT)
+    return rows[:cut] if which == "train" else rows[cut:]
+
+
 def read_csv(path: str) -> List[Candle]:
     """Reads both TradingView exports (a header row with named columns) and
     MetaTrader 5 exports (UTF-16, no header, date[ time],O,H,L,C,vol,spread)."""
@@ -186,9 +210,24 @@ def read_csv(path: str) -> List[Candle]:
         if len(f) < 5:
             continue
         try:
-            out.append(Candle(i, float(f[1]), float(f[2]), float(f[3]), float(f[4])))
+            o, h, lo, cl = (float(f[1]), float(f[2]), float(f[3]), float(f[4]))
         except ValueError:
             continue                                           # skip a header
+        # The real timestamp was being thrown away and the ROW INDEX used as
+        # the candle time. That is harmless for zone logic, which only ever
+        # compares bars to each other -- and it silently makes any question
+        # about the clock unanswerable, which is why hour-of-day had never
+        # been tested. "2026.01.02 01:05" parses fine.
+        t = i
+        try:
+            d, hm = f[0].strip().split()
+            y, mo, dy = (int(x) for x in d.replace("-", ".").split("."))
+            hh, mm = (int(x) for x in hm.split(":")[:2])
+            t = int(datetime(y, mo, dy, hh, mm,
+                             tzinfo=timezone.utc).timestamp())
+        except Exception:
+            pass                       # no parsable stamp: fall back to the row
+        out.append(Candle(t, o, h, lo, cl))
     if not out:
         raise SystemExit(f"no candles parsed from {path}")
     return out
@@ -237,11 +276,18 @@ def main() -> None:
         i = args.index("--spread")
         spread = float(args[i + 1])
         del args[i:i + 2]
+    which = "all"
+    if "--split" in args:
+        i = args.index("--split")
+        which = args[i + 1]
+        if which not in ("train", "test", "all"):
+            raise SystemExit("--split takes train, test or all")
+        del args[i:i + 2]
 
     if args and args[0] != "--synthetic":
-        rows = read_csv(args[0])
+        rows = split_rows(read_csv(args[0]), which)
         cfg = Config(chart_minutes=minutes_from_name(args[0]))
-        label = args[0] + (f" (spread {spread:g})" if spread else "")
+        label = f"{args[0]} [{which}]" + (f" sp{spread:g}" if spread else "")
         print(run(rows, cfg, spread).line(label))
         return
 
