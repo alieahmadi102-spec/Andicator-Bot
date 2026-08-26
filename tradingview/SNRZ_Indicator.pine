@@ -371,7 +371,7 @@ refreshZone(Zone z) =>
     // swing, or an analysis band tightened to the chart — kept its original
     // TOP. That is where the oversized boxes on the 15m and 1h charts came
     // from: the bottom followed the new level and the top stayed behind.
-    box.set_topleft(z.bx, box.get_left(z.bx), z.top)
+    box.set_lefttop(z.bx, box.get_left(z.bx), z.top)
     box.set_rightbottom(z.bx, bar_index + 10, z.bot)
     box.set_bgcolor(z.bx, hidden ? color.new(color.gray, 100) : c)
     box.set_border_color(z.bx, hidden ? color.new(color.gray, 100) : color.new(c, z.htf ? 15 : 45))
@@ -390,7 +390,7 @@ refreshZone(Zone z) =>
     // the wide analysis band the tight one was carved out of — outline only,
     // so you can still see where the 1-hour chart saw the level
     if not na(z.bxRaw)
-        box.set_topleft(z.bxRaw, box.get_left(z.bxRaw), z.rawTop)
+        box.set_lefttop(z.bxRaw, box.get_left(z.bxRaw), z.rawTop)
         box.set_rightbottom(z.bxRaw, bar_index + 10, z.rawBot)
         box.set_border_color(z.bxRaw, hidden ? color.new(color.gray, 100) : color.new(c, 60))
 
@@ -1298,7 +1298,7 @@ if showPanel and barstate.islast
             nRun += 1
     posTxt = nOrd + nRun == 0 ? "— no setup right now —" :
              str.tostring(nOrd) + " limit waiting · " + str.tostring(nRun) + " running"
-    table.cell(info, 0, 0, "⚜  SNRZ v13.0 —  ZiNDAN", text_color = colGold, text_size = size.normal)
+    table.cell(info, 0, 0, "⚜  SNRZ v15.0 —  ZiNDAN", text_color = colGold, text_size = size.normal)
     table.cell(info, 0, 1, "The Gold Chaser", text_color = color.new(colGold, 35), text_size = size.tiny)
     table.cell(info, 0, 2, trendTxt, text_color = trendCol, text_size = size.small)
     table.cell(info, 0, 3, "Zones: " + str.tostring(liveLtf) + " @ " + timeframe.period + "  +  " + str.tostring(liveHtf) + " @ " + htfTF, text_color = color.new(color.white, 20), text_size = size.small)
