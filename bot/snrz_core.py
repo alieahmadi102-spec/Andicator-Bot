@@ -236,6 +236,31 @@ class Config:
     #             comes off at TP3. This is the closest a single 0.01 lot can
     #             get to scaling out — it banks nothing early, but it stops
     #             giving back what it has already won.
+    # ── READ THIS BEFORE TRUSTING ANY NUMBER BELOW ───────────────────────
+    # Every figure in the comments under this line was measured with
+    # backtest.realized_r, which scores the BOOK's plan: half the position sold
+    # at the 1:1 line. The live bot holds ONE 0.01 lot and 0.01 is also the
+    # broker's minimum, so there is no half to sell -- a trade that reached 1R
+    # and came back to its break-even stop pays ZERO, not +0.5R. Break-even
+    # trades are about a quarter of all trades, so every number below is
+    # roughly +0.11R too high. backtest.single_r is the honest one.
+    #
+    # Corrected holdout, one lot, spread 0.14:
+    #     M1  +0.036R reported  ->  -0.084R real   (M1 has never been profitable)
+    #     M5  +0.281R reported  ->  +0.171R real
+    #
+    # Re-swept on the corrected metric (win% = closed in profit, one lot):
+    #            M1 train / test            M5 train / test
+    #   0.50R    53% -0.044 / 49% -0.095    51% -0.019 / 52% -0.015
+    #   1.00R    39% -0.037 / 38% -0.107    39% -0.023 / 40% -0.009
+    #   1.50R    34% -0.023 / 33% -0.081    34% +0.010 / 36% +0.053
+    #   2.00R    26% -0.034 / 25% -0.098    27% +0.020 / 31% +0.107
+    #   3.00R    18% -0.031 / 16% -0.110    20% +0.075 / 23% +0.160
+    # Two things this says that the old numbers hid: M1 is negative at EVERY
+    # exit distance on both halves, and win rate trades against money over the
+    # whole curve -- the highest win rate reachable is 58% (0.75R, no
+    # break-even) and it loses money there.
+    #
     # "fixed_r": bank the WHOLE position at fixed_r_mult x risk. The zone test
     # still has to pass, so this changes only WHERE money comes off, not which
     # setups are taken -- and it is the direct lever on how many trades finish
@@ -383,6 +408,17 @@ class Config:
     # CLOSES, so it finds levels a wick pivot cannot see.
     line_zones: bool = True
     # ...and on a line chart EVERY peak is an R and every trough an S
+    #
+    # Measured and KEPT despite looking weak. A zone-respect study (does price
+    # turn away from the band by 1 ATR before going through it by 1 ATR?) over
+    # the holdout ranked the sources:
+    #     DBD 63% · engulf 66% · mom 64% · S+S 60% · R+R 59% · line 55%
+    # against 50% for an undrawn price level -- and `line` draws more than half
+    # of all zones, so it looked like it was diluting everything. Turning it
+    # off costs money on both halves of M5 (+0.039 -> +0.067 train but
+    # +0.171 -> -0.002 on the holdout) and helps nothing. The respect ranking
+    # does not survive into the trade result; this is the same lesson as
+    # skip_sources below.
     line_single_levels: bool = True
     # The captain's 30m chart of an RBS: an R at 4,433.9 breaks upward, price
     # runs to 4,530 and pulls back to make an S at ~4,460 — ABOVE the broken

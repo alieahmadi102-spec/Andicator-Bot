@@ -36,7 +36,8 @@ class Report:
     breakeven: int = 0
     timeout: int = 0                   # ran out of bars without reaching either
     open_at_end: int = 0
-    r_total: float = 0.0               # realized R, from each trade's own levels
+    r_total: float = 0.0               # under the book's split-the-position plan
+    r_solo: float = 0.0                # ...and what ONE undividable lot collects
 
     @property
     def resolved(self) -> int:
@@ -63,6 +64,21 @@ class Report:
         TP1 was moved to a quarter of that."""
         return self.r_total / self.resolved if self.resolved else 0.0
 
+    @property
+    def expectancy_solo_r(self) -> float:
+        """What the LIVE bot collects, which is a different number.
+
+        The book's plan sells half the position at the 1:1 line. The live bot
+        trades one 0.01-lot position and 0.01 is also the broker's minimum, so
+        there is no half to sell: a trade that reached 1R, moved its stop to
+        entry and came back pays exactly ZERO, not +0.5R.
+
+        Every result this project has ever printed used the scaling number, and
+        break-even trades are a QUARTER of all trades, so every one of them was
+        reported about +0.11R too high -- enough to turn the real M1 result
+        from a loss into a profit on paper. This is the honest column."""
+        return self.r_solo / self.resolved if self.resolved else 0.0
+
     def line(self, label: str) -> str:
         # "hit a target" is the number the user actually watches -- the
         # break-even trades count as wins in win_rate because half the position
@@ -73,7 +89,8 @@ class Report:
         return (f"{label:<32} n={self.resolved:<5} "
                 f"TP={hit:<4} BE={self.breakeven:<4} SL={self.stopped:<4} "
                 f"TO={self.timeout:<3} "
-                f"green={green:5.1f}%  E={self.expectancy_r:+.3f}R")
+                f"green={green:5.1f}%  E={self.expectancy_solo_r:+.3f}R"
+                f"  (book plan {self.expectancy_r:+.3f}R)")
 
 
 def realized_r(p, spread: float = 0.0) -> float:
@@ -128,6 +145,35 @@ def realized_r(p, spread: float = 0.0) -> float:
     return paid - cost
 
 
+def single_r(p, spread: float = 0.0) -> float:
+    """What ONE undividable position collects — the live bot's real payout.
+
+    realized_r above scores the book's plan, which sells half the position at
+    the 1:1 line and moves the stop to entry. The live bot holds a single 0.01
+    lot and 0.01 is also the broker's minimum volume, so there is no half to
+    sell. The trade simply comes back to the break-even stop and closes for
+    NOTHING.
+
+    That difference is not small. Break-even trades are about a quarter of all
+    trades, each credited +0.5R it never received, so every figure this project
+    reported was roughly +0.11R too high. On M1 that is the whole result: the
+    holdout read +0.036R under the book's plan and is -0.084R for one lot."""
+    risk = p.risk0
+    if risk <= 0:
+        return 0.0
+    cost = spread / risk if spread > 0 else 0.0
+    if p.stat == -1:
+        return -1.0 - cost
+    sign = 1.0 if p.side == "buy" else -1.0
+    if p.peak >= 3:
+        px = p.tp3                     # closed at the final target
+    elif p.exit_px:
+        px = p.exit_px                 # stopped, break-even, or out of bars
+    else:
+        px = p.entry if p.be else p.sl
+    return sign * (px - p.entry) / risk - cost
+
+
 TF_MINUTES = {"M1": 1, "M5": 5, "M15": 15, "M30": 30,
               "H1": 60, "H4": 240, "Daily": 1440, "D1": 1440,
               # MT5 exports these too, and the launcher hands over whatever is
@@ -158,6 +204,7 @@ def run(candles: Iterable[Candle], cfg: Config, spread: float = 0.0) -> Report:
                 continue
             counted.add(key)
             rep.r_total += realized_r(p, spread)
+            rep.r_solo += single_r(p, spread)
             if p.stat == 3:
                 rep.tp3 += 1
             elif p.stat == 2:
@@ -322,6 +369,7 @@ def total(reports: List[Report]) -> Report:
         t.timeout += r.timeout
         t.open_at_end += r.open_at_end
         t.r_total += r.r_total
+        t.r_solo += r.r_solo
     return t
 
 
