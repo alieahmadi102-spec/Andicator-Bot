@@ -1,3 +1,5 @@
 __pycache__/
 *.pyc
 data/
+# runtime state the bot writes next to itself -- one per timeframe
+.snrz_ladder_*.json

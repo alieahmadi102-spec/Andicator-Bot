@@ -1178,11 +1178,36 @@ def main():
     # the analysis timeframe follows the captain's ladder from the chart we run
     # on — two rungs up, the middle one skipped
     cfg = Config(chart_minutes=TIMEFRAME_MIN, entry_mode=ENTRY_MODE)
+    # Which exit plan is this account physically able to run?
+    #
+    # place() already decides per trade: if the size cannot be divided into
+    # half / quarter / quarter it sends ONE position and ratchets the stop up
+    # behind the targets instead. But the ENGINE was left on "scale" whatever
+    # the account could do -- so on a balance that can only ever trade the
+    # minimum lot, the broker ran the ratchet while the engine's own copy of
+    # the trade ran the scaled plan. Every line the console printed about a
+    # running trade described a plan the account was not executing.
+    #
+    # They measure almost the same (M1 +0.082 vs +0.085R, M5 +0.287 vs
+    # +0.282R), so this is not about returns -- it is about the console and
+    # the reconciler describing the trade that actually exists.
+    info0 = mt5.symbol_info(SYMBOL)
+    if info0 is not None and split_volume(info0.volume_min, info0) is None:
+        cfg.exit_policy = "ratchet"
     if NO_TREND:
         cfg.trend_filter = False
         print("trend filter OFF — about 4x the trades, measured slightly "
               "lower quality each")
     engine = SnrzEngine(cfg)
+    if cfg.exit_policy == "ratchet":
+        print("exit: ONE position, stop ratcheting up behind each target —\n"
+              "      this balance cannot split a position into half/quarter/\n"
+              "      quarter, so that is the plan, and the engine now runs it too.")
+    print("what to expect, measured on real XAUUSD (this is the strategy's\n"
+          "shape, not a fault): about half of all trades hit the stop, about a\n"
+          "third come back to break-even for nothing, and roughly one in eight\n"
+          "runs to target. It is profitable because the winners are large, so\n"
+          "a run of losses is normal and not a sign the bot is broken.")
     if ENTRY_MODE == "market":
         print("entry: AT MARKET the moment the setup prints — no resting order.\n"
               "       Measured better per trade (M5 +0.206 -> +0.242R, M15\n"
