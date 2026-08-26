@@ -31,7 +31,7 @@
 //                  TP3 = the one beyond. 1R/2R/3R when no zone sits there.
 //  SCALP vs SWING (book): M5/M15 = SCALP · H1/H4/Daily = SWING.
 // ═══════════════════════════════════════════════════════════════════════════
-indicator("SNRZ Strategy [Zindan] v16", "SNRZ v16.0", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500, max_bars_back = 500)
+indicator("SNRZ Strategy [Zindan] v17", "SNRZ v17.0", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500, max_bars_back = 500)
 
 // ───────────────────────────── Inputs ──────────────────────────────────────
 grpZ  = "Zones (SNRZ)"
@@ -103,6 +103,11 @@ armWithinAtr   = input.float(2.0,  "اردر فقط وقتی قیمت تا ای�
 requireNested  = input.bool(false, "فقط زون چارتی که داخل زون تایم تحلیل است", group = grpS, tooltip = "کتاب ص۱۴: زون کوچک داخل زون بزرگ است. سخت‌گیرانه است — تعداد سیگنال را خیلی کم می‌کند.")
 entriesHtfOnly = input.bool(false, "ورود فقط از زون‌های تایم تحلیل",         group = grpS)
 rrTp1          = input.float(1.0,  "TP1 = چند برابر فاصله‌ی استاپ (کتاب ص۴۱: ۱:۱)", minval = 0.1, step = 0.05, group = grpS)
+baseZones      = input.bool(true,  "زونِ ادامه: Pump Base Pump / Dump Base Dump (عکس ۱۶/۱۷)", group = grpZ, tooltip = "عکس‌های ۱۶/۱۷ کتاب — **Pump Base Pump** و **Dump Base Dump**: یک حرکتِ قوی، بعد یک بیسِ فشرده‌ی خنثی، بعد ادامه‌ی همان حرکت. خودِ بیس زونِ ادامه است — بعد از پامپ زونِ خرید، بعد از دامپ زونِ فروش.\n\nبدون این، استراتژی در یک روندِ قوی هیچ چیزی برای معامله ندارد، چون قیمت هرگز به زون‌هایی که پشتِ سرش جا گذاشته برنمی‌گردد.\n\nدر ربات این تا نسخه‌ی ۱۶ **خاموش** بود و یک بار هم اجرا نشده بود. اندازه‌گیری: روی سود تقریباً بی‌اثر، حدود ۹٪ ستاپِ بیشتر.")
+baseImpulseATR = input.float(2.5, "…ایمپالس حداقل چند ATR باشد", minval = 0.5, step = 0.5, group = grpZ)
+baseImpulseBars= input.int(6,     "…در چند کندل", minval = 2, group = grpZ)
+baseMinBars    = input.int(4,     "…بیس حداقل چند کندل طول بکشد", minval = 2, group = grpZ)
+baseMaxATR     = input.float(1.2, "…و در چند ATR جا بماند", minval = 0.2, step = 0.1, group = grpZ)
 sweepGuard     = input.bool(true,  "بعد از شکار لیکوییدیتی، خلافش ترید نکن",  group = grpS, tooltip = "کتاب بخش لیکوییدیتی: «در طلا معمولاً اول لیکوییدیتی سمت فروش خورده می‌شود و بعد حرکت اصلی (~۸۰٪)». پس فروش درست بعد از زدنِ یک کف تازه، فروختنِ خودِ برگشت است. روی دیتای واقعی، اندیکاتور ۴ کندل بعد از کفِ ۳۹۴۳ سیگنال SELL داد و بازار ۶۰۰ دلار بالا رفت.")
 sweepBars      = input.int(40,     "…«کف/سقف تازه» یعنی اکسترممِ N کندل اخیر", minval = 10, group = grpS)
 sweepRecent    = input.int(10,     "…و در N کندل آخر زده شده باشد",          minval = 2,  group = grpS, tooltip = "گاردِ شکارِ لیکوییدیتی بر حسبِ **کندل** است، پس روی هر تایم‌فریم معنیِ متفاوتی دارد: «اکسترمِ ۴۰ کندلِ اخیر که در ۱۰ کندلِ آخر زده شده» روی M1 یعنی ۴۰ دقیقه — که مدام اتفاق می‌افتد و بیشترش نویز است — ولی روی M5 یعنی ۳٫۳ ساعت که اطلاعاتِ واقعی دارد.\n\n۹ حالت تست شد تا یک عدد پیدا شود که روی **هر دو** تایم‌فریم بهتر باشد؛ هر حالتی که M1 را بهتر کرد M5 را بدتر کرد. پس روی چارتِ ۱ دقیقه‌ای خودکار به ۳ کاهش می‌یابد (M1: ‎+۰٫۱۱۷ ← ‎+۰٫۱۳۴R با ۲۶٪ معامله‌ی بیشتر) و بالاتر از آن دست‌نخورده می‌ماند.")
@@ -340,10 +345,18 @@ zoneColor(Zone z) =>
 
 zoneText(Zone z) =>
     string base = na
+    // Image 44 names "PO2 Fresh" and "PO2 Inversion" as zones in their own
+    // right, and the ranking already treats them as the 2nd and 3rd strongest
+    // setups there are -- but the label never said so, so the one state the
+    // book calls the Power of Second Touch was drawn as a plain RBS / I.VR
+    // and was invisible on the chart. An inversion zone touched ONCE is
+    // exactly that state: the next touch is the second one. Its ORIGIN picks
+    // the name -- valid before the flip gives I.PO2, fresh gives PO2.
+    po2 = z.state == 2 and z.touches == 1
     if z.role == 1
-        base := z.state == 2 ? (z.wasValid ? "I.VR" : "RBS") : z.srr ? "SRR" : z.state == 1 ? "V.S" : "S"
+        base := z.state == 2 ? (po2 ? (z.wasValid ? "I.PO2" : "PO2") : (z.wasValid ? "I.VR" : "RBS")) : z.srr ? "SRR" : z.state == 1 ? "V.S" : "S"
     else
-        base := z.state == 2 ? (z.wasValid ? "I.VS" : "SBR") : z.srr ? "RSS" : z.state == 1 ? "V.R" : "R"
+        base := z.state == 2 ? (po2 ? (z.wasValid ? "I.PO2" : "PO2") : (z.wasValid ? "I.VS" : "SBR")) : z.srr ? "RSS" : z.state == 1 ? "V.R" : "R"
     if z.fba
         base := base + " FBA"
     if z.dead
@@ -821,6 +834,28 @@ if not na(plL)
     addSwing(false, plL, false, bar_index - pivotLtf, pivotLtf, atr, bodyHiL, bodyLoL, hiRunL, loRunL, bar_index * 8 + 0, engBullTL, engBullBL, momBodyL, momHiL, momLoL, false, stLoL, stBodyHiL)
 if not na(phL)
     addSwing(false, phL, true,  bar_index - pivotLtf, pivotLtf, atr, bodyHiL, bodyLoL, hiRunL, loRunL, bar_index * 8 + 1, engBearTL, engBearBL, momBodyL, momHiL, momLoL, false, stBodyLoL, stHiL)
+
+// Images 16/17 — Pump Base Pump / Dump Base Dump. A strong impulse, then a
+// tight sideways BASE, then the same move continues: the base is the
+// continuation zone. This needs no pivot, so it is checked every bar rather
+// than from addSwing. Same arithmetic as SnrzEngine._base_zone().
+// ta.* has to run on EVERY bar to stay consistent, so the readings are taken
+// unconditionally and only the decision is guarded.
+bTop = ta.highest(high, baseMinBars)
+bBot = ta.lowest(low,  baseMinBars)
+// ...and the impulse that led INTO it, the bars just before the base
+iTop = ta.highest(high, baseImpulseBars)[baseMinBars]
+iBot = ta.lowest(low,   baseImpulseBars)[baseMinBars]
+if baseZones
+    if not na(iTop) and not na(iBot) and bTop - bBot <= atr * baseMaxATR
+        rise = bTop - iBot
+        fall = iTop - bBot
+        need = atr * baseImpulseATR
+        int brole = rise >= need and rise >= fall ? 1 : fall >= need ? -1 : 0
+        if brole != 0 and not overlaps(bTop, bBot, false)
+            // the base already IS the two movements, so it is born VALID
+            zb = newZone(bTop, bBot, brole, false, bar_index * 8 + 6, atr, baseMinBars - 1, true)
+            array.push(zones, zb)
 
 // the LINE CHART's own zones — closes only, on the chart timeframe (image 31)
 if lineZones and not na(plLc)
@@ -1312,7 +1347,7 @@ if showPanel and barstate.islast
             nRun += 1
     posTxt = nOrd + nRun == 0 ? "— no setup right now —" :
              str.tostring(nOrd) + " limit waiting · " + str.tostring(nRun) + " running"
-    table.cell(info, 0, 0, "⚜  SNRZ v16.0 —  ZiNDAN", text_color = colGold, text_size = size.normal)
+    table.cell(info, 0, 0, "⚜  SNRZ v17.0 —  ZiNDAN", text_color = colGold, text_size = size.normal)
     table.cell(info, 0, 1, "The Gold Chaser", text_color = color.new(colGold, 35), text_size = size.tiny)
     table.cell(info, 0, 2, trendTxt, text_color = trendCol, text_size = size.small)
     table.cell(info, 0, 3, "Zones: " + str.tostring(liveLtf) + " @ " + timeframe.period + "  +  " + str.tostring(liveHtf) + " @ " + htfTF, text_color = color.new(color.white, 20), text_size = size.small)

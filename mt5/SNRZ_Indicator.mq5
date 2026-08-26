@@ -14,7 +14,7 @@
 //|   • One position at a time with SL / TP1 / TP2 / TP3 drawn       |
 //+------------------------------------------------------------------+
 #property copyright   "SNRZ (Zindan The Gold Chaser) — indicator port"
-#property version     "16.00"
+#property version     "17.00"
 #property description "SNRZ: chart zones AND analysis zones together (book p.41/p.44), one trade at a time"
 #property indicator_chart_window
 #property indicator_buffers 4
@@ -173,6 +173,18 @@ input double InpRrTp1         = 1.0;   // TP1 = this many times the stop distanc
 // Book, liquidity section: "in gold the sell-side liquidity is usually taken
 // first and THEN the real move - about 80% of the time". A sell placed right
 // after price has just swept a multi-week low is selling the reversal itself.
+// Images 16/17 -- Pump Base Pump / Dump Base Dump. A strong impulse, then a
+// tight sideways BASE, then the same move continues: the base itself is the
+// continuation zone, a buy zone after a pump and a sell zone after a dump.
+// Without it the strategy has nothing to trade in a strong trend, because
+// price never returns to the zones it left behind. This was switched OFF in
+// the bot until v16 and had literally never run; measured a wash on
+// expectancy and about 9% more setups.
+input bool   InpBaseZones    = true;  // Continuation zones: Pump Base Pump / Dump Base Dump
+input double InpBaseImpATR   = 2.5;   // ...the impulse must cover this many ATR
+input int    InpBaseImpBars  = 6;     // ...within this many bars
+input int    InpBaseMinBars  = 4;     // ...the base must last at least this long
+input double InpBaseMaxATR   = 1.2;   // ...and stay inside this many ATR
 input bool   InpSweepGuard    = true;  // Do not trade against a fresh liquidity sweep
 input int    InpSweepBars     = 40;    // ..."a fresh extreme" = the low/high of N bars
 // This is counted in BARS, so it means different things on different charts:
@@ -418,10 +430,16 @@ color ZoneColor(const SZone &z)
 string ZoneText(const SZone &z)
   {
    string base;
+   // Image 44 names "PO2 Fresh" and "PO2 Inversion" as zones in their own
+   // right, and the ranking already treats them as the 2nd and 3rd strongest
+   // setups -- but the label never said so, so the Power of Second Touch was
+   // drawn as a plain RBS / I.VR and was invisible. An inversion zone touched
+   // ONCE is that state: the next touch is the second. Origin picks the name.
+   bool po2 = (z.state == 2 && z.touches == 1);
    if(z.role == 1)
-      base = (z.state == 2 ? (z.wasValid ? "I.VR" : "RBS") : (z.srr ? "SRR" : (z.state == 1 ? "V.S" : "S")));
+      base = (z.state == 2 ? (po2 ? (z.wasValid ? "I.PO2" : "PO2") : (z.wasValid ? "I.VR" : "RBS")) : (z.srr ? "SRR" : (z.state == 1 ? "V.S" : "S")));
    else
-      base = (z.state == 2 ? (z.wasValid ? "I.VS" : "SBR") : (z.srr ? "RSS" : (z.state == 1 ? "V.R" : "R")));
+      base = (z.state == 2 ? (po2 ? (z.wasValid ? "I.PO2" : "PO2") : (z.wasValid ? "I.VS" : "SBR")) : (z.srr ? "RSS" : (z.state == 1 ? "V.R" : "R")));
    if(z.fba)
       base += " FBA";
    if(z.dead)
@@ -1617,6 +1635,40 @@ int OnCalculate(const int rates_total,
                                lHi, lLo, 0.0, 1.0, 0.0, 0.0, 0.0, true);
                  }
               }
+           }
+        }
+
+      //--- Images 16/17: Pump Base Pump / Dump Base Dump.
+      //    Needs no pivot, so it is checked every bar rather than from
+      //    AddSwingZone. Same arithmetic as SnrzEngine._base_zone().
+      if(InpBaseZones && bar >= InpBaseMinBars + InpBaseImpBars + 1)
+        {
+         int bStart = bar - InpBaseMinBars + 1;          // the base
+         double bTop = high[bStart], bBot = low[bStart];
+         for(int k = bStart; k <= bar; k++)
+           {
+            bTop = MathMax(bTop, high[k]);
+            bBot = MathMin(bBot, low[k]);
+           }
+         if(bTop - bBot <= atr * InpBaseMaxATR)
+           {
+            int iStart = bStart - InpBaseImpBars;        // the impulse into it
+            double iTop = high[iStart], iBot = low[iStart];
+            for(int k = iStart; k < bStart; k++)
+              {
+               iTop = MathMax(iTop, high[k]);
+               iBot = MathMin(iBot, low[k]);
+              }
+            double rise = bTop - iBot;
+            double fall = iTop - bBot;
+            double need = atr * InpBaseImpATR;
+            int brole = 0;
+            if(rise >= need && rise >= fall) brole = 1;      // pump base pump
+            else if(fall >= need)            brole = -1;     // dump base dump
+            if(brole != 0 && !Overlaps(bTop, bBot, false))
+               // the base already IS the two movements, so it is born VALID
+               AddZone(bTop, bBot, brole, bar, atr, time[bStart], time[bar],
+                       false, true);
            }
         }
 

@@ -86,11 +86,26 @@ class Zone:
     def kind(self) -> str:
         # book naming: a broken zone keeps its ORIGIN name
         # broken Valid Resistance = I.VR (buy), broken Valid Support = I.VS (sell)
+        # Image 44 names "PO2 Fresh" and "PO2 Inversion" as zones in their own
+        # right. The engine knew about them -- _rank_book ranks them 2nd and
+        # 3rd strongest -- but kind() never said so, so they were drawn on the
+        # chart as plain RBS / I.VR and the one state the book calls the
+        # Power of Second Touch was invisible.
+        #
+        # An inversion zone that has been touched ONCE is exactly that state:
+        # the next touch is the second one. Origin decides which of the two it
+        # is -- a level that was VALID before it flipped gives I.PO2, one that
+        # was fresh gives PO2.
+        po2 = self.state == State.INVERTED and self.touches == 1
         if self.role == Role.SUPPORT:
             if self.state == State.INVERTED:
+                if po2:
+                    return "I.PO2" if self.was_valid else "PO2"
                 return "I.VR" if self.was_valid else "RBS"
             return "SRR" if self.srr else ("V.S" if self.state == State.VALID else "S")
         if self.state == State.INVERTED:
+            if po2:
+                return "I.PO2" if self.was_valid else "PO2"
             return "I.VS" if self.was_valid else "SBR"
         return "RSS" if self.srr else ("V.R" if self.state == State.VALID else "R")
 
