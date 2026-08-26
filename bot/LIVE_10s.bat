@@ -1,6 +1,6 @@
 @echo off
 REM ===========================================================================
-REM  SNRZ -- 10 SECOND chart (built from ticks, NOT measured), REAL ORDERS.
+REM  SNRZ -- 10 SECOND scalp (from ticks, NOT measured), REAL ORDERS.
 REM
 REM  Double-click this file. It checks the things that actually go wrong,
 REM  names the one that failed, and holds the window open so you can read it.
@@ -11,10 +11,10 @@ REM ===========================================================================
 
 setlocal
 cd /d "%~dp0"
-title SNRZ 10 SECOND chart (built from ticks, NOT measured)
+title SNRZ 10 SECOND scalp (from ticks, NOT measured)
 
 echo.
-echo   SNRZ -- 10 SECOND chart (built from ticks, NOT measured)
+echo   SNRZ -- 10 SECOND scalp (from ticks, NOT measured)
 echo   ------------------------------------
 
 REM --- 1) does python actually RUN? ------------------------------------------
@@ -52,10 +52,16 @@ if not defined MT5RUN goto :no_mt5
 echo   [ok] MetaTrader 5 is running
 echo.
 
+REM  The spread guard is raised to 25%% for this one. At 10 seconds the stop
+REM  is only about $0.79, so a $0.14 spread is 18%% of every trade's R and the
+REM  normal 10%% guard refuses all of them. Raising it lets the trades happen;
+REM  it does not make them profitable. The bot prints the full arithmetic and
+REM  waits for Enter before it sends anything.
+
 REM --- 5) go ------------------------------------------------------------------
 REM  Extra options can be typed after the file name, e.g.
 REM      LIVE_10s.bat --symbol XAUUSD.m
-python mt5_runner.py --tf 10s --live %*
+python mt5_runner.py --tf 10s --max-spread 0.25 --live %*
 goto :done
 
 :no_python

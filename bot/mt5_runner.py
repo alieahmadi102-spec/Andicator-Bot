@@ -1293,7 +1293,7 @@ def read_args():
                                                 # measurably less profit
     """
     global SYMBOL, TIMEFRAME_MIN, RISK_PCT, DRY_RUN, MAGIC, NO_TREND, MAX_RISK_PCT
-    global ENTRY_MODE, REPORT_ONLY, TIMEFRAME_SEC, TP_MULT
+    global ENTRY_MODE, REPORT_ONLY, TIMEFRAME_SEC, TP_MULT, MAX_SPREAD_R
     args = sys.argv[1:]
     i = 0
     while i < len(args):
@@ -1330,6 +1330,11 @@ def read_args():
                 SYMBOL = v
             elif a == "--risk":
                 RISK_PCT = float(v)
+            elif a == "--max-spread":
+                # what share of a trade's R the spread may eat before the
+                # setup is refused. A 10-second chart needs this raised or it
+                # takes nothing at all -- see the seconds-mode banner.
+                MAX_SPREAD_R = float(v)
             elif a in ("--max-risk", "--risk-cap"):
                 MAX_RISK_PCT = float(v)
             else:
@@ -1360,28 +1365,33 @@ def main():
                          f"Market Watch — some brokers use XAUUSD.fix / .zero.")
 
     if TIMEFRAME_SEC:
-        # Said once, loudly, at the top -- because unlike every other
-        # timeframe in this project there is no measurement behind it.
+        # Said once, loudly -- because unlike every other timeframe here there
+        # is no measurement behind it, and the arithmetic that CAN be done
+        # says it loses.
         est = 2.23 * (TIMEFRAME_SEC / 60.0) ** 0.58
+        sp_r = 0.14 / est
+        tp = TP_MULT or Config().fixed_r_mult
+        need = (1.0 + sp_r) / (1.0 + tp)          # win rate to break even
         print("\n" + "!" * 64)
-        print(f"  {TIMEFRAME_SEC}-SECOND CHART — built from ticks, and NOT measured.")
+        print(f"  {TIMEFRAME_SEC}-SECOND SCALP — built from ticks, and NOT measured.")
         print("!" * 64)
         print(f"  MT5 has no timeframe under a minute, so these candles are\n"
-              f"  aggregated from tick data here. That part works. The problem\n"
-              f"  is arithmetic:\n")
-        print(f"  This strategy's stop scales with the square root of the bar\n"
-              f"  length — measured across M1/M5/M15/M30/H1 it fits\n"
-              f"      stop = 2.23 x minutes^0.58\n"
-              f"  which at {TIMEFRAME_SEC} seconds is about ${est:.2f}.")
-        print(f"\n  The spread is around $0.14, so it takes roughly "
-              f"{100 * 0.14 / est:.0f}% of EVERY\n  trade's R before the market "
-              f"moves at all. For comparison M1\n  pays 6.6% and earns only "
-              f"+0.096R — so the extra spread here is\n  larger than the whole "
-              f"edge of the fastest timeframe that HAS\n  been measured.")
-        print(f"\n  The spread guard (limit {100 * MAX_SPREAD_R:.0f}%) will "
-              f"therefore refuse nearly\n  all of them, and the 'refused: "
-              f"spread too wide' tally will say so.\n")
-        input("  Press Enter if you want to run it anyway, or Ctrl+C: ")
+              f"  aggregated from ticks here. That part works and is tested.\n"
+              f"  What follows is arithmetic, not opinion:\n")
+        print(f"  The stop scales with the square root of the bar length —\n"
+              f"  fitted across M1/M5/M15/M30/H1 as stop = 2.23 x minutes^0.58,\n"
+              f"  which at {TIMEFRAME_SEC}s is about ${est:.2f}. A $0.14 spread is then\n"
+              f"  {100 * sp_r:.0f}% of EVERY trade's R, before the market moves at all.\n")
+        print(f"  Taking profit at {tp:g}R, that needs a {100 * need:.0f}% win rate just to\n"
+              f"  break even. At {tp:g}R the 1-minute chart — the fastest one that\n"
+              f"  HAS been measured — wins 25-27%, and the trend across\n"
+              f"  timeframes runs DOWNWARD as they get shorter.\n")
+        print(f"  Cutting the target further makes this worse, not better: a\n"
+              f"  smaller target does not shrink the spread, so it raises the\n"
+              f"  win rate you need rather than lowering it.\n")
+        print(f"  The spread guard is set to {100 * MAX_SPREAD_R:.0f}% for this run. Every\n"
+              f"  refusal still shows in the 'since start:' tally.\n")
+        input("  Press Enter to run it anyway, or Ctrl+C to stop: ")
 
     if REPORT_ONLY:
         # --report is a question about history, not a trading session: no

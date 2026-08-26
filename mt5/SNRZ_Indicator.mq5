@@ -14,7 +14,7 @@
 //|   • One position at a time with SL / TP1 / TP2 / TP3 drawn       |
 //+------------------------------------------------------------------+
 #property copyright   "SNRZ (Zindan The Gold Chaser) — indicator port"
-#property version     "18.00"
+#property version     "19.00"
 #property description "SNRZ: chart zones AND analysis zones together (book p.41/p.44), one trade at a time"
 #property indicator_chart_window
 #property indicator_buffers 4
@@ -137,7 +137,7 @@ input double InpMaxRR        = 8.0;   // ...and at most this many. 0 = no ceilin
 //   1R ~50% green but the account LOSES;  2R ~28%;  3R ~20% and the most
 //   profit;  zone targets only 12-16% green. 3R wins on both halves.
 input bool   InpFixedRExit   = true;  // Take profit at a multiple of the stop, not at the next zone
-input double InpFixedRMult   = 3.0;   // ...how many times the stop distance
+input double InpFixedRMult   = 2.0;   // ...how many times the stop distance
 // Enter AT MARKET the moment the setup prints, instead of resting a limit on
 // the zone. Measured per trade on real XAUUSD: M5 +0.206 -> +0.242R, M15
 // +0.082 -> +0.201R, M30 +0.096 -> +0.198R, and H1 from LOSING -0.070R to

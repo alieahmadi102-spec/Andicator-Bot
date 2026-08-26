@@ -260,7 +260,13 @@ class Config:
     # training says 3.0R, the holdout leans 4-5R on M1 -- so 3.0 is chosen as
     # the value both halves agree is good, not as a fitted optimum.
     exit_policy: str = "fixed_r"
-    fixed_r_mult: float = 3.0
+    # 2.0 by choice, not by measurement. 3.0 is better in all four measured
+    # columns (M1 +0.145/+0.096 and M5 +0.257/+0.367, against 2.0's
+    # +0.089/+0.036 and +0.150/+0.281) -- but 2.0 is the fastest value that is
+    # still positive in every one of them, and it wins about half again as
+    # many trades: 25-33% green against 17-23%. That trade is the account
+    # owner's to make and this is the setting they picked. --tp N moves it.
+    fixed_r_mult: float = 2.0
     # ...and which target finally closes a single position. Only read in
     # "ratchet" mode, where there is one position and therefore one exit.
     final_tp: int = 3
