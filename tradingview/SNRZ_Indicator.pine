@@ -31,7 +31,7 @@
 //                  TP3 = the one beyond. 1R/2R/3R when no zone sits there.
 //  SCALP vs SWING (book): M5/M15 = SCALP · H1/H4/Daily = SWING.
 // ═══════════════════════════════════════════════════════════════════════════
-indicator("SNRZ Strategy [Zindan] v19.1", "SNRZ v19.1", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500, max_bars_back = 500)
+indicator("SNRZ Strategy [Zindan] v19.2", "SNRZ v19.2", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500, max_bars_back = 500)
 
 // ───────────────────────────── Inputs ──────────────────────────────────────
 grpZ  = "Zones (SNRZ)"
@@ -127,6 +127,22 @@ colRes   = input.color(color.new(#f23645, 88), "Fresh Resistance",       group =
 colSupV  = input.color(color.new(#089981, 72), "VALID Support / SRR",    group = grpV)
 colResV  = input.color(color.new(#f23645, 72), "VALID Resistance / RSS", group = grpV)
 colInv   = input.color(color.new(#d4af37, 74), "Inversion zone (gold)",  group = grpV)
+// One colour per zone NAME, not per role. Five colours across eleven names
+// meant an I.PO2 -- the second-strongest setup in the book's own ranking --
+// was painted the same gold as an ordinary SBR, so the chart could not be read
+// without squinting at the label. The hues follow the ranking: PO2 family
+// brightest, then the valid zones, then the plain inversions, then S/R last.
+colPO2i  = input.color(color.new(#ff9100, 62), "I.PO2  (2nd touch, was valid)", group = grpV)
+colPO2   = input.color(color.new(#ffc400, 66), "PO2    (2nd touch, was fresh)", group = grpV)
+colIVR   = input.color(color.new(#7c4dff, 72), "I.VR   (valid R broke -> BUY)", group = grpV)
+colIVS   = input.color(color.new(#d500f9, 72), "I.VS   (valid S broke -> SELL)", group = grpV)
+colRBS   = input.color(color.new(#00b8d4, 78), "RBS    (plain R broke -> BUY)", group = grpV)
+colSBR   = input.color(color.new(#ff6d00, 78), "SBR    (plain S broke -> SELL)", group = grpV)
+colSRR   = input.color(color.new(#00e676, 74), "SRR    (S that broke 2 R)", group = grpV)
+colRSS   = input.color(color.new(#ff1744, 74), "RSS    (R that broke 2 S)", group = grpV)
+colFBA   = input.color(color.new(#ffffff, 80), "FBA    (false-breakout area)", group = grpV)
+perName  = input.bool(true, "یک رنگ جدا برای هر نوع زون", group = grpV, tooltip = "خاموش که باشد به همان پنج رنگ قدیمی برمی‌گردد: ساپورت/رزیستنسِ فرش، ساپورت/رزیستنسِ ولید، و طلاییِ اینورژن.")
+labelSize = input.string("normal", "اندازه‌ی متنِ اسمِ زون", options = ["tiny", "small", "normal", "large"], group = grpV)
 colBuy   = input.color(#00c853, "BUY color",  group = grpV)
 colSell  = input.color(#ff1744, "SELL color", group = grpV)
 colGold  = input.color(#d4af37, "Accent (Zindan gold)", group = grpV)
@@ -347,8 +363,25 @@ type Zone
 
 var zones = array.new<Zone>()
 
+// The name decides the colour, so the same rules that pick the LABEL pick the
+// paint. Kept in step with zoneText() below — if one gains a name the other
+// has to as well.
 zoneColor(Zone z) =>
-    z.state == 2 ? colInv : z.role == 1 ? (z.state == 1 or z.srr ? colSupV : colSup) : (z.state == 1 or z.srr ? colResV : colRes)
+    color c = z.state == 2 ? colInv : z.role == 1 ? (z.state == 1 or z.srr ? colSupV : colSup) : (z.state == 1 or z.srr ? colResV : colRes)
+    if perName
+        po2 = z.state == 2 and z.touches == 1
+        if z.fba
+            c := colFBA
+        else if z.state == 2 and po2
+            c := z.wasValid ? colPO2i : colPO2
+        else if z.state == 2
+            c := z.role == 1 ? (z.wasValid ? colIVR : colRBS) : (z.wasValid ? colIVS : colSBR)
+        else if z.srr
+            c := z.role == 1 ? colSRR : colRSS
+    c
+
+txtSize() =>
+    labelSize == "tiny" ? size.tiny : labelSize == "small" ? size.small : labelSize == "large" ? size.large : size.normal
 
 zoneText(Zone z) =>
     string base = na
@@ -401,7 +434,7 @@ refreshZone(Zone z) =>
     box.set_border_style(z.bx, z.state == 0 and not z.srr ? line.style_dashed : line.style_solid)
     box.set_text(z.bx, hidden ? "" : zoneText(z))
     box.set_text_color(z.bx, hidden ? color.new(color.gray, 100) : color.new(c, 0))
-    box.set_text_size(z.bx, size.small)
+    box.set_text_size(z.bx, txtSize())
     box.set_text_halign(z.bx, text.align_right)
     // ...and the midline needs BOTH ends, for the same reason. Setting only
     // xy2 left the left end at the old middle, which is why the dashed line
@@ -706,6 +739,16 @@ reanchorFlipped(float _price, bool _isHigh, float _atr, bool _htf) =>
                         z.bot := _price - half
                         z.bornBar := bar_index
                         z.awaitPull := -1
+                        // ...and the DRAWING has to move with it. refreshZone
+                        // preserves whatever left edge the box already has, so
+                        // a re-anchored zone kept the left edge of the level it
+                        // used to be — hundreds of bars back, at a price it no
+                        // longer sits at. That is the over-long box: the band
+                        // was stretched across history it was never at.
+                        box.set_left(z.bx, bar_index)
+                        line.set_xy1(z.mid, bar_index, (z.top + z.bot) / 2)
+                        if not na(z.bxRaw)
+                            box.set_left(z.bxRaw, bar_index)
 
 // one swing -> at most one zone, drawn with its mate when pairing is on
 addSwing(bool _htf, float _price, bool _isHigh, int _bar, int _back, float _atr, float _bodyHi, float _bodyLo, float _hiRun, float _loRun, int _uid, float _engT, float _engB, float _momBody, float _momHi, float _momLo, bool _line, float _stLo, float _stHi) =>
@@ -1099,6 +1142,19 @@ for z in zones
                 z.awaitPull := flipNeedsPullback ? bar_index : -1
                 z.pullHi := high
                 z.pullLo := low
+                // The moment a support becomes a resistance it is a
+                // NEW zone with a new name and now a new colour, so
+                // its box starts HERE. It used to keep the left edge
+                // of the level it replaced, which drew the band back
+                // across a stretch of chart where it was acting as
+                // the opposite kind of zone. The box ONLY -- bornBar
+                // stays put, because snrz_core does not reset it on a
+                // flip (only on a re-anchor) and the 3-touch counting
+                // and the birth-bar guard both read it.
+                box.set_left(z.bx, bar_index)
+                line.set_xy1(z.mid, bar_index, (z.top + z.bot) / 2)
+                if not na(z.bxRaw)
+                    box.set_left(z.bxRaw, bar_index)
                 z.touches := 0
                 z.sigTouch := -1
                 z.srr := false
@@ -1138,6 +1194,19 @@ for z in zones
                 z.awaitPull := flipNeedsPullback ? bar_index : -1
                 z.pullHi := high
                 z.pullLo := low
+                // The moment a support becomes a resistance it is a
+                // NEW zone with a new name and now a new colour, so
+                // its box starts HERE. It used to keep the left edge
+                // of the level it replaced, which drew the band back
+                // across a stretch of chart where it was acting as
+                // the opposite kind of zone. The box ONLY -- bornBar
+                // stays put, because snrz_core does not reset it on a
+                // flip (only on a re-anchor) and the 3-touch counting
+                // and the birth-bar guard both read it.
+                box.set_left(z.bx, bar_index)
+                line.set_xy1(z.mid, bar_index, (z.top + z.bot) / 2)
+                if not na(z.bxRaw)
+                    box.set_left(z.bxRaw, bar_index)
                 z.touches := 0
                 z.sigTouch := -1
                 z.srr := false
@@ -1383,7 +1452,7 @@ if showPanel and barstate.islast
             nRun += 1
     posTxt = nOrd + nRun == 0 ? "— no setup right now —" :
              str.tostring(nOrd) + " limit waiting · " + str.tostring(nRun) + " running"
-    table.cell(info, 0, 0, "⚜  SNRZ v19.1 —  ZiNDAN", text_color = colGold, text_size = size.normal)
+    table.cell(info, 0, 0, "⚜  SNRZ v19.2 —  ZiNDAN", text_color = colGold, text_size = size.normal)
     table.cell(info, 0, 1, "The Gold Chaser", text_color = color.new(colGold, 35), text_size = size.tiny)
     table.cell(info, 0, 2, trendTxt, text_color = trendCol, text_size = size.small)
     // With singleTf on there IS no analysis timeframe, so the second half of
