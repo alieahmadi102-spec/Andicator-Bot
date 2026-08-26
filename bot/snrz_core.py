@@ -69,6 +69,13 @@ class Zone:
     uid: int = 0
     htf: bool = False           # analysis-timeframe zone (book: the TP2 zone)
     born_index: int = 0
+    # The bar the zone was drawn FROM, for the drawing only. born_index is the
+    # bar it was CONFIRMED on -- a pivot needs pivot_ltf bars to confirm, and a
+    # re-anchor sets born_index to the confirmation bar too -- and the touch
+    # counting, the age and the birth-bar guard all read it, so it cannot be
+    # moved. Keeping the two apart is what lets a box start on the swing that
+    # made it instead of somewhere in open space.
+    origin_index: int = 0
     in_zone_prev: bool = False
     src: str = "pivot"          # how it was drawn: S+S, R+R, S+R, R+S, pivot
     false_breaks: int = 0       # how many times it was broken and respected again
@@ -805,7 +812,8 @@ class SnrzEngine:
         return False
 
     def _add_zone(self, top: float, bot: float, role: Role, atr: float,
-                  idx: int, htf: bool, src: str = "pivot", valid: bool = False):
+                  idx: int, htf: bool, src: str = "pivot", valid: bool = False,
+                  origin: int | None = None):
         # The captain draws the ANALYSIS zone wide and then tightens it on the
         # middle timeframe, so the two sets do not share one cap.
         # A zone drawn to COVER its candles needs more room than a hairline
@@ -843,6 +851,7 @@ class SnrzEngine:
         self.zones.append(Zone(top, bot, role,
                                state=State.VALID if valid else State.FRESH,
                                uid=self._zone_seq, htf=htf, born_index=idx,
+                               origin_index=idx if origin is None else origin,
                                src=src + (" ref" if top != raw_top or bot != raw_bot
                                           else ""),
                                raw_top=raw_top, raw_bot=raw_bot,
@@ -925,7 +934,8 @@ class SnrzEngine:
                 continue
             # unpaired, so it is born FRESH: it still owes its two touches
             self._add_zone(top, bot, role, atr, idx, htf,
-                           src="engulf", valid=False)
+                           src="engulf", valid=False,
+                           origin=None if htf else p)
             return
 
         # Image 43: a single MOMENTUM candle is a zone in its own right — "in
@@ -949,10 +959,11 @@ class SnrzEngine:
                 if top > bot and away >= big and not self._overlaps(top, bot, htf, self._new_rank("mom", False)):
                     self._add_zone(top, bot,
                                    Role.RESISTANCE if is_high else Role.SUPPORT,
-                                   atr, idx, htf, src="mom", valid=False)
+                                   atr, idx, htf, src="mom", valid=False,
+                                   origin=None if htf else p)
 
     def _reanchor_flipped(self, price: float, is_high: bool, atr: float,
-                          idx: int, htf: bool):
+                          idx: int, htf: bool, bar: int | None = None):
         """A broken level only becomes tradable where the PULLBACK turns.
 
         The captain's 30m chart: an R at 4,433.9 breaks upward, price runs to
@@ -1021,6 +1032,7 @@ class SnrzEngine:
             # zone that moved kept its original box top. Fixed there.
             z.top, z.bot = top, bot
             z.born_index = idx
+            z.origin_index = bar if bar is not None else idx
             z.await_pull = -1
             # ...and "pull pull pull" was just noise on the label
             if not z.src.endswith(" pull"):
@@ -1094,19 +1106,22 @@ class SnrzEngine:
             price = pc.close if use_close else (pc.high if is_high else pc.low)
             sw = Swing(price, is_high, p)
             if cfg.flip_needs_pullback:
-                self._reanchor_flipped(price, is_high, atr, idx, htf)
+                self._reanchor_flipped(price, is_high, atr, idx, htf,
+                                       None if htf else p)
             if not cfg.pair_zones:
                 # the old behaviour: one pivot, one zone
                 if is_high:
                     top, bot = pc.high, max(pc.open, pc.close)
                     if (top - lo_run) >= big and not self._overlaps(top, bot, htf, self._new_rank("pivot", False)):
                         self._add_zone(top, bot, Role.RESISTANCE, atr, idx, htf,
-                                       src="pivot", valid=False)
+                                       src="pivot", valid=False,
+                                       origin=None if htf else p)
                 else:
                     top, bot = min(pc.open, pc.close), pc.low
                     if (hi_run - bot) >= big and not self._overlaps(top, bot, htf, self._new_rank("pivot", False)):
                         self._add_zone(top, bot, Role.SUPPORT, atr, idx, htf,
-                                       src="pivot", valid=False)
+                                       src="pivot", valid=False,
+                                       origin=None if htf else p)
                 swings.append(sw)
                 continue
 
@@ -1156,7 +1171,8 @@ class SnrzEngine:
                     if not self._overlaps(price, price, htf, self._new_rank("pivot", False)):
                         self._add_zone(price, price, role, atr, idx, htf,
                                        src="line R" if is_high else "line S",
-                                       valid=False)
+                                       valid=False,
+                                       origin=None if htf else p)
                 continue
 
             # The captain's rule, in his own words: the four PAIRED ways of
@@ -1246,7 +1262,8 @@ class SnrzEngine:
                 top, bot = self._cover_candles(series, (mate.index, p),
                                                top, bot, cfg.zone_prev_bars)
             self._add_zone(top, bot, role, atr, idx, htf,
-                           src=("line " + src) if use_close else src, valid=True)
+                           src=("line " + src) if use_close else src, valid=True,
+                           origin=None if htf else p)
 
     def _push_htf(self, c: Candle) -> bool:
         """Aggregate chart candles into analysis candles. Returns True on the
