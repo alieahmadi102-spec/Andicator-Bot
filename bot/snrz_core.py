@@ -160,10 +160,26 @@ class Config:
     # the next chart zone instead of preferring an analysis one. Nothing else
     # in the rules changes: the same five ways of drawing a zone, the same
     # entries, the same targets.
+    # Also re-tested from that same live BUY: M5 correctly refused it as
+    # counter-trend while M1 took it, which suggested letting the higher
+    # timeframe set the trend. Measured, it is worse on both -- M1 +0.096 ->
+    # +0.084 and M5 +0.367 -> +0.185 on the holdout. The switch also brings a
+    # whole second set of zones with it, so it is not a clean test of the trend
+    # alone, but the combination is clearly rejected.
     single_tf: bool = True
     chart_minutes: int = 0
     htf_rungs: int = 2
     htf_mult: int = 3
+    # Swept at last (3/5/7/9/12), train and holdout, after a live M1 BUY into a
+    # falling market raised the question of whether the structure is too noisy:
+    #        M1 train / test        M5 train / test
+    #   3    +0.148 / -0.046        +0.201 / +0.136
+    #   5    +0.145 / +0.096        +0.257 / +0.367   <- keep
+    #   7    +0.146 / +0.170        +0.200 / +0.217
+    #   9    +0.140 / +0.076        -0.082 / +0.126
+    # 7 looks better on M1's holdout but not on its training half, and it
+    # clearly costs M5 (+0.367 -> +0.217). 5 is best on M5 on both halves and
+    # is a wash on M1, so the value that was here all along is the right one.
     pivot_ltf: int = 5          # smaller -> more chart zones -> more signals
     pivot_htf: int = 8
     max_zones_ltf: int = 14
