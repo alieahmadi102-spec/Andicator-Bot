@@ -122,6 +122,29 @@ REPORT_ONLY = False
 # this project.
 TIMEFRAME_SEC = 0
 
+# Where profit is taken, as a multiple of the stop. --tp N moves it.
+#
+# This is the scalping dial, and it was measured across both halves of both
+# timeframes. Taking profit sooner buys winners and sells money, cleanly and
+# monotonically -- every column moves the same way:
+#
+#             M1 train      M1 test      M5 train      M5 test     green
+#   0.75R   -0.046       -0.142       -0.038       +0.075       53-63%
+#   1.0R    -0.051       -0.103       -0.035       +0.079       49-55%
+#   1.5R    +0.038       +0.005       +0.085       +0.199       35-40%
+#   2.0R    +0.089       +0.036       +0.150       +0.281       25-33%
+#   3.0R    +0.145       +0.096       +0.257       +0.367       17-23%
+#
+# So a 58% win rate is available and it LOSES money: at 0.75R you win 58% of
+# 0.75R and lose 42% of a full R, which is +0.015R before the spread and
+# negative after it. The edge of this strategy is in letting a winner reach
+# 3R, and scalping inverts exactly that.
+#
+# 2.0R is the fastest setting that is still positive in all four columns --
+# about half again as many winning trades as 3R. Below 2.0R, M1 goes
+# negative on data it was not fitted on.
+TP_MULT = 0.0        # 0 = use the engine's default (3.0)
+
 # Why setups do not become orders, counted.
 #
 # Every reason this file declines to send already printed a line and scrolled
@@ -1265,9 +1288,12 @@ def read_args():
                                                 # instead of entering at market
         python mt5_runner.py --report           # score this bot's OWN closed
                                                 # trades against the backtest
+        python mt5_runner.py --tf 5 --tp 2      # take profit at 2x the stop:
+                                                # ~50% more winning trades,
+                                                # measurably less profit
     """
     global SYMBOL, TIMEFRAME_MIN, RISK_PCT, DRY_RUN, MAGIC, NO_TREND, MAX_RISK_PCT
-    global ENTRY_MODE, REPORT_ONLY, TIMEFRAME_SEC
+    global ENTRY_MODE, REPORT_ONLY, TIMEFRAME_SEC, TP_MULT
     args = sys.argv[1:]
     i = 0
     while i < len(args):
@@ -1276,6 +1302,11 @@ def read_args():
             DRY_RUN = False
         elif a == "--no-trend":
             NO_TREND = True
+        elif a == "--tp":
+            # where to take profit, as a multiple of the stop. Measured on
+            # both halves of both timeframes -- see FIXED_R_NOTE below.
+            i += 1
+            TP_MULT = float(args[i])
         elif a == "--report":
             REPORT_ONLY = True
         elif a == "--limit":
@@ -1416,6 +1447,8 @@ def main():
     # the analysis timeframe follows the captain's ladder from the chart we run
     # on — two rungs up, the middle one skipped
     cfg = Config(chart_minutes=TIMEFRAME_MIN, entry_mode=ENTRY_MODE)
+    if TP_MULT > 0:
+        cfg.fixed_r_mult = TP_MULT
     # Which exit plan is this account physically able to run?
     #
     # place() already decides per trade: if the size cannot be divided into
