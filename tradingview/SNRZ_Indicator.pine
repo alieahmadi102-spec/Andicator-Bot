@@ -31,7 +31,7 @@
 //                  TP3 = the one beyond. 1R/2R/3R when no zone sits there.
 //  SCALP vs SWING (book): M5/M15 = SCALP · H1/H4/Daily = SWING.
 // ═══════════════════════════════════════════════════════════════════════════
-indicator("SNRZ Strategy [Zindan] v19.3", "SNRZ v19.3", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500, max_bars_back = 500)
+indicator("SNRZ Strategy [Zindan] v19.4", "SNRZ v19.4", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500, max_bars_back = 500)
 
 // ───────────────────────────── Inputs ──────────────────────────────────────
 grpZ  = "Zones (SNRZ)"
@@ -143,6 +143,8 @@ colRSS   = input.color(color.new(#ff1744, 74), "RSS    (R that broke 2 S)", grou
 colFBA   = input.color(color.new(#ffffff, 80), "FBA    (false-breakout area)", group = grpV)
 perName  = input.bool(true, "یک رنگ جدا برای هر نوع زون", group = grpV, tooltip = "خاموش که باشد به همان پنج رنگ قدیمی برمی‌گردد: ساپورت/رزیستنسِ فرش، ساپورت/رزیستنسِ ولید، و طلاییِ اینورژن.")
 labelSize = input.string("normal", "اندازه‌ی متنِ اسمِ زون", options = ["tiny", "small", "normal", "large"], group = grpV)
+showZonePrice = input.bool(true, "قیمتِ زون را کنارِ اسمش بنویس", group = grpV, tooltip = "وقتی ده تا باکس روی هم چیده شده‌اند، فقط اسم («I.VS») نمی‌گوید کدام کدام است. با این گزینه کفـسقفِ خودِ باند نوشته می‌شود و مستقیم با محورِ قیمت تطبیق می‌خورد.")
+markOrigin = input.bool(true, "مبدأِ زون را روی چارت علامت بزن", group = grpV, tooltip = "یک نشانه سرِ همان کندلی که زون از آن کشیده شده. باکس از همان‌جا شروع می‌شود، ولی وقتی باکس درازِ است شروعش گم می‌شود؛ این نشانه می‌گوید «از اینجا آمده».")
 colBuy   = input.color(#00c853, "BUY color",  group = grpV)
 colSell  = input.color(#ff1744, "SELL color", group = grpV)
 colGold  = input.color(#d4af37, "Accent (Zindan gold)", group = grpV)
@@ -353,6 +355,11 @@ type Zone
     box   bx
     box   bxRaw      //  that outline (na while the zone was never refined)
     line  mid
+    // A short vertical tick standing on the candle the zone was drawn FROM.
+    // A box is a horizontal band; with a dozen of them on the chart there is
+    // nothing tying any one of them back to the high or low that made it, and
+    // once the box is long its own left edge is off-screen. This is that link.
+    line  org
     // How far price has travelled since this zone broke — the Big Movement the
     // re-anchor waits for. Kept PER ZONE and extended every bar, because
     // ta.highest() cannot do this job: there is one internal state per call
@@ -408,7 +415,16 @@ zoneText(Zone z) =>
     // carrying for two hundred candles
     if newBars > 0 and not z.dead and bar_index - z.bornBar <= newBars
         base := "🆕 " + base
-    z.htf ? base + " ·" + htfTF : base
+    if z.htf
+        base := base + " ·" + htfTF
+    // The band's own price range. With a dozen boxes stacked up the chart the
+    // NAME alone does not say which one is which -- two I.VS labels sitting
+    // four dollars apart are indistinguishable, and the box has no visual link
+    // to the swing it came from. Printing the range makes every box readable
+    // straight off the price axis.
+    if showZonePrice
+        base := base + "  " + str.tostring(z.bot, format.mintick) + "–" + str.tostring(z.top, format.mintick)
+    base
 
 zoneHidden(Zone z) =>
     // images 39/44: a plain FRESH zone gives no entry and cannot be a target,
@@ -442,6 +458,12 @@ refreshZone(Zone z) =>
     line.set_xy1(z.mid, line.get_x1(z.mid), (z.top + z.bot) / 2)
     line.set_xy2(z.mid, bar_index + 10, (z.top + z.bot) / 2)
     line.set_color(z.mid, hidden ? color.new(color.gray, 100) : color.new(c, 55))
+    // the origin tick follows the band's height and takes the zone's own
+    // colour, so a glance says both "it came from here" and "it is this one"
+    if not na(z.org)
+        line.set_xy1(z.org, line.get_x1(z.org), z.top)
+        line.set_xy2(z.org, line.get_x2(z.org), z.bot)
+        line.set_color(z.org, hidden ? color.new(color.gray, 100) : color.new(c, 0))
     // the wide analysis band the tight one was carved out of — outline only,
     // so you can still see where the 1-hour chart saw the level
     if not na(z.bxRaw)
@@ -533,13 +555,17 @@ newZone(float _top, float _bot, int _role, bool _htf, int _uid, float _atr, int 
     if wasRef
         bxr := box.new(x1, rawT, bar_index + 10, rawB, border_color = color.new(color.gray, 60), bgcolor = color.new(color.gray, 100), border_style = line.style_dotted)
     md = line.new(x1, (t + b) / 2, bar_index + 10, (t + b) / 2, style = line.style_dashed, color = color.new(color.gray, 55))
+    // the origin tick: a stub standing on the swing candle the zone came from
+    line og = na
+    if markOrigin
+        og := line.new(x1, t, x1, b, width = 3, color = color.new(color.gray, 40))
     // a paired zone already HAS its two movements (p35), so it is born VALID
     //                                    touches=0, sigTouch=-1
     // sigTouch is "the touch count this zone has already produced an order
     // for", so it must start at a value no touch count can equal. Born at 0 it
     // matched the zone's own 0 touches and the zone was blocked from arming
     // for its entire life — every zone, from the moment it was drawn.
-    Zone.new(t, b, _role, _paired ? 1 : 0, 0, -1, 0, 0, _uid, _htf, false, false, false, _paired, 0, false, -1, 0, bar_index, false, -1, rawT, rawB, wasRef, bx, bxr, md, na, na)
+    Zone.new(t, b, _role, _paired ? 1 : 0, 0, -1, 0, 0, _uid, _htf, false, false, false, _paired, 0, false, -1, 0, bar_index, false, -1, rawT, rawB, wasRef, bx, bxr, md, og, na, na)
 
 // Overlap is checked WITHIN a set only — a small chart zone is expected to sit
 // inside a big analysis zone. An exhausted zone reserves nothing: the book says
@@ -713,7 +739,7 @@ extendSeg(bool _htf, int _back) =>
 // revisits — is the buy. So a flipped zone waits here for the first swing of
 // the matching kind on the correct side of the break, and MOVES onto it. The
 // zone keeps its uid and wasValid, so it is still named I.VR / RBS as before.
-reanchorFlipped(float _price, bool _isHigh, float _atr, bool _htf) =>
+reanchorFlipped(float _price, bool _isHigh, float _atr, bool _htf, int _bar) =>
     if flipNeedsPullback and array.size(zones) > 0
         for i = 0 to array.size(zones) - 1
             Zone z = array.get(zones, i)
@@ -745,14 +771,23 @@ reanchorFlipped(float _price, bool _isHigh, float _atr, bool _htf) =>
                         // used to be — hundreds of bars back, at a price it no
                         // longer sits at. That is the over-long box: the band
                         // was stretched across history it was never at.
-                        box.set_left(z.bx, bar_index)
-                        line.set_xy1(z.mid, bar_index, (z.top + z.bot) / 2)
+                        // ...to the SWING, not to bar_index. A pivot is
+                        // only confirmed pivotLtf bars after it prints, so
+                        // anchoring to "now" started the box in open space
+                        // with no high or low under it -- which is exactly
+                        // what "I cannot tell which zone belongs where" looks
+                        // like. _bar is the swing's own bar.
+                        box.set_left(z.bx, _bar)
+                        line.set_xy1(z.mid, _bar, (z.top + z.bot) / 2)
                         if not na(z.bxRaw)
-                            box.set_left(z.bxRaw, bar_index)
+                            box.set_left(z.bxRaw, _bar)
+                        if not na(z.org)
+                            line.set_x1(z.org, _bar)
+                            line.set_x2(z.org, _bar)
 
 // one swing -> at most one zone, drawn with its mate when pairing is on
 addSwing(bool _htf, float _price, bool _isHigh, int _bar, int _back, float _atr, float _bodyHi, float _bodyLo, float _hiRun, float _loRun, int _uid, float _engT, float _engB, float _momBody, float _momHi, float _momLo, bool _line, float _stLo, float _stHi) =>
-    reanchorFlipped(_price, _isHigh, _atr, _htf)
+    reanchorFlipped(_price, _isHigh, _atr, _htf, _bar)
     mate = findMate(_htf, _price, _bar, _atr, _line)
     mi   = pairZones ? mate : -1
     // an if-block, NOT a ternary: Pine evaluates both sides of `?:`, so an
@@ -1147,14 +1182,15 @@ for z in zones
                 // its box starts HERE. It used to keep the left edge
                 // of the level it replaced, which drew the band back
                 // across a stretch of chart where it was acting as
-                // the opposite kind of zone. The box ONLY -- bornBar
-                // stays put, because snrz_core does not reset it on a
-                // flip (only on a re-anchor) and the 3-touch counting
-                // and the birth-bar guard both read it.
-                box.set_left(z.bx, bar_index)
-                line.set_xy1(z.mid, bar_index, (z.top + z.bot) / 2)
-                if not na(z.bxRaw)
-                    box.set_left(z.bxRaw, bar_index)
+                // the opposite kind of zone -- so it is RECOLOURED, and
+                // v19.2 also dragged its box to the break bar. That was
+                // wrong: the break is confirmed fbaBars after it happens
+                // and lands nowhere in particular, so I.VS and I.PO2 boxes
+                // began in open space with no high or low under them. The
+                // band still sits at the price the level was BORN at, and
+                // that is where its box and its origin tick belong. When
+                // the pullback prints, reanchorFlipped moves all three
+                // onto the new swing together.
                 z.touches := 0
                 z.sigTouch := -1
                 z.srr := false
@@ -1199,14 +1235,15 @@ for z in zones
                 // its box starts HERE. It used to keep the left edge
                 // of the level it replaced, which drew the band back
                 // across a stretch of chart where it was acting as
-                // the opposite kind of zone. The box ONLY -- bornBar
-                // stays put, because snrz_core does not reset it on a
-                // flip (only on a re-anchor) and the 3-touch counting
-                // and the birth-bar guard both read it.
-                box.set_left(z.bx, bar_index)
-                line.set_xy1(z.mid, bar_index, (z.top + z.bot) / 2)
-                if not na(z.bxRaw)
-                    box.set_left(z.bxRaw, bar_index)
+                // the opposite kind of zone -- so it is RECOLOURED, and
+                // v19.2 also dragged its box to the break bar. That was
+                // wrong: the break is confirmed fbaBars after it happens
+                // and lands nowhere in particular, so I.VS and I.PO2 boxes
+                // began in open space with no high or low under them. The
+                // band still sits at the price the level was BORN at, and
+                // that is where its box and its origin tick belong. When
+                // the pullback prints, reanchorFlipped moves all three
+                // onto the new swing together.
                 z.touches := 0
                 z.sigTouch := -1
                 z.srr := false
@@ -1462,7 +1499,7 @@ if showPanel and barstate.islast
             nRun += 1
     posTxt = nOrd + nRun == 0 ? "— no setup right now —" :
              str.tostring(nOrd) + " limit waiting · " + str.tostring(nRun) + " running"
-    table.cell(info, 0, 0, "⚜  SNRZ v19.3 —  ZiNDAN", text_color = colGold, text_size = size.normal)
+    table.cell(info, 0, 0, "⚜  SNRZ v19.4 —  ZiNDAN", text_color = colGold, text_size = size.normal)
     table.cell(info, 0, 1, "The Gold Chaser", text_color = color.new(colGold, 35), text_size = size.tiny)
     table.cell(info, 0, 2, trendTxt, text_color = trendCol, text_size = size.small)
     // With singleTf on there IS no analysis timeframe, so the second half of
