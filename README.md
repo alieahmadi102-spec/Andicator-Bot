@@ -4,12 +4,12 @@
 
 | فاز | خروجی | وضعیت |
 |---|---|---|
-| ۱ | اندیکاتور TradingView (Pine Script v6) | ✅ آماده — `tradingview/SNRZ_Indicator.pine` (نسخه‌ی **۱۵٫۰**) |
-| ۲ | اندیکاتور MetaTrader 5 (MQL5) | ✅ آماده — `mt5/SNRZ_Indicator.mq5` (نسخه‌ی **۱۵٫۰**) |
+| ۱ | اندیکاتور TradingView (Pine Script v6) | ✅ آماده — `tradingview/SNRZ_Indicator.pine` (نسخه‌ی **۱۶٫۰**) |
+| ۲ | اندیکاتور MetaTrader 5 (MQL5) | ✅ آماده — `mt5/SNRZ_Indicator.mq5` (نسخه‌ی **۱۶٫۰**) |
 | ۳ | ربات معاملاتی واقعی (MT5) | ✅ آماده — `bot/`، اجرا با `LIVE_*.bat` |
 
 > ### 🔄 اول مطمئن شو نسخه‌ی جدید را گذاشته‌ای
-> در پنل باید بنویسد **`SNRZ v15.0`**. اگر نه: در Pine Editor **کل** متن قبلی
+> در پنل باید بنویسد **`SNRZ v16.0`**. اگر نه: در Pine Editor **کل** متن قبلی
 > را پاک کن، فایل جدید را پیست کن، **Save** و بعد **Add to chart**.
 
 ---

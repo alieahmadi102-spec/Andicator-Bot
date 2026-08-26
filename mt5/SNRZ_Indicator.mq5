@@ -14,7 +14,7 @@
 //|   • One position at a time with SL / TP1 / TP2 / TP3 drawn       |
 //+------------------------------------------------------------------+
 #property copyright   "SNRZ (Zindan The Gold Chaser) — indicator port"
-#property version     "15.00"
+#property version     "16.00"
 #property description "SNRZ: chart zones AND analysis zones together (book p.41/p.44), one trade at a time"
 #property indicator_chart_window
 #property indicator_buffers 4
@@ -175,6 +175,13 @@ input double InpRrTp1         = 1.0;   // TP1 = this many times the stop distanc
 // after price has just swept a multi-week low is selling the reversal itself.
 input bool   InpSweepGuard    = true;  // Do not trade against a fresh liquidity sweep
 input int    InpSweepBars     = 40;    // ..."a fresh extreme" = the low/high of N bars
+// This is counted in BARS, so it means different things on different charts:
+// "a fresh 40-bar extreme touched within 10 bars" is 40 minutes of M1, where
+// it happens constantly and is mostly noise, and 3.3 hours of M5, where it
+// carries real information. Nine variants were searched for one value that
+// beats the current one on BOTH timeframes and every one that helped M1 hurt
+// M5, so the 1-minute chart loosens it automatically (pooled +0.117 ->
+// +0.134R with 26% more trades) and everything above is left alone.
 input int    InpSweepRecent   = 10;    // ...and it was made within the last N bars
 input bool   InpShowPosition = true;  // Draw Entry / SL / TP1-3 of the last setup
 
@@ -1755,7 +1762,8 @@ int OnCalculate(const int rates_total,
             hiW = MathMax(hiW, high[k]);
            }
          double loR = low[bar], hiR = high[bar];
-         for(int k = MathMax(0, bar - InpSweepRecent + 1); k <= bar; k++)
+         int recentBars = (PeriodSeconds(_Period) <= 60) ? 3 : InpSweepRecent;
+         for(int k = MathMax(0, bar - recentBars + 1); k <= bar; k++)
            {
             loR = MathMin(loR, low[k]);
             hiR = MathMax(hiR, high[k]);

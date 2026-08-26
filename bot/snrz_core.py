@@ -411,7 +411,11 @@ class Config:
     # 3942 bottom and the market then ran 600 points the other way.
     sweep_guard: bool = True
     sweep_bars: int = 40         # "a fresh extreme" = the low/high of this many bars
-    sweep_recent: int = 10       # ...and it was made within this many bars
+    # ...and it was made within this many bars. Set from chart_minutes in
+    # SnrzEngine.__init__ -- see the note there for why one number cannot serve
+    # both M1 and M5.
+    sweep_recent: int = 10
+    sweep_recent_fast: int = 3   # what a 1-minute chart uses instead
     # Master class images 16/17 — "Pump Base Pump" and "Dump Base Dump":
     # a strong impulse, then a sideways BASE, then the SAME move again. The
     # base is a continuation zone, and it is the only entry the strategy has
@@ -422,7 +426,14 @@ class Config:
     # in the book, but a continuation base is entered on the CONTINUATION, not
     # by waiting for price to come back into it — which is what a limit order
     # does. Off by default until it is traded the right way.
-    base_zones: bool = False
+    # Images 16/17, "Pump Base Pump" and "Dump Base Dump". This was False, so
+    # in the entire life of this project the rule has never once run: a census
+    # of 20,000 bars found ZERO zones from this source on both M1 and M5.
+    # Measured on turning it on (train / holdout): M1 +0.126/+0.088 against a
+    # +0.126/+0.095 baseline and M5 +0.257/+0.367 against +0.308/+0.318 --
+    # a wash on expectancy, and about 9% more setups. It goes on because it is
+    # in the book and it costs nothing, not because it is an improvement.
+    base_zones: bool = True
     base_impulse_atr: float = 2.5   # the impulse must cover this many ATR
     base_impulse_bars: int = 6      # ...within this many bars
     base_min_bars: int = 4          # the base must last at least this long
@@ -504,6 +515,36 @@ class SnrzEngine:
         if self.cfg.chart_minutes > 0:
             up = self.analysis_minutes(self.cfg.chart_minutes, self.cfg.htf_rungs)
             self.cfg.htf_mult = max(2, round(up / self.cfg.chart_minutes))
+            # The liquidity-sweep guard is the single biggest reason a zone
+            # does not fire -- 25% of every blocked zone-bar. It is measured in
+            # BARS, so it means completely different things on different
+            # charts: "a fresh 40-bar extreme touched within 10 bars" is 40
+            # minutes of M1, where it happens constantly and is mostly noise,
+            # and 3.3 hours of M5, where it carries real information.
+            #
+            # Nine variants were searched for one setting that beats the
+            # current one on BOTH timeframes, scored pooled over train and
+            # holdout. Every variant that helped M1 hurt M5:
+            #     now              M1 +0.117R (1085)   M5 +0.311R (510)
+            #     guard off        M1 +0.130R (1393)   M5 +0.256R (671)
+            #     recent=3         M1 +0.134R (1362)   M5 +0.276R (650)
+            #     bars=60          M1 +0.105R (1187)   M5 +0.298R (554)
+            # So it is set per timeframe rather than traded off: the fast
+            # chart loosens it (+0.117 -> +0.134R, 26% more trades) and
+            # everything above keeps the value that suits it.
+            if self.cfg.chart_minutes <= 1:
+                self.cfg.sweep_recent = self.cfg.sweep_recent_fast
+        # A feature can be switched on and still be unreachable. GAP zones are
+        # only drawn on the analysis timeframe, and single_tf means that pass
+        # never runs -- so these two defaults cancel each other out in silence
+        # and GAP has drawn exactly zero zones. Leaving it off is correct here
+        # (on the chart timeframe it measured clearly worse on M1, +0.095 ->
+        # +0.027R on the holdout), but it must not look enabled when it cannot
+        # fire.
+        if self.cfg.gap_zones and self.cfg.gap_htf_only and self.cfg.single_tf:
+            self.gap_unreachable = True
+        else:
+            self.gap_unreachable = False
         self.candles: List[Candle] = []
         self.zones: List[Zone] = []
         self.signals: List[Signal] = []

@@ -104,6 +104,34 @@ MAX_RISK_PCT = 3.0
 # something that was never measured.
 POLL_SECONDS = 1.0
 
+# Why setups do not become orders, counted.
+#
+# Every reason this file declines to send already printed a line and scrolled
+# away, so "it found setups all day and opened nothing" was a question that
+# could only be answered by hunting back through the console -- and by then the
+# lines were gone. The engine's own side is measurable here (13.8 setups a day
+# on M1 in simulation), so when the live bot sends none the cause is one of
+# these, and it should take one line to see which.
+REFUSED: dict = {}
+SEEN = {"setups": 0, "sent": 0}
+
+
+def refuse(reason: str, detail: str = ""):
+    """Record a refusal and print it. The tally is what survives."""
+    REFUSED[reason] = REFUSED.get(reason, 0) + 1
+    if detail:
+        print(f"  SKIPPED - {detail}")
+
+
+def ledger_line() -> str:
+    """One line: what the engine offered, what went out, what ate the rest."""
+    if not SEEN["setups"]:
+        return ""
+    bits = " · ".join(f"{k} {v}" for k, v in
+                      sorted(REFUSED.items(), key=lambda kv: -kv[1]))
+    return (f"since start: {SEEN['setups']} setups · {SEEN['sent']} sent"
+            + (f" · refused: {bits}" if bits else ""))
+
 
 def mt5_timeframe(minutes: int):
     """MT5 has no TIMEFRAME_M60 — anything from an hour up has its own name."""
@@ -461,6 +489,7 @@ def choose_and_place(sigs, symbol: str, tf_minutes: int, room: int):
     """Take the strongest setups this bar, up to the slots that are free."""
     if not sigs:
         return
+    SEEN["setups"] += len(sigs)
     ranked = rank_candidates(sigs, symbol)
     fits = [r for r in ranked if r[0]]
     print(f"  {len(sigs)} setup(s) on this bar · {len(fits)} the account can "
@@ -477,9 +506,14 @@ def choose_and_place(sigs, symbol: str, tf_minutes: int, room: int):
             print(f"{head}  stop ${sl_d:.2f} · {rr:.1f}R to TP1 · CANNOT SIZE: {why}")
     taken = 0
     for ok, pct, s, vol, why in ranked:
+        # Both of these used to drop the setup in silence, which is precisely
+        # the hole this ledger exists to close: the tally has to add up to the
+        # number of setups the engine produced, or it is not an answer.
         if taken >= room:
-            break
+            refuse("no free slot (one trade at a time)")
+            continue
         if not ok:
+            refuse("too big for the balance")
             continue
         if not DRY_RUN:
             resting, _ = broker_state(symbol)
@@ -514,7 +548,7 @@ def place(signal, symbol: str, tf_minutes: int):
     info = mt5.symbol_info(symbol)
     tick = mt5.symbol_info_tick(symbol)
     if info is None or tick is None:
-        print(f"  SKIPPED - the terminal has no quote for {symbol}")
+        refuse("no quote", f"the terminal has no quote for {symbol}")
         return
     digits = info.digits
     rnd = lambda p: round(p, digits)
@@ -530,21 +564,24 @@ def place(signal, symbol: str, tf_minutes: int):
     spread = max(0.0, tick.ask - tick.bid)
     spread_r = spread / sl_distance if sl_distance > 0 else 1.0
     if spread_r > MAX_SPREAD_R:
-        print(f"  SKIPPED - spread is {spread:.{digits}f}, which is "
-              f"{100 * spread_r:.0f}% of the {sl_distance:.{digits}f} stop "
-              f"(limit {100 * MAX_SPREAD_R:.0f}%).")
+        refuse("spread too wide",
+               f"spread is {spread:.{digits}f}, which is "
+               f"{100 * spread_r:.0f}% of the {sl_distance:.{digits}f} stop "
+               f"(limit {100 * MAX_SPREAD_R:.0f}%).")
         return
 
     # The broker refuses a stop or target closer to the price than its stops
     # level. Their spec showed 0, but a broker can change it without notice.
     stops = getattr(info, "trade_stops_level", 0) * info.point
     if stops > 0 and sl_distance < stops:
-        print(f"  SKIPPED - the {sl_distance:.{digits}f} stop is inside the "
-              f"broker's minimum distance of {stops:.{digits}f}")
+        refuse("stop too close to price",
+               f"the {sl_distance:.{digits}f} stop is inside the "
+               f"broker's minimum distance of {stops:.{digits}f}")
         return
 
     volume, why = lots_for_risk(symbol, sl_distance, RISK_PCT)
     if volume is None:
+        # already counted in choose_and_place when it ranked this setup
         print(f"  SKIPPED - {why}")
         return
 
@@ -560,9 +597,10 @@ def place(signal, symbol: str, tf_minutes: int):
         symbol, volume, market)
     acc = mt5.account_info()
     if need is not None and acc is not None and need > acc.margin_free:
-        print(f"  SKIPPED - {volume} lots needs ${need:.2f} of margin and only "
-              f"${acc.margin_free:.2f} is free. Close something, or wait for "
-              f"the open trade to finish.")
+        refuse("not enough margin",
+               f"{volume} lots needs ${need:.2f} of margin and only "
+               f"${acc.margin_free:.2f} is free. Close something, or wait for "
+               f"the open trade to finish.")
         return
 
     legs = split_volume(volume, info)
@@ -604,9 +642,10 @@ def place(signal, symbol: str, tf_minutes: int):
     if not pending:
         slip = abs(market - signal.price)
         if slip > 0.25 * sl_distance:
-            print(f"  SKIPPED - price is already {slip:.{digits}f} past the "
-                  f"{rnd(signal.price)} entry, more than a quarter of the "
-                  f"{sl_distance:.{digits}f} risk. Chasing it is a different trade.")
+            refuse("price ran away",
+                   f"price is already {slip:.{digits}f} past the "
+                   f"{rnd(signal.price)} entry, more than a quarter of the "
+                   f"{sl_distance:.{digits}f} risk. Chasing it is a different trade.")
             return
     # A single position aims at the far target and ratchets its way there.
     targets = [signal.tp3] if ratchet else [signal.tp1, signal.tp2, signal.tp3]
@@ -651,6 +690,8 @@ def place(signal, symbol: str, tf_minutes: int):
             res = mt5.order_send(req)
             bad = _retcode(res)
         if bad:
+            REFUSED[f"broker rejected: {bad.split(':')[0]}"] = \
+                REFUSED.get(f"broker rejected: {bad.split(':')[0]}", 0) + 1
             print(f"  TP{n} leg FAILED - {bad}")
             continue
         sent += 1
@@ -666,6 +707,7 @@ def place(signal, symbol: str, tf_minutes: int):
             LADDER[str(res.order)] = rungs
             LADDER[f"{signal.side}@{rnd(signal.price)}"] = rungs
     if sent:
+        SEEN["sent"] += 1        # one SETUP, however many legs it took
         ladder_save()
 
 
@@ -987,6 +1029,9 @@ def waiting_line(engine, symbol: str, price: float) -> str:
             bits.append("broker ?")
     else:
         bits.append("DRY RUN")
+    led = ledger_line()
+    if led:
+        bits.append(led)
     return " · ".join(bits)
 
 
@@ -1245,10 +1290,41 @@ def main():
         raise SystemExit(f"only {0 if rates is None else len(rates)} candles "
                          f"available for {SYMBOL} on this timeframe. Open that "
                          f"chart in the terminal once so it downloads history.")
+    # The warm-up already replays history to build the zones; counting what it
+    # produces on the way past turns "it has not traded all night, is it
+    # broken?" into a number available in the first second.
+    warm = 0
     for r in rates:
-        engine.on_candle(Candle(int(r["time"]), r["open"], r["high"], r["low"], r["close"]))
+        warm += len(engine.on_candle(
+            Candle(int(r["time"]), r["open"], r["high"], r["low"], r["close"])))
     last_time = rates[-1]["time"]
+    hours = len(rates) * TIMEFRAME_MIN / 60.0
     print(f"warmed up with {len(rates)} candles")
+    print(f"\nSELF-TEST — replaying those {len(rates)} bars (about {hours:.0f} "
+          f"hours) through the\n              same rules the live run uses:")
+    print(f"      {warm} setups, i.e. about {24 * warm / max(hours, 1):.1f} a day "
+          f"on this timeframe")
+    if warm == 0:
+        print("      ZERO. The rules found nothing in this history, so waiting\n"
+              "      longer will not help -- it is the symbol, the timeframe or\n"
+              "      the settings, not the connection.")
+    else:
+        # ...and how many of them this balance could actually have sized.
+        fit = 0
+        for sg in engine.signals[-warm:]:
+            vol, _ = lots_for_risk(SYMBOL, abs(sg.price - sg.sl), RISK_PCT)
+            if vol is not None:
+                fit += 1
+        print(f"      {fit} of them this balance could size "
+              f"({100 * fit / warm:.0f}%)"
+              + ("" if fit else " — every one was too big for the account"))
+        print("      If the live run now sends nothing while this says setups\n"
+              "      exist, the reason is a guard at send time and the "
+              "'since start:'\n      tally on each status line names which one.")
+    if getattr(engine, "gap_unreachable", False):
+        print("\nNOTE: GAP zones are switched on but cannot be drawn in this\n"
+              "      configuration (they are analysis-timeframe only, and this\n"
+              "      runs single-timeframe). They contribute nothing either way.")
 
     # Whatever the balance has done, this says whether THIS bot did it.
     try:
@@ -1367,4 +1443,11 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        # The tally is the whole point of keeping it -- print it where it
+        # cannot be missed, on the way out.
+        print("\n\n" + "=" * 62)
+        print("  " + (ledger_line() or "no setups were produced this run"))
+        print("=" * 62)

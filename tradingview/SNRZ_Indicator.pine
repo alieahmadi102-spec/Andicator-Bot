@@ -31,7 +31,7 @@
 //                  TP3 = the one beyond. 1R/2R/3R when no zone sits there.
 //  SCALP vs SWING (book): M5/M15 = SCALP · H1/H4/Daily = SWING.
 // ═══════════════════════════════════════════════════════════════════════════
-indicator("SNRZ Strategy [Zindan] v15", "SNRZ v15.0", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500, max_bars_back = 500)
+indicator("SNRZ Strategy [Zindan] v16", "SNRZ v16.0", overlay = true, max_boxes_count = 500, max_labels_count = 500, max_lines_count = 500, max_bars_back = 500)
 
 // ───────────────────────────── Inputs ──────────────────────────────────────
 grpZ  = "Zones (SNRZ)"
@@ -105,7 +105,7 @@ entriesHtfOnly = input.bool(false, "ورود فقط از زون‌های تای�
 rrTp1          = input.float(1.0,  "TP1 = چند برابر فاصله‌ی استاپ (کتاب ص۴۱: ۱:۱)", minval = 0.1, step = 0.05, group = grpS)
 sweepGuard     = input.bool(true,  "بعد از شکار لیکوییدیتی، خلافش ترید نکن",  group = grpS, tooltip = "کتاب بخش لیکوییدیتی: «در طلا معمولاً اول لیکوییدیتی سمت فروش خورده می‌شود و بعد حرکت اصلی (~۸۰٪)». پس فروش درست بعد از زدنِ یک کف تازه، فروختنِ خودِ برگشت است. روی دیتای واقعی، اندیکاتور ۴ کندل بعد از کفِ ۳۹۴۳ سیگنال SELL داد و بازار ۶۰۰ دلار بالا رفت.")
 sweepBars      = input.int(40,     "…«کف/سقف تازه» یعنی اکسترممِ N کندل اخیر", minval = 10, group = grpS)
-sweepRecent    = input.int(10,     "…و در N کندل آخر زده شده باشد",          minval = 2,  group = grpS)
+sweepRecent    = input.int(10,     "…و در N کندل آخر زده شده باشد",          minval = 2,  group = grpS, tooltip = "گاردِ شکارِ لیکوییدیتی بر حسبِ **کندل** است، پس روی هر تایم‌فریم معنیِ متفاوتی دارد: «اکسترمِ ۴۰ کندلِ اخیر که در ۱۰ کندلِ آخر زده شده» روی M1 یعنی ۴۰ دقیقه — که مدام اتفاق می‌افتد و بیشترش نویز است — ولی روی M5 یعنی ۳٫۳ ساعت که اطلاعاتِ واقعی دارد.\n\n۹ حالت تست شد تا یک عدد پیدا شود که روی **هر دو** تایم‌فریم بهتر باشد؛ هر حالتی که M1 را بهتر کرد M5 را بدتر کرد. پس روی چارتِ ۱ دقیقه‌ای خودکار به ۳ کاهش می‌یابد (M1: ‎+۰٫۱۱۷ ← ‎+۰٫۱۳۴R با ۲۶٪ معامله‌ی بیشتر) و بالاتر از آن دست‌نخورده می‌ماند.")
 
 grpD  = "Display"
 showLtf        = input.bool(true,  "Show chart-timeframe zones",           group = grpD)
@@ -997,8 +997,12 @@ nested(Zone z) =>
 // after price has just swept a multi-week low is selling the reversal itself.
 // On the real H4 data this fired 4 bars after the 3942 bottom and the market
 // then ran 600 points the other way.
-sweptLow  = sweepGuard and ta.lowest(low,  sweepRecent) <= ta.lowest(low,  sweepBars)
-sweptHigh = sweepGuard and ta.highest(high, sweepRecent) >= ta.highest(high, sweepBars)
+// see the tooltip: one number cannot serve a 1-minute and a 5-minute chart,
+// because this is counted in BARS and a bar is not a fixed amount of market
+// time. The fast chart loosens it; everything above keeps its own value.
+sweepRecentEff = chartMin <= 1 ? 3 : sweepRecent
+sweptLow  = sweepGuard and ta.lowest(low,  sweepRecentEff) <= ta.lowest(low,  sweepBars)
+sweptHigh = sweepGuard and ta.highest(high, sweepRecentEff) >= ta.highest(high, sweepBars)
 
 for z in zones
     if bar_index <= z.bornBar
@@ -1308,7 +1312,7 @@ if showPanel and barstate.islast
             nRun += 1
     posTxt = nOrd + nRun == 0 ? "— no setup right now —" :
              str.tostring(nOrd) + " limit waiting · " + str.tostring(nRun) + " running"
-    table.cell(info, 0, 0, "⚜  SNRZ v15.0 —  ZiNDAN", text_color = colGold, text_size = size.normal)
+    table.cell(info, 0, 0, "⚜  SNRZ v16.0 —  ZiNDAN", text_color = colGold, text_size = size.normal)
     table.cell(info, 0, 1, "The Gold Chaser", text_color = color.new(colGold, 35), text_size = size.tiny)
     table.cell(info, 0, 2, trendTxt, text_color = trendCol, text_size = size.small)
     table.cell(info, 0, 3, "Zones: " + str.tostring(liveLtf) + " @ " + timeframe.period + "  +  " + str.tostring(liveHtf) + " @ " + htfTF, text_color = color.new(color.white, 20), text_size = size.small)
